@@ -16,6 +16,10 @@ scrape_configs:
     static_configs:
       - targets: ['cadvisor:8080']
 
+  - job_name: sample-service
+    static_configs:
+      - targets: ['sample-service:4000']
+
 # Long-term copy of every metric into InfluxDB (ML training dataset)
 remote_write:
   - url: http://influxdb:8086/api/v1/prom/write?db=prometheus
