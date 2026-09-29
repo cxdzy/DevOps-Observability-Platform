@@ -1,2 +1,8 @@
+# Install order matters on a CPU-only VPS. Use a virtualenv, then run:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt
+# Installing sentence-transformers first pulls the full GPU build of torch
+# (several GB of unused nvidia-cu* packages). Installing CPU-only torch first
+# avoids that.
 chromadb==0.5.15
 sentence-transformers==3.1.1
