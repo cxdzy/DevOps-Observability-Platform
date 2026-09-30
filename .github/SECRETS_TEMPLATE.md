@@ -10,6 +10,8 @@ the VPS. This file documents what is needed; it does not contain real values.
 | VPS_USER        | SSH username used to deploy                                | Typically `root`                                                    |
 | VPS_SSH_KEY     | Private SSH key GitHub Actions uses to reach the VPS       | `ssh-keygen -t ed25519 -f ~/.ssh/gh_actions_deploy -N ""` on the VPS, then append the `.pub` file to `~/.ssh/authorized_keys` and paste the private key here |
 | GHCR_TOKEN      | Read-only token so the VPS can pull images from GHCR       | GitHub > Settings > Developer settings > Personal access tokens > Fine-grained > scope: this repo only, Packages: Read-only |
+| TAILSCALE_OAUTH_CLIENT_ID | OAuth client ID so GitHub Actions can join the tailnet temporarily | Tailscale admin console > Settings > OAuth clients > Generate, scope: Devices Core Write, tag: tag:ci |
+| TAILSCALE_OAUTH_SECRET | OAuth client secret, paired with the ID above | Same screen, shown once |
 
 ## Notes
 
