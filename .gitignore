@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 chroma/venv/
 node_modules/
+scripts/venv/
+scripts/injector.log
