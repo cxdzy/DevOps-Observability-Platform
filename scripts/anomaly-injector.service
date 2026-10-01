@@ -1,0 +1,16 @@
+[Unit]
+Description=FYP Anomaly Injector - generates labeled anomaly data for ML training
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/fyp-observability/scripts
+ExecStart=/root/fyp-observability/scripts/venv/bin/python3 anomaly_injector.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/fyp-observability/scripts/injector.log
+StandardError=append:/root/fyp-observability/scripts/injector.log
+
+[Install]
+WantedBy=multi-user.target

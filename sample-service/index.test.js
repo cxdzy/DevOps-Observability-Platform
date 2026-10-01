@@ -18,4 +18,22 @@ describe('sample-service', () => {
     expect(res.statusCode).toBe(200);
     expect(res.text).toContain('http_requests_total');
   });
+
+  test('POST /simulate/cpu-spike accepts the request', async () => {
+    const res = await request(app).post('/simulate/cpu-spike?duration=1');
+    expect(res.statusCode).toBe(202);
+    expect(res.body.status).toBe('cpu-spike started');
+  });
+
+  test('POST /simulate/memory-leak accepts the request', async () => {
+    const res = await request(app).post('/simulate/memory-leak?sizeMb=10&duration=1');
+    expect(res.statusCode).toBe(202);
+    expect(res.body.status).toBe('memory-leak started');
+  });
+
+  test('POST /simulate/latency-spike accepts the request', async () => {
+    const res = await request(app).post('/simulate/latency-spike?delayMs=10&duration=1');
+    expect(res.statusCode).toBe(202);
+    expect(res.body.status).toBe('latency-spike started');
+  });
 });
