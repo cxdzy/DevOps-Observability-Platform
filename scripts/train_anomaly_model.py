@@ -2,8 +2,8 @@
 Anomaly model training for the observability platform.
 
 Trains Isolation Forest and One-Class SVM models on sample-service metrics
-from InfluxDB and logs every run to MLflow, so the two algorithms can be
-compared side by side.
+from InfluxDB and logs every run to MLflow, so the two algorithms and two
+feature sets can be compared on identical data.
 
 Pipeline
   1. Read the raw series of the sample-service job (and only that job).
@@ -12,12 +12,20 @@ Pipeline
      the service restarts, so raw counter values are not valid model inputs.
   3. Drop every minute that overlaps an excluded window (benchmarks, reboots).
   4. Label the minutes that an injection covers for at least 10 seconds. Labels
-     are used only to evaluate the models. Both algorithms are unsupervised and never see them.
-  5. Split chronologically (first 70 percent train, last 30 percent test) and
-     report precision, recall, F1, false positive rate and ROC AUC on the
-     test part, plus recall per severity tier.
+     are used only to evaluate the models. Both algorithms are unsupervised
+     and never see them.
+  5. Split chronologically: train 60 percent, validation 20 percent, test 20
+     percent. Models are fitted on the training part. The configuration with the
+     best validation F1 is selected, and its test scores are the ones to report,
+     because the test part was not used to choose it.
+  6. Every configuration runs with two feature sets: the baseline, and the
+     baseline plus the per-minute maximum of memory. Recall for memory
+     injections is also split by how much of the minute the injection covers,
+     to test whether per-minute averaging dilutes short memory spikes.
 
-Run: python3 train_anomaly_model.py
+Outputs: MLflow runs, and training_results.csv next to this script.
+
+Run: python3 train_anomaly_model.py 2>&1 | tee train_output.txt
 """
 
 import json
@@ -28,11 +36,14 @@ import mlflow.sklearn
 import numpy as np
 import pandas as pd
 from influxdb import InfluxDBClient
+from mlflow.tracking import MlflowClient
 from sklearn.ensemble import IsolationForest
 from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import OneClassSVM
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 INFLUXDB_HOST = os.environ.get("INFLUXDB_HOST", "localhost")
 INFLUXDB_PORT = int(os.environ.get("INFLUXDB_PORT", "8086"))
@@ -41,15 +52,19 @@ JOB = "sample-service"
 LOOKBACK_HOURS = 168
 
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
-MLFLOW_EXPERIMENT_NAME = "anomaly-detection-sample-service"
+MLFLOW_EXPERIMENT_NAME = "anomaly-detection-v2"
 
-GROUND_TRUTH_LOG = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "ground_truth_log.jsonl"
-)
+GROUND_TRUTH_LOG = os.path.join(SCRIPT_DIR, "ground_truth_log.jsonl")
+RESULTS_CSV = os.path.join(SCRIPT_DIR, "training_results.csv")
 
 RESAMPLE = "1min"
 MAX_GAP_S = 120          # a longer gap between two samples is treated as missing data
-FEATURES = ["cpu_rate", "memory_mb", "latency_ms"]
+
+ALL_FEATURES = ["cpu_rate", "memory_mb", "memory_max_mb", "latency_ms"]
+FEATURE_SETS = {
+    "baseline": ["cpu_rate", "memory_mb", "latency_ms"],
+    "memory_max": ["cpu_rate", "memory_mb", "memory_max_mb", "latency_ms"],
+}
 
 # A minute is labelled anomalous if an injection covers at least this many of its
 # 60 seconds. A smaller overlap barely moves the per-minute averages, so labelling
@@ -59,12 +74,15 @@ LABEL_MIN_OVERLAP_S = 10
 # Injections within this many seconds of an excluded window are excluded as well.
 EXCLUSION_PAD_S = 60
 
-TRAIN_FRACTION = 0.7
-MIN_ROWS = 200
+# Minutes an injection covers for at least this long count as "mostly covered".
+FULL_COVER_S = 45
+
+TRAIN_FRACTION = 0.6
+VAL_FRACTION = 0.2       # the remaining 20 percent is the test part
+MIN_ROWS = 300
 RANDOM_STATE = 42
 
 # Periods in which the metrics do not represent normal behaviour. UTC.
-# Refine the reboot window with `last -x | head` if you want it exact.
 EXCLUDE_WINDOWS = [
     ("2026-10-01T14:47:00Z", "2026-10-01T14:50:00Z", "two injections 16 s apart around an injector restart"),
     ("2026-10-03T17:27:37Z", "2026-10-03T17:31:51Z", "LLM benchmark round 1"),
@@ -151,18 +169,26 @@ def per_minute_increase(frames):
 def build_features(raw):
     cpu_rate = per_minute_rate(raw["cpu"])
 
-    memory = pd.concat([f["value"].resample(RESAMPLE).mean() for f in raw["memory"]])
-    memory_mb = memory.groupby(level=0).mean() / (1024 * 1024)
+    mib = 1024 * 1024
+    mem_mean = pd.concat([f["value"].resample(RESAMPLE).mean() for f in raw["memory"]])
+    mem_max = pd.concat([f["value"].resample(RESAMPLE).max() for f in raw["memory"]])
+    memory_mb = mem_mean.groupby(level=0).mean() / mib
+    memory_max_mb = mem_max.groupby(level=0).max() / mib
 
     total_ms = per_minute_increase(raw["lat_sum"])
     total_requests = per_minute_increase(raw["lat_cnt"])
     latency_ms = total_ms / total_requests.where(total_requests > 0)
 
     features = pd.concat(
-        [cpu_rate.rename("cpu_rate"), memory_mb.rename("memory_mb"), latency_ms.rename("latency_ms")],
+        [
+            cpu_rate.rename("cpu_rate"),
+            memory_mb.rename("memory_mb"),
+            memory_max_mb.rename("memory_max_mb"),
+            latency_ms.rename("latency_ms"),
+        ],
         axis=1,
     )
-    return features.dropna()
+    return features.dropna()[ALL_FEATURES]
 
 
 # ----------------------------------------------- exclusions and ground truth
@@ -212,15 +238,20 @@ def drop_excluded(features, spans):
 
 
 def label_rows(features, ground_truth):
-    """Severity tier of the injection that covers each minute for at least
-    LABEL_MIN_OVERLAP_S seconds, or None for normal minutes."""
+    """Returns (tier, cover). tier is the severity tier of the injection that covers
+    each minute for at least LABEL_MIN_OVERLAP_S seconds, or None for normal minutes.
+    cover is the number of seconds of that minute the injection covers."""
     tier = pd.Series([None] * len(features), index=features.index, dtype=object)
+    cover = np.zeros(len(features))
     for rec in ground_truth:
         if not rec.get("triggered_successfully"):
             continue
         ws, we = injection_span(rec)
-        tier[overlap_seconds(features.index, ws, we) >= LABEL_MIN_OVERLAP_S] = rec["tier"]
-    return tier
+        ov = overlap_seconds(features.index, ws, we)
+        mask = ov >= LABEL_MIN_OVERLAP_S
+        tier[mask] = rec["tier"]
+        cover[mask] = np.maximum(cover[mask], ov[mask])
+    return tier, cover
 
 
 # ------------------------------------------------------------ models and scoring
@@ -248,7 +279,7 @@ def candidate_models():
     return models
 
 
-def evaluate(y_true, y_pred, scores, tiers):
+def evaluate(y_true, y_pred, scores, tiers, cover):
     tp = int((y_pred & y_true).sum())
     fp = int((y_pred & ~y_true).sum())
     fn = int((~y_pred & y_true).sum())
@@ -271,61 +302,109 @@ def evaluate(y_true, y_pred, scores, tiers):
         mask = tiers == t
         if mask.any():
             metrics[f"recall_{t}"] = round(float(y_pred[mask].mean()), 4)
+    medium = tiers == "medium"
+    for label, mask in (("full", medium & (cover >= FULL_COVER_S)),
+                        ("partial", medium & (cover < FULL_COVER_S))):
+        metrics[f"n_medium_{label}"] = int(mask.sum())
+        if mask.any():
+            metrics[f"recall_medium_{label}"] = round(float(y_pred[mask].mean()), 4)
     return metrics
 
 
-def run_experiments(features, tiers, info):
-    if len(features) < MIN_ROWS:
+def run_experiments(features, tiers, cover, info):
+    n = len(features)
+    if n < MIN_ROWS:
         raise RuntimeError(
-            f"Only {len(features)} usable minutes after exclusions (need {MIN_ROWS}). "
-            "Let more data accumulate."
+            f"Only {n} usable minutes after exclusions (need {MIN_ROWS}). Let more data accumulate."
         )
 
-    split = int(len(features) * TRAIN_FRACTION)
-    X_train = features.iloc[:split][FEATURES].to_numpy()
-    X_test = features.iloc[split:][FEATURES].to_numpy()
-    tiers_test = tiers.iloc[split:].to_numpy()
-    y_test = pd.Series(tiers_test).notna().to_numpy()
+    i1 = int(n * TRAIN_FRACTION)
+    i2 = int(n * (TRAIN_FRACTION + VAL_FRACTION))
+    y = tiers.notna().to_numpy()
+    tier_arr = tiers.to_numpy()
+    splits = {"val": slice(i1, i2), "test": slice(i2, n)}
 
-    print(f"  Train: {len(X_train)} minutes, test: {len(X_test)} minutes, "
-          f"{int(y_test.sum())} labelled anomalous in the test part")
+    print(f"  Train {i1} / validation {i2 - i1} / test {n - i2} minutes. "
+          f"Labelled anomalous: train {int(y[:i1].sum())}, validation {int(y[i1:i2].sum())}, "
+          f"test {int(y[i2:].sum())}")
 
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
 
     results = []
-    for cfg in candidate_models():
-        model = cfg["build"]()
-        model.fit(X_train)
-        y_pred = model.predict(X_test) == -1
-        scores = -model.score_samples(X_test)  # higher means more anomalous
-        metrics = evaluate(y_test, y_pred, scores, tiers_test)
+    for fset, cols in FEATURE_SETS.items():
+        X = features[cols].to_numpy()
+        for cfg in candidate_models():
+            model = cfg["build"]()
+            model.fit(X[:i1])
 
-        with mlflow.start_run(run_name=cfg["name"]):
-            mlflow.log_param("algorithm", cfg["algorithm"])
-            mlflow.log_params(cfg["params"])
-            mlflow.log_params({
-                "features": ",".join(FEATURES),
-                "lookback_hours": LOOKBACK_HOURS,
-                "train_fraction": TRAIN_FRACTION,
-                "train_minutes": len(X_train),
-                "test_minutes": len(X_test),
-                "test_anomaly_minutes": int(y_test.sum()),
-                "minutes_excluded": info["minutes_excluded"],
-                "injections_in_log": info["injections_in_log"],
-                "label_min_overlap_s": LABEL_MIN_OVERLAP_S,
-                "train_start": str(features.index[0]),
-                "test_start": str(features.index[split]),
-                "test_end": str(features.index[-1]),
-            })
-            mlflow.log_metrics(metrics)
-            mlflow.sklearn.log_model(model, "model")
-            run_id = mlflow.active_run().info.run_id
+            metrics = {}
+            for split_name, sl in splits.items():
+                pred = model.predict(X[sl]) == -1
+                scores = -model.score_samples(X[sl])  # higher means more anomalous
+                m = evaluate(y[sl], pred, scores, tier_arr[sl], cover[sl])
+                metrics.update({f"{split_name}_{k}": v for k, v in m.items()})
 
-        results.append({"run": cfg["name"], "run_id": run_id, **metrics})
-        print(f"  {cfg['name']}: F1 {metrics['f1_score']}, precision {metrics['precision']}, "
-              f"recall {metrics['recall']}, FPR {metrics['false_positive_rate']}")
-    return results
+            run_name = f"{fset}__{cfg['name']}"
+            with mlflow.start_run(run_name=run_name):
+                mlflow.log_params({
+                    "feature_set": fset,
+                    "features": ",".join(cols),
+                    "algorithm": cfg["algorithm"],
+                    **cfg["params"],
+                    "lookback_hours": LOOKBACK_HOURS,
+                    "train_fraction": TRAIN_FRACTION,
+                    "val_fraction": VAL_FRACTION,
+                    "train_minutes": i1,
+                    "val_minutes": i2 - i1,
+                    "test_minutes": n - i2,
+                    "minutes_excluded": info["minutes_excluded"],
+                    "injections_in_log": info["injections_in_log"],
+                    "label_min_overlap_s": LABEL_MIN_OVERLAP_S,
+                    "train_start": str(features.index[0]),
+                    "val_start": str(features.index[i1]),
+                    "test_start": str(features.index[i2]),
+                    "test_end": str(features.index[-1]),
+                })
+                mlflow.log_metrics({k: v for k, v in metrics.items() if v is not None})
+                mlflow.sklearn.log_model(model, "model")
+                run_id = mlflow.active_run().info.run_id
+
+            results.append({"run": run_name, "run_id": run_id, "feature_set": fset,
+                            "algorithm": cfg["algorithm"], **cfg["params"], **metrics})
+            print(f"  {run_name}: validation F1 {metrics['val_f1_score']}, test F1 {metrics['test_f1_score']}")
+
+    best = max(results, key=lambda r: (r["val_f1_score"], r.get("val_roc_auc", 0)))
+    MlflowClient().set_tag(best["run_id"], "selected", "true")
+    return results, best
+
+
+def print_summary(results, best):
+    table = pd.DataFrame(results)
+    table["pick"] = np.where(table["run_id"] == best["run_id"], "*", "")
+    table.to_csv(RESULTS_CSV, index=False)
+
+    fmt = lambda v: f"{v:.3f}"
+    t1 = table.sort_values("val_f1_score", ascending=False)[
+        ["pick", "run", "val_f1_score", "test_f1_score", "test_precision", "test_recall",
+         "test_false_positive_rate", "test_roc_auc"]
+    ].rename(columns={"val_f1_score": "f1_val", "test_f1_score": "f1_test", "test_precision": "prec",
+                      "test_recall": "rec", "test_false_positive_rate": "fpr", "test_roc_auc": "auc"})
+    print("\nSelection on validation F1 (* = selected). Report the test columns for the selected run.\n")
+    print(t1.to_string(index=False, float_format=fmt))
+
+    t2 = table.sort_values("val_f1_score", ascending=False)[
+        ["pick", "run", "test_recall_low", "test_recall_medium", "test_recall_high",
+         "test_recall_medium_full", "test_recall_medium_partial"]
+    ].rename(columns={"test_recall_low": "low", "test_recall_medium": "med", "test_recall_high": "high",
+                      "test_recall_medium_full": "med_full", "test_recall_medium_partial": "med_part"})
+    print("\nTest recall per injection type. med_full = minutes a memory injection covers for 45 s or more,")
+    print("med_part = minutes it covers for less (the part a per-minute average dilutes).\n")
+    print(t2.to_string(index=False, float_format=fmt))
+    first = results[0]
+    print(f"\nMinutes behind med_full / med_part in the test part: "
+          f"{first['test_n_medium_full']} / {first['test_n_medium_partial']}")
+    print(f"Full results saved to {RESULTS_CSV}")
 
 
 def main():
@@ -341,22 +420,17 @@ def main():
     features, dropped = drop_excluded(features, spans)
     print(f"  Excluded {dropped} minutes ({len(EXCLUDE_WINDOWS)} windows plus {extra} overlapping injections)")
 
-    tiers = label_rows(features, ground_truth)
+    tiers, cover = label_rows(features, ground_truth)
     print(f"  {int(tiers.notna().sum())} of {len(features)} minutes labelled anomalous "
           f"({tiers.notna().mean() * 100:.1f} percent)")
 
     print("Training and logging to MLflow...")
-    results = run_experiments(
-        features, tiers,
+    results, best = run_experiments(
+        features, tiers, cover,
         {"minutes_excluded": dropped, "injections_in_log": len(ground_truth)},
     )
-
-    table = pd.DataFrame(results).sort_values("f1_score", ascending=False)
-    columns = [c for c in ["run", "f1_score", "precision", "recall", "false_positive_rate",
-                           "roc_auc", "recall_low", "recall_medium", "recall_high"] if c in table.columns]
-    print("\nResults on the test period, best F1 first:\n")
-    print(table[columns].to_string(index=False))
-    print(f"\nDone. Compare the runs at http://localhost:5000 (via your SSH tunnel).")
+    print_summary(results, best)
+    print(f"\nDone. Compare the runs at http://localhost:5000 (experiment '{MLFLOW_EXPERIMENT_NAME}').")
 
 
 if __name__ == "__main__":
