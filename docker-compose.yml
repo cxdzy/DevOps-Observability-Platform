@@ -76,6 +76,25 @@ services:
     networks:
       - obs-net
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    environment:
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_KEEP_ALIVE=1m
+    # Hard cap: if a model is too big, only this container is OOM-killed.
+    # memswap_limit equal to mem_limit disables swap for this container.
+    mem_limit: 1600m
+    memswap_limit: 1600m
+    volumes:
+      - ollama-models:/root/.ollama
+    networks:
+      - obs-net
+
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: prometheus
@@ -121,6 +140,7 @@ networks:
     driver: bridge
 
 volumes:
+  ollama-models:
   mlflow-artifacts:
   fyp-postgres-data:
   influxdb-data:
