@@ -70,7 +70,9 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
     volumes:
-      - mlflow-artifacts:/mlflow/artifacts
+      # Same absolute path on the host and in the container. The training script runs on
+      # the host and writes model files straight to this path, so the MLflow server must see them.
+      - /mlflow/artifacts:/mlflow/artifacts
     depends_on:
       - postgres
     networks:
@@ -141,7 +143,6 @@ networks:
 
 volumes:
   ollama-models:
-  mlflow-artifacts:
   fyp-postgres-data:
   influxdb-data:
   prometheus-data:
