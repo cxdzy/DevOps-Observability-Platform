@@ -52,10 +52,17 @@ JOB = "sample-service"
 LOOKBACK_HOURS = 168
 
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
-MLFLOW_EXPERIMENT_NAME = "anomaly-detection-v2"
+MLFLOW_EXPERIMENT_NAME = "anomaly-detection-v3"
 
 GROUND_TRUTH_LOG = os.path.join(SCRIPT_DIR, "ground_truth_log.jsonl")
 RESULTS_CSV = os.path.join(SCRIPT_DIR, "training_results.csv")
+
+# Only data from this moment on is used. The memory-leak injection was fixed so that it
+# releases its memory (the sample-service container restarted at 03:34:05 UTC on
+# 4 October 2026). Before that, memory stayed high for 10+ minutes after an injection and
+# 36 percent of injections had no visible effect, so the memory labels were not valid.
+# Set to None to use all data.
+DATA_START = "2026-10-04T03:35:00Z"
 
 RESAMPLE = "1min"
 MAX_GAP_S = 120          # a longer gap between two samples is treated as missing data
@@ -88,6 +95,7 @@ EXCLUDE_WINDOWS = [
     ("2026-10-03T17:27:37Z", "2026-10-03T17:31:51Z", "LLM benchmark round 1"),
     ("2026-10-03T18:11:07Z", "2026-10-03T18:15:45Z", "LLM benchmark round 2"),
     ("2026-10-03T18:44:00Z", "2026-10-03T18:50:00Z", "VPS reboot"),
+    ("2026-10-04T03:37:30Z", "2026-10-04T03:39:30Z", "manual check of the memory fix, not in the ground truth log"),
 ]
 
 
@@ -328,6 +336,10 @@ def run_experiments(features, tiers, cover, info):
           f"Labelled anomalous: train {int(y[:i1].sum())}, validation {int(y[i1:i2].sum())}, "
           f"test {int(y[i2:].sum())}")
 
+    for name, count in (("validation", int(y[i1:i2].sum())), ("test", int(y[i2:].sum()))):
+        if count < 10:
+            print(f"  WARNING: only {count} anomalous minutes in the {name} part, scores will be unreliable")
+
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
 
@@ -383,27 +395,29 @@ def print_summary(results, best):
     table = pd.DataFrame(results)
     table["pick"] = np.where(table["run_id"] == best["run_id"], "*", "")
     table.to_csv(RESULTS_CSV, index=False)
+    table = table.sort_values("val_f1_score", ascending=False)
 
     fmt = lambda v: f"{v:.3f}"
-    t1 = table.sort_values("val_f1_score", ascending=False)[
-        ["pick", "run", "val_f1_score", "test_f1_score", "test_precision", "test_recall",
-         "test_false_positive_rate", "test_roc_auc"]
-    ].rename(columns={"val_f1_score": "f1_val", "test_f1_score": "f1_test", "test_precision": "prec",
-                      "test_recall": "rec", "test_false_positive_rate": "fpr", "test_roc_auc": "auc"})
+    # reindex keeps a column even when a split had no data for it (it prints as NaN)
+    t1 = table.reindex(columns=[
+        "pick", "run", "val_f1_score", "test_f1_score", "test_precision", "test_recall",
+        "test_false_positive_rate", "test_roc_auc",
+    ]).rename(columns={"val_f1_score": "f1_val", "test_f1_score": "f1_test", "test_precision": "prec",
+                       "test_recall": "rec", "test_false_positive_rate": "fpr", "test_roc_auc": "auc"})
     print("\nSelection on validation F1 (* = selected). Report the test columns for the selected run.\n")
     print(t1.to_string(index=False, float_format=fmt))
 
-    t2 = table.sort_values("val_f1_score", ascending=False)[
-        ["pick", "run", "test_recall_low", "test_recall_medium", "test_recall_high",
-         "test_recall_medium_full", "test_recall_medium_partial"]
-    ].rename(columns={"test_recall_low": "low", "test_recall_medium": "med", "test_recall_high": "high",
-                      "test_recall_medium_full": "med_full", "test_recall_medium_partial": "med_part"})
+    t2 = table.reindex(columns=[
+        "pick", "run", "test_recall_low", "test_recall_medium", "test_recall_high",
+        "test_recall_medium_full", "test_recall_medium_partial",
+    ]).rename(columns={"test_recall_low": "low", "test_recall_medium": "med", "test_recall_high": "high",
+                       "test_recall_medium_full": "med_full", "test_recall_medium_partial": "med_part"})
     print("\nTest recall per injection type. med_full = minutes a memory injection covers for 45 s or more,")
     print("med_part = minutes it covers for less (the part a per-minute average dilutes).\n")
     print(t2.to_string(index=False, float_format=fmt))
     first = results[0]
     print(f"\nMinutes behind med_full / med_part in the test part: "
-          f"{first['test_n_medium_full']} / {first['test_n_medium_partial']}")
+          f"{first.get('test_n_medium_full', 0)} / {first.get('test_n_medium_partial', 0)}")
     print(f"Full results saved to {RESULTS_CSV}")
 
 
@@ -415,6 +429,14 @@ def main():
     print(f"Fetching the last {LOOKBACK_HOURS}h of metrics for job '{JOB}' from InfluxDB...")
     features = build_features(fetch_raw())
     print(f"  {len(features)} minutes of features: {features.index[0]} to {features.index[-1]}")
+    injections_used = len(ground_truth)
+    if DATA_START:
+        cutoff = pd.Timestamp(DATA_START)
+        features = features[features.index >= cutoff]
+        injections_used = sum(1 for r in ground_truth if pd.Timestamp(r["timestamp"]) >= cutoff)
+        print(f"  Keeping only data from {DATA_START}: {len(features)} minutes, {injections_used} injections")
+        if features.empty:
+            raise RuntimeError("No data after DATA_START yet. Let more data accumulate.")
 
     spans, extra = expand_exclusions(EXCLUDE_WINDOWS, ground_truth)
     features, dropped = drop_excluded(features, spans)
@@ -427,7 +449,7 @@ def main():
     print("Training and logging to MLflow...")
     results, best = run_experiments(
         features, tiers, cover,
-        {"minutes_excluded": dropped, "injections_in_log": len(ground_truth)},
+        {"minutes_excluded": dropped, "injections_in_log": injections_used},
     )
     print_summary(results, best)
     print(f"\nDone. Compare the runs at http://localhost:5000 (experiment '{MLFLOW_EXPERIMENT_NAME}').")

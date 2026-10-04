@@ -16,9 +16,12 @@ Outputs: memory_diagnosis.png, memory_diagnosis.csv (one row per injection),
 and a printed summary.
 
 Run: python3 diagnose_memory.py 2>&1 | tee diagnose_output.txt
+     python3 diagnose_memory.py --post-fix   (only data after the memory-injection fix;
+                                              writes files with a _postfix suffix)
 """
 
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -138,6 +141,13 @@ def main():
     rss = memory_series_mb(raw)
 
     features = t.build_features(raw)
+    png_path, csv_path = PNG_PATH, CSV_PATH
+    if "--post-fix" in sys.argv:
+        cutoff = pd.Timestamp(t.DATA_START)
+        ground_truth = [r for r in ground_truth if pd.Timestamp(r["timestamp"]) >= cutoff]
+        features = features[features.index >= cutoff]
+        png_path, csv_path = PNG_PATH.replace(".png", "_postfix.png"), CSV_PATH.replace(".csv", "_postfix.csv")
+        print(f"Post-fix mode: {len(ground_truth)} injections and {len(features)} minutes after {t.DATA_START}")
     spans, _ = t.expand_exclusions(t.EXCLUDE_WINDOWS, ground_truth)
     features, _ = t.drop_excluded(features, spans)
     tiers, cover = t.label_rows(features, ground_truth)
@@ -147,7 +157,7 @@ def main():
     if dyn.empty:
         print("No usable memory-leak injections found.")
         return
-    dyn.to_csv(CSV_PATH, index=False)
+    dyn.to_csv(csv_path, index=False)
     summary = dyn.drop(columns="start").describe().loc[["min", "25%", "50%", "75%", "max"]]
     print(summary.to_string(float_format=lambda v: f"{v:7.1f}"))
     print(f"\nBaseline memory before an injection: median {dyn['baseline_mb'].median():.0f} MiB, "
@@ -183,9 +193,9 @@ def main():
         print(f"- A single memory threshold finds only {best['full_above_p99'] * 100:.0f} percent of mostly-covered leak minutes, "
               "so memory itself overlaps with normal behaviour.")
 
-    if make_plot(rss, dyn, features, tiers, cover, PNG_PATH):
-        print(f"\nPlot saved to {PNG_PATH}")
-    print(f"Per-injection table saved to {CSV_PATH}")
+    if make_plot(rss, dyn, features, tiers, cover, png_path):
+        print(f"\nPlot saved to {png_path}")
+    print(f"Per-injection table saved to {csv_path}")
 
 
 if __name__ == "__main__":
