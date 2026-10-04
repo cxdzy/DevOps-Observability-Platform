@@ -22,6 +22,7 @@ Run: python3 diagnose_memory.py 2>&1 | tee diagnose_output.txt
 
 import os
 import sys
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
@@ -50,16 +51,16 @@ def injection_dynamics(rss, records, spans):
         ws, we = t.injection_span(rec)
         if any(ws < e and we > s for s, e in spans):
             continue  # contaminated by a benchmark or reboot
-        before = rss[(rss.index >= ws - pd.Timedelta(minutes=5)) & (rss.index < ws - pd.Timedelta(seconds=30))]
-        window = rss[(rss.index >= ws) & (rss.index <= we + pd.Timedelta(seconds=30))]
+        before = rss[(rss.index >= ws - timedelta(minutes=5)) & (rss.index < ws - timedelta(seconds=30))]
+        window = rss[(rss.index >= ws) & (rss.index <= we + timedelta(seconds=30))]
         if len(before) < 8 or window.empty:
             continue
         baseline = float(before.median())
         row = {"start": ws, "baseline_mb": baseline, "peak_mb": float(window.max())}
         row["rise_mb"] = row["peak_mb"] - baseline
         for m in RESIDUAL_MINUTES:
-            at = we + pd.Timedelta(minutes=m)
-            after = rss[(rss.index >= at) & (rss.index < at + pd.Timedelta(seconds=30))]
+            at = we + timedelta(minutes=m)
+            after = rss[(rss.index >= at) & (rss.index < at + timedelta(seconds=30))]
             row[f"residual_{m}min_mb"] = float(after.iloc[0]) - baseline if len(after) else np.nan
         rows.append(row)
     return pd.DataFrame(rows)
@@ -104,7 +105,7 @@ def make_plot(rss, dyn, features, tiers, cover, path):
     traces = []
     for _, r in dyn.iterrows():
         s = r["start"]
-        seg = rss[(rss.index >= s - pd.Timedelta(minutes=5)) & (rss.index <= s + pd.Timedelta(minutes=15))]
+        seg = rss[(rss.index >= s - timedelta(minutes=5)) & (rss.index <= s + timedelta(minutes=15))]
         x = np.round(((seg.index - s).total_seconds() / 60) * 4) / 4   # 15 s grid, in minutes
         y = seg.to_numpy() - r["baseline_mb"]
         ax1.plot(x, y, color="0.75", lw=0.7)

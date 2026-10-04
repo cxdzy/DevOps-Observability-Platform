@@ -30,6 +30,7 @@ Run: python3 train_anomaly_model.py 2>&1 | tee train_output.txt
 
 import json
 import os
+from datetime import timedelta
 
 import mlflow
 import mlflow.sklearn
@@ -206,19 +207,19 @@ EPOCH = pd.Timestamp("1970-01-01", tz="UTC")
 
 def injection_span(record, pad_s=0):
     start = pd.Timestamp(record["timestamp"])
-    end = start + pd.Timedelta(seconds=record["duration_seconds"])
-    return start - pd.Timedelta(seconds=pad_s), end + pd.Timedelta(seconds=pad_s)
+    end = start + timedelta(seconds=record["duration_seconds"])
+    return start - timedelta(seconds=pad_s), end + timedelta(seconds=pad_s)
 
 
 def overlaps(index, start, end):
     """Boolean array: does the minute starting at each index value overlap [start, end] at all?"""
-    row_end = index + pd.Timedelta(RESAMPLE)
+    row_end = index + timedelta(minutes=1)   # one RESAMPLE interval
     return np.asarray((index < end) & (row_end > start))
 
 
 def overlap_seconds(index, start, end):
     """Seconds of each minute (starting at each index value) that fall inside [start, end]."""
-    b = ((index - EPOCH) / pd.Timedelta(seconds=1)).to_numpy()
+    b = ((index - EPOCH) / timedelta(seconds=1)).to_numpy()
     s = (start - EPOCH).total_seconds()
     e = (end - EPOCH).total_seconds()
     return np.clip(np.minimum(b + 60, e) - np.maximum(b, s), 0, None)
