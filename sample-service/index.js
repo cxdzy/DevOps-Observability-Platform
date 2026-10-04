@@ -85,17 +85,29 @@ app.post('/simulate/cpu-spike', (req, res) => {
   burn();
 });
 
-// Medium tier: memory pressure building up, simulates a leak after deployment
+// Medium tier: memory pressure, simulates a leak after deployment.
+// The service must run with node --expose-gc. The buffer is released with an explicit
+// garbage collection when the injection ends, and older garbage is collected before a new
+// allocation. Without this the memory can stay resident for many minutes after the
+// injection, so the metrics stop matching the ground truth log.
+const collectGarbage = () => {
+  if (typeof global.gc === 'function') {
+    global.gc();
+  }
+};
+
 app.post('/simulate/memory-leak', (req, res) => {
   const sizeMb = parseInt(req.query.sizeMb) || 100;
   const durationSeconds = parseInt(req.query.duration) || 60;
 
-  const buffer = Buffer.alloc(sizeMb * 1024 * 1024, 'x');
-  memoryLeakBuffers.push(buffer);
+  collectGarbage();
+  memoryLeakBuffers.push(Buffer.alloc(sizeMb * 1024 * 1024, 'x'));
 
-  setTimeout(() => {
+  const releaseTimer = setTimeout(() => {
     memoryLeakBuffers = [];
+    collectGarbage();
   }, durationSeconds * 1000);
+  releaseTimer.unref();
 
   res.status(202).json({
     status: 'memory-leak started',

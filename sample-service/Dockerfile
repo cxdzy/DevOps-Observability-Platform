@@ -12,4 +12,4 @@ COPY index.js ./
 
 EXPOSE 4000
 USER node
-CMD ["node", "index.js"]
+CMD ["node", "--expose-gc", "index.js"]

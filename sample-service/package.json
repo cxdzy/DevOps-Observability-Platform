@@ -4,7 +4,7 @@
   "description": "FYP sample service for CI/CD pipeline demonstration and metrics exposure",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
+    "start": "node --expose-gc index.js",
     "test": "jest"
   },
   "dependencies": {
