@@ -97,6 +97,26 @@ services:
     networks:
       - obs-net
 
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    container_name: worker
+    restart: unless-stopped
+    environment:
+      - INFLUXDB_HOST=influxdb
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    volumes:
+      # Same absolute path as in the mlflow container, because models are loaded from the artifact store.
+      - /mlflow/artifacts:/mlflow/artifacts
+    mem_limit: 512m
+    memswap_limit: 512m
+    depends_on:
+      - influxdb
+      - mlflow
+    networks:
+      - obs-net
+
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: prometheus

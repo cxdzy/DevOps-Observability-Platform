@@ -102,11 +102,14 @@ EXCLUDE_WINDOWS = [
 
 # ---------------------------------------------------------------- data access
 
-def fetch_series(client, measurement):
-    """Returns one DataFrame (index: time, column: value) per series of the job."""
+def fetch_series(client, measurement, lookback=None, job=None):
+    """Returns one DataFrame (index: time, column: value) per series of the job.
+    lookback is an InfluxQL duration such as "168h" or "30m"."""
+    lookback = lookback or f"{LOOKBACK_HOURS}h"
+    job = job or JOB
     query = (
         f'SELECT "value" FROM "{measurement}" '
-        f"WHERE \"job\" = '{JOB}' AND time > now() - {LOOKBACK_HOURS}h GROUP BY *"
+        f"WHERE \"job\" = '{job}' AND time > now() - {lookback} GROUP BY *"
     )
     frames = []
     for _key, points in client.query(query).items():
@@ -118,21 +121,22 @@ def fetch_series(client, measurement):
     return frames
 
 
-def fetch_raw():
-    client = InfluxDBClient(host=INFLUXDB_HOST, port=INFLUXDB_PORT, database=INFLUXDB_DB)
+def fetch_raw(lookback=None, job=None, verbose=True, client=None):
+    client = client or InfluxDBClient(host=INFLUXDB_HOST, port=INFLUXDB_PORT, database=INFLUXDB_DB)
     raw = {
-        "cpu": fetch_series(client, "process_cpu_seconds_total"),
-        "memory": fetch_series(client, "process_resident_memory_bytes"),
-        "lat_sum": fetch_series(client, "http_request_duration_ms_sum"),
-        "lat_cnt": fetch_series(client, "http_request_duration_ms_count"),
+        "cpu": fetch_series(client, "process_cpu_seconds_total", lookback, job),
+        "memory": fetch_series(client, "process_resident_memory_bytes", lookback, job),
+        "lat_sum": fetch_series(client, "http_request_duration_ms_sum", lookback, job),
+        "lat_cnt": fetch_series(client, "http_request_duration_ms_count", lookback, job),
     }
     for name, frames in raw.items():
-        points = sum(len(f) for f in frames)
-        print(f"  {name}: {len(frames)} series, {points} points")
+        if verbose:
+            points = sum(len(f) for f in frames)
+            print(f"  {name}: {len(frames)} series, {points} points")
         if not frames:
             raise RuntimeError(
-                f"No data for '{name}' with job={JOB}. Check Prometheus remote_write "
-                "and that the sample service is being scraped."
+                f"No data for '{name}' with job={job or JOB}. Check Prometheus remote_write "
+                "and that the service is being scraped."
             )
     return raw
 
