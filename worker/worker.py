@@ -17,11 +17,13 @@ unusual a minute is. All fault types score in the same range, so the score canno
 separate a harmless CPU spike from a memory leak. The tier therefore comes from
 the signal that moved, and the score only decides whether to act at all.
 
-  model flags the minute, CPU moved                          tier 1 (low)     notify
-  model flags the minute, memory moved                       tier 2 (medium)  restart
-  model flags the minute, latency moved, recent deployment   tier 3 (high)    rollback
-  model flags the minute, latency moved, no deployment       tier 2 (medium)  restart
-  model flags the minute, no signal clearly moved            tier 1 (low)     notify
+  model flags the minute, CPU moved most                          tier 1 (low)     notify
+  model flags the minute, memory moved most                       tier 2 (medium)  restart
+  model flags the minute, latency moved most, recent deployment   tier 3 (high)    rollback
+  model flags the minute, latency moved most, no deployment       tier 2 (medium)  restart
+  model flags the minute, no signal clearly moved                 tier 1 (low)     notify
+
+"Moves most" means the largest deviation among the signals that moved.
 
 A signal has "moved" when it is at least DEV_MIN times its normal upper spread
 above its normal median. The normal range is measured from the last
@@ -224,16 +226,15 @@ def classify(row, flagged, reference, deployed):
         return result
 
     result["signals"] = ",".join(moved)
-    if "latency" in moved and deployed:
-        level, action, signal = 3, "rollback", "latency"
-    elif "latency" in moved or "memory" in moved:
+    # The dominant signal is the one that moved the most (in normal spreads). A CPU
+    # spike also nudges memory a little, so "any moved" would call it a memory fault.
+    signal = moved[0] if moved else "unclear"
+    if signal == "latency" and deployed:
+        level, action = 3, "rollback"
+    elif signal in ("latency", "memory"):
         level, action = 2, "restart"
-        signal = "latency" if "latency" in moved and "memory" not in moved else (
-            "memory" if "memory" in moved and "latency" not in moved else
-            max(("latency", "memory"), key=lambda n: devs[n]))
     else:
         level, action = 1, "notify"
-        signal = moved[0] if moved else "unclear"
     result.update(tier_level=level, tier=TIER_NAMES[level], action=action, signal=signal)
     return result
 
