@@ -106,11 +106,15 @@ services:
     environment:
       - INFLUXDB_HOST=influxdb
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - GROUND_TRUTH_LOG=/data/ground_truth_log.jsonl
     volumes:
       # Same absolute path as in the mlflow container, because models are loaded from the artifact store.
       - /mlflow/artifacts:/mlflow/artifacts
-    mem_limit: 512m
-    memswap_limit: 512m
+      # The injector's ground truth log (labels for the nightly retraining), read-only.
+      - ./scripts/ground_truth_log.jsonl:/data/ground_truth_log.jsonl:ro
+    # Raised from 512m: the nightly retraining loads a week of metrics.
+    mem_limit: 1g
+    memswap_limit: 1g
     depends_on:
       - influxdb
       - mlflow

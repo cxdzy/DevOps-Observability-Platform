@@ -32,17 +32,28 @@ REFERENCE_HOURS hours of minutes the model called normal.
 If the registry has no champion yet, the run tagged "selected" in the source
 experiment is registered as the first champion.
 
-Nightly retraining and champion promotion are added in a later part.
+Nightly retraining (part 2). Once a day at RETRAIN_HOUR_UTC it rebuilds the labelled
+dataset from the last week of live metrics and the ground truth log, trains the same
+candidate grid as the training script (Isolation Forest and One-Class SVM, two feature
+sets), and picks the best candidate on validation F1. The candidate becomes the new
+champion only if its test F1 beats the current champion's test F1 on the SAME test
+minutes by at least PROMOTE_MARGIN. The previous champion keeps the alias "previous"
+so a bad promotion can be undone in the MLflow UI. Every attempt is written to InfluxDB
+as the measurement "model_retrain" for Grafana and the report.
+
+  python worker.py                 run the scoring loop (with the nightly retraining)
+  python worker.py --retrain-now   run one retraining cycle and exit
 """
 
+import gc
 import logging
 import os
+import sys
 import time
 from datetime import timedelta
 
 import mlflow
 import mlflow.sklearn
-import numpy as np
 import pandas as pd
 from influxdb import InfluxDBClient
 from mlflow.exceptions import MlflowException
@@ -73,6 +84,15 @@ DEV_MIN = float(os.environ.get("DEV_MIN", "3"))
 REFERENCE_HOURS = int(os.environ.get("REFERENCE_HOURS", "24"))
 REFERENCE_REFRESH_SECONDS = int(os.environ.get("REFERENCE_REFRESH_SECONDS", "1800"))
 MIN_REFERENCE_POINTS = int(os.environ.get("MIN_REFERENCE_POINTS", "200"))
+
+# Nightly retraining
+RETRAIN_HOUR_UTC = int(os.environ.get("RETRAIN_HOUR_UTC", "19"))          # 19:00 UTC is 03:00 in Malaysia
+RETRAIN_ON_START = os.environ.get("RETRAIN_ON_START", "0") == "1"
+RETRAIN_EXPERIMENT = os.environ.get("RETRAIN_EXPERIMENT", "anomaly-retraining")
+PROMOTE_MARGIN = float(os.environ.get("PROMOTE_MARGIN", "0.01"))          # test F1 the challenger must win by
+MIN_TEST_ANOMALIES = int(os.environ.get("MIN_TEST_ANOMALIES", "10"))      # below this the comparison is not trusted
+RETRAIN_MEASUREMENT = os.environ.get("RETRAIN_MEASUREMENT", "model_retrain")
+t.GROUND_TRUTH_LOG = os.environ.get("GROUND_TRUTH_LOG", "/data/ground_truth_log.jsonl")
 
 # signal name -> feature column
 SIGNALS = {"cpu": "cpu_rate", "memory": "memory_max_mb", "latency": "latency_ms"}
@@ -321,6 +341,100 @@ def score_pending(influx, champion, now=None, state=None):
     return len(pending)
 
 
+# ---------------------------------------------------------------- retraining
+
+def next_retrain_time(now=None):
+    now = now or pd.Timestamp.now(tz="UTC")
+    target = now.floor("D") + timedelta(hours=RETRAIN_HOUR_UTC)
+    return target if target > now else target + timedelta(days=1)
+
+
+def load_dataset(influx):
+    """The labelled dataset the training script builds, from the live metrics."""
+    ground_truth = t.load_ground_truth()
+    features = t.build_features(t.fetch_raw(job=JOB, verbose=False, client=influx))
+    injections = len(ground_truth)
+    if t.DATA_START:
+        cutoff = pd.Timestamp(t.DATA_START)
+        features = features[features.index >= cutoff]
+        injections = sum(1 for r in ground_truth if pd.Timestamp(r["timestamp"]) >= cutoff)
+    spans, _ = t.expand_exclusions(t.EXCLUDE_WINDOWS, ground_truth)
+    features, dropped = t.drop_excluded(features, spans)
+    tiers, cover = t.label_rows(features, ground_truth)
+    return features, tiers, cover, {"minutes_excluded": dropped, "injections_in_log": injections}
+
+
+def champion_test_metrics(champion, features, tiers, cover):
+    """The champion's own decisions on the test minutes of the new dataset."""
+    i2 = int(len(features) * (t.TRAIN_FRACTION + t.VAL_FRACTION))
+    X = features[champion.columns].to_numpy()[i2:]
+    pred = champion.model.predict(X) == -1
+    scores = -champion.model.score_samples(X)
+    return t.evaluate(tiers.notna().to_numpy()[i2:], pred, scores, tiers.to_numpy()[i2:], cover[i2:])
+
+
+def promote(client, run_id, challenger_f1, champion_f1):
+    """Registers the run as a new model version and moves the champion alias to it."""
+    old = client.get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS)
+    version = mlflow.register_model(f"runs:/{run_id}/model", MODEL_NAME)
+    client.set_registered_model_alias(MODEL_NAME, "previous", old.version)
+    client.set_registered_model_alias(MODEL_NAME, MODEL_ALIAS, version.version)
+    client.set_model_version_tag(MODEL_NAME, version.version, "test_f1", f"{challenger_f1:.4f}")
+    client.set_model_version_tag(MODEL_NAME, version.version, "replaced_champion_test_f1", f"{champion_f1:.4f}")
+    return str(version.version)
+
+
+def retrain(influx, mlflow_client, champion):
+    """One retraining cycle. Returns a dict describing what happened."""
+    features, tiers, cover, info = load_dataset(influx)
+    i2 = int(len(features) * (t.TRAIN_FRACTION + t.VAL_FRACTION))
+    test_anomalies = int(tiers.notna().to_numpy()[i2:].sum())
+
+    t.MLFLOW_EXPERIMENT_NAME = RETRAIN_EXPERIMENT
+    results, best = t.run_experiments(features, tiers, cover, info)      # raises if there is too little data
+    challenger_f1 = float(best["test_f1_score"])
+    champion_f1 = float(champion_test_metrics(champion, features, tiers, cover)["f1_score"])
+
+    outcome = {
+        "minutes": len(features), "injections": info["injections_in_log"], "test_anomalies": test_anomalies,
+        "challenger_run": best["run"], "challenger_f1": challenger_f1,
+        "champion_version": champion.version, "champion_f1": champion_f1,
+        "promoted": 0, "new_version": "", "reason": "",
+    }
+    if test_anomalies < MIN_TEST_ANOMALIES:
+        outcome["reason"] = f"only {test_anomalies} anomalous test minutes"
+    elif challenger_f1 < champion_f1 + PROMOTE_MARGIN:
+        outcome["reason"] = f"challenger {challenger_f1:.3f} does not beat champion {champion_f1:.3f} by {PROMOTE_MARGIN}"
+    else:
+        outcome["new_version"] = promote(mlflow_client, best["run_id"], challenger_f1, champion_f1)
+        outcome["promoted"] = 1
+        outcome["reason"] = f"challenger {challenger_f1:.3f} beats champion {champion_f1:.3f}"
+    log.info("retraining finished: %s (%d minutes, %d injections, %d anomalous test minutes). Best candidate %s",
+             "PROMOTED to version " + outcome["new_version"] if outcome["promoted"] else "champion kept",
+             outcome["minutes"], outcome["injections"], test_anomalies, best["run"])
+    log.info("retraining reason: %s", outcome["reason"])
+
+    influx.write_points([{
+        "measurement": RETRAIN_MEASUREMENT,
+        "tags": {"job": JOB},
+        "time": pd.Timestamp.now(tz="UTC").isoformat(),
+        "fields": {k: (v if isinstance(v, (int, float)) else str(v)) for k, v in outcome.items()},
+    }])
+    return outcome
+
+
+def retrain_safely(influx, mlflow_client, champion):
+    """Runs retraining without ever stopping the scoring loop. Returns the champion to use next."""
+    try:
+        log.info("retraining started")
+        retrain(influx, mlflow_client, champion)
+        champion = maybe_reload(mlflow_client, champion)
+    except Exception:
+        log.exception("retraining failed, keeping the current champion")
+    gc.collect()
+    return champion
+
+
 # ---------------------------------------------------------------------- main
 
 def wait_for_champion(client):
@@ -341,7 +455,15 @@ def main():
     influx = InfluxDBClient(host=INFLUXDB_HOST, port=INFLUXDB_PORT, database=INFLUXDB_DB)
 
     champion = wait_for_champion(mlflow_client)
+
+    if "--retrain-now" in sys.argv:
+        outcome = retrain(influx, mlflow_client, champion)
+        print(outcome)
+        return
+
     next_reload = time.time() + RELOAD_CHECK_SECONDS
+    next_retrain = pd.Timestamp.now(tz="UTC") if RETRAIN_ON_START else next_retrain_time()
+    log.info("next retraining at %s UTC", next_retrain.strftime("%Y-%m-%d %H:%M"))
     state = {}
 
     while True:
@@ -351,6 +473,10 @@ def main():
                 champion = maybe_reload(mlflow_client, champion)
                 next_reload = started + RELOAD_CHECK_SECONDS
             score_pending(influx, champion, state=state)
+            if pd.Timestamp.now(tz="UTC") >= next_retrain:
+                champion = retrain_safely(influx, mlflow_client, champion)
+                next_retrain = next_retrain_time()
+                log.info("next retraining at %s UTC", next_retrain.strftime("%Y-%m-%d %H:%M"))
         except Exception:
             log.exception("loop failed, will retry next minute")
         time.sleep(max(1, LOOP_SECONDS - (time.time() - started)))
