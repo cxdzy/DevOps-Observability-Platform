@@ -1,5 +1,5 @@
 """
-Scoring worker, part 1: live anomaly scores.
+Scoring worker: live anomaly scores with signal attribution.
 
 Every minute it
   1. loads the champion model from the MLflow model registry and checks
@@ -7,13 +7,30 @@ Every minute it
   2. reads the latest raw sample-service metrics from InfluxDB,
   3. builds the same per-minute features the model was trained on,
   4. scores every completed minute that has not been scored yet,
-  5. writes the scores, and the features behind them, back to InfluxDB as the
-     measurement "anomaly_score", so Grafana, n8n and the LLM step can read them.
+  5. for every minute the model flags, works out WHICH signal moved (CPU, memory
+     or latency), checks for a recent deployment, and derives a tier and an action,
+  6. writes the result back to InfluxDB as the measurement "anomaly_score", so
+     Grafana, n8n and the LLM step can read it.
+
+Why attribution instead of score thresholds: the anomaly score only says how
+unusual a minute is. All fault types score in the same range, so the score cannot
+separate a harmless CPU spike from a memory leak. The tier therefore comes from
+the signal that moved, and the score only decides whether to act at all.
+
+  model flags the minute, CPU moved                          tier 1 (low)     notify
+  model flags the minute, memory moved                       tier 2 (medium)  restart
+  model flags the minute, latency moved, recent deployment   tier 3 (high)    rollback
+  model flags the minute, latency moved, no deployment       tier 2 (medium)  restart
+  model flags the minute, no signal clearly moved            tier 1 (low)     notify
+
+A signal has "moved" when it is at least DEV_MIN times its normal upper spread
+above its normal median. The normal range is measured from the last
+REFERENCE_HOURS hours of minutes the model called normal.
 
 If the registry has no champion yet, the run tagged "selected" in the source
 experiment is registered as the first champion.
 
-Nightly retraining and champion promotion are added in part 2.
+Nightly retraining and champion promotion are added in a later part.
 """
 
 import logging
@@ -23,6 +40,7 @@ from datetime import timedelta
 
 import mlflow
 import mlflow.sklearn
+import numpy as np
 import pandas as pd
 from influxdb import InfluxDBClient
 from mlflow.exceptions import MlflowException
@@ -40,18 +58,34 @@ MODEL_NAME = os.environ.get("MODEL_NAME", "anomaly-detector")
 MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "champion")
 SOURCE_EXPERIMENT = os.environ.get("SOURCE_EXPERIMENT", "anomaly-detection-v3")
 SCORE_MEASUREMENT = os.environ.get("SCORE_MEASUREMENT", "anomaly_score")
+DEPLOY_MEASUREMENT = os.environ.get("DEPLOY_MEASUREMENT", "deployment_event")
 
 LOOP_SECONDS = int(os.environ.get("LOOP_SECONDS", "60"))
 SETTLE_SECONDS = int(os.environ.get("SETTLE_SECONDS", "30"))       # wait for the last samples to arrive
 BACKFILL_MINUTES = int(os.environ.get("BACKFILL_MINUTES", "360"))  # history scored on the first start
 RELOAD_CHECK_SECONDS = int(os.environ.get("RELOAD_CHECK_SECONDS", "300"))
 
-# Alert tiers from the project proposal. NOT calibrated yet: the model's own
-# decision threshold (is_anomaly) can sit below TIER_LOW, so a flagged minute
-# may still show tier "none" until the thresholds are calibrated on validation scores.
-TIER_LOW = float(os.environ.get("TIER_LOW", "0.65"))
-TIER_MEDIUM = float(os.environ.get("TIER_MEDIUM", "0.75"))
-TIER_HIGH = float(os.environ.get("TIER_HIGH", "0.88"))
+# Attribution settings
+DEPLOY_WINDOW_MINUTES = int(os.environ.get("DEPLOY_WINDOW_MINUTES", "15"))
+DEV_MIN = float(os.environ.get("DEV_MIN", "3"))
+REFERENCE_HOURS = int(os.environ.get("REFERENCE_HOURS", "24"))
+REFERENCE_REFRESH_SECONDS = int(os.environ.get("REFERENCE_REFRESH_SECONDS", "1800"))
+MIN_REFERENCE_POINTS = int(os.environ.get("MIN_REFERENCE_POINTS", "200"))
+
+# signal name -> feature column
+SIGNALS = {"cpu": "cpu_rate", "memory": "memory_max_mb", "latency": "latency_ms"}
+
+# (median, p99) used until enough normal minutes exist to measure the real range
+FALLBACK_REFERENCE = {
+    "cpu_rate": (0.01, 0.03),
+    "memory_max_mb": (45.0, 65.0),
+    "latency_ms": (3.0, 15.0),
+}
+# smallest spread (p99 - median) that counts, so a very quiet signal does not
+# make tiny changes look like large deviations
+MIN_SPREAD = {"cpu_rate": 0.005, "memory_max_mb": 5.0, "latency_ms": 2.0}
+
+TIER_NAMES = {0: "none", 1: "low", 2: "medium", 3: "high"}
 
 log = logging.getLogger("worker")
 
@@ -111,17 +145,100 @@ def maybe_reload(client, champion):
     return champion
 
 
+# --------------------------------------------------------------- attribution
+
+def load_reference(influx, now=None):
+    """Median and p99 of each signal over the last REFERENCE_HOURS hours of normal minutes.
+
+    Returns (reference, source) where reference maps column -> (median, p99) and
+    source is "measured" or "fallback".
+    """
+    now = now or pd.Timestamp.now(tz="UTC")
+    since = (now - timedelta(hours=REFERENCE_HOURS)).isoformat()
+    cols = ", ".join(f'"{c}"' for c in SIGNALS.values())
+    query = (f'SELECT {cols} FROM "{SCORE_MEASUREMENT}" '
+             f'WHERE "job" = \'{JOB}\' AND "is_anomaly" = 0 AND time >= \'{since}\'')
+    df = pd.DataFrame(list(influx.query(query).get_points()))
+    if len(df) < MIN_REFERENCE_POINTS:
+        return dict(FALLBACK_REFERENCE), "fallback"
+
+    reference = {}
+    for column in SIGNALS.values():
+        values = pd.to_numeric(df[column], errors="coerce").dropna()
+        if values.empty:
+            reference[column] = FALLBACK_REFERENCE[column]
+        else:
+            reference[column] = (float(values.median()), float(values.quantile(0.99)))
+    return reference, "measured"
+
+
+def get_reference(influx, state, now=None):
+    """The reference, refreshed at most every REFERENCE_REFRESH_SECONDS."""
+    clock = time.time()
+    if state.get("reference") is None or clock >= state.get("reference_until", 0):
+        reference, source = load_reference(influx, now)
+        state["reference"] = reference
+        state["reference_source"] = source
+        state["reference_until"] = clock + REFERENCE_REFRESH_SECONDS
+        log.info("reference (%s): %s", source,
+                 ", ".join(f"{c} median {m:.3g} p99 {p:.3g}" for c, (m, p) in reference.items()))
+    return state["reference"]
+
+
+def read_deployments(influx, since):
+    """Timestamps of deployment events at or after `since`."""
+    query = (f'SELECT "commit_sha" FROM "{DEPLOY_MEASUREMENT}" '
+             f"WHERE time >= '{pd.Timestamp(since).isoformat()}'")
+    try:
+        points = list(influx.query(query).get_points())
+    except Exception:
+        log.exception("could not read deployment events")
+        return []
+    return sorted(pd.to_datetime([p["time"] for p in points], utc=True))
+
+
+def deployed_recently(minute, deployments):
+    """True if a deployment happened within DEPLOY_WINDOW_MINUTES before the end of this minute."""
+    end = minute + timedelta(minutes=1)
+    start = end - timedelta(minutes=DEPLOY_WINDOW_MINUTES)
+    return any(start <= d <= end for d in deployments)
+
+
+def deviation(column, value, reference):
+    """How many normal spreads the value sits above its normal median (never negative)."""
+    median, p99 = reference[column]
+    spread = max(p99 - median, MIN_SPREAD[column])
+    return max(0.0, (float(value) - median) / spread)
+
+
+def classify(row, flagged, reference, deployed):
+    """Tier, action and the signals behind them for one minute."""
+    devs = {name: deviation(column, row[column], reference) for name, column in SIGNALS.items()}
+    moved = [name for name, d in sorted(devs.items(), key=lambda kv: -kv[1]) if d >= DEV_MIN]
+
+    result = {
+        "tier_level": 0, "tier": "none", "action": "none", "signal": "none",
+        "signals": "", "recent_deployment": int(bool(deployed)), "devs": devs,
+    }
+    if not flagged:
+        return result
+
+    result["signals"] = ",".join(moved)
+    if "latency" in moved and deployed:
+        level, action, signal = 3, "rollback", "latency"
+    elif "latency" in moved or "memory" in moved:
+        level, action = 2, "restart"
+        signal = "latency" if "latency" in moved and "memory" not in moved else (
+            "memory" if "memory" in moved and "latency" not in moved else
+            max(("latency", "memory"), key=lambda n: devs[n]))
+    else:
+        level, action = 1, "notify"
+        signal = moved[0] if moved else "unclear"
+    result.update(tier_level=level, tier=TIER_NAMES[level], action=action, signal=signal)
+    return result
+
+
 # ------------------------------------------------------------------- scoring
-
-def tier_for(score):
-    if score >= TIER_HIGH:
-        return 3, "high"
-    if score >= TIER_MEDIUM:
-        return 2, "medium"
-    if score >= TIER_LOW:
-        return 1, "low"
-    return 0, "none"
-
 
 def score_features(champion, features):
     X = features[champion.columns].to_numpy()
@@ -130,21 +247,31 @@ def score_features(champion, features):
     return scores, flagged
 
 
-def make_points(champion, features, scores, flagged):
+def make_points(champion, features, scores, flagged, reference, deployments):
     points = []
     for (minute, row), score, flag in zip(features.iterrows(), scores, flagged):
-        level, name = tier_for(float(score))
+        c = classify(row, bool(flag), reference, deployed_recently(minute, deployments))
+        fields = {
+            "score": float(score),
+            "is_anomaly": int(flag),
+            "tier_level": c["tier_level"],
+            "tier": c["tier"],
+            "action": c["action"],
+            "signal": c["signal"],
+            "signals": c["signals"],
+            "recent_deployment": c["recent_deployment"],
+            "dev_cpu": float(c["devs"]["cpu"]),
+            "dev_memory": float(c["devs"]["memory"]),
+            "dev_latency": float(c["devs"]["latency"]),
+            **{c_name: float(row[c_name]) for c_name in t.ALL_FEATURES},
+        }
+        for column, (median, _) in reference.items():
+            fields[f"base_{column}"] = float(median)
         points.append({
             "measurement": SCORE_MEASUREMENT,
             "tags": {"job": JOB, "model": f"v{champion.version}"},
             "time": minute.isoformat(),
-            "fields": {
-                "score": float(score),
-                "is_anomaly": int(flag),
-                "tier_level": level,
-                "tier": name,
-                **{c: float(row[c]) for c in t.ALL_FEATURES},
-            },
+            "fields": fields,
         })
     return points
 
@@ -155,8 +282,9 @@ def read_last_scored(influx):
     return pd.to_datetime(points[0]["time"], utc=True) if points else None
 
 
-def score_pending(influx, champion, now=None):
+def score_pending(influx, champion, now=None, state=None):
     """Scores every completed, not yet scored minute. Returns the number of minutes written."""
+    state = state if state is not None else {}
     now = now or pd.Timestamp.now(tz="UTC")
     last_complete = (now - timedelta(seconds=60 + SETTLE_SECONDS)).floor("min")
 
@@ -174,11 +302,21 @@ def score_pending(influx, champion, now=None):
         return 0
 
     scores, flagged = score_features(champion, pending)
-    influx.write_points(make_points(champion, pending, scores, flagged))
-    level, name = tier_for(float(scores[-1]))
+    reference = get_reference(influx, state, now)
+    deployments = read_deployments(influx, first - timedelta(minutes=DEPLOY_WINDOW_MINUTES))
+    points = make_points(champion, pending, scores, flagged, reference, deployments)
+    influx.write_points(points)
+
+    for p, flag in zip(points, flagged):
+        f = p["fields"]
+        if flag:
+            log.warning("ALERT %s tier=%s action=%s signal=%s (signals: %s) score=%.3f deployment=%s "
+                        "cpu=%.3f mem=%.0f MB latency=%.0f ms",
+                        p["time"], f["tier"], f["action"], f["signal"], f["signals"] or "-", f["score"],
+                        bool(f["recent_deployment"]), f["cpu_rate"], f["memory_max_mb"], f["latency_ms"])
     log.info("scored %d minute(s) up to %s, latest score %.3f (tier %s, flagged %s, model v%s)",
-             len(pending), pending.index[-1].strftime("%Y-%m-%d %H:%M"), scores[-1], name,
-             bool(flagged[-1]), champion.version)
+             len(pending), pending.index[-1].strftime("%Y-%m-%d %H:%M"), scores[-1],
+             points[-1]["fields"]["tier"], bool(flagged[-1]), champion.version)
     return len(pending)
 
 
@@ -196,7 +334,6 @@ def wait_for_champion(client):
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     log.info("starting: job=%s, influx=%s:%s, mlflow=%s", JOB, INFLUXDB_HOST, INFLUXDB_PORT, MLFLOW_TRACKING_URI)
-    log.warning("tier thresholds %.2f / %.2f / %.2f are not calibrated yet", TIER_LOW, TIER_MEDIUM, TIER_HIGH)
 
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow_client = MlflowClient()
@@ -204,6 +341,7 @@ def main():
 
     champion = wait_for_champion(mlflow_client)
     next_reload = time.time() + RELOAD_CHECK_SECONDS
+    state = {}
 
     while True:
         started = time.time()
@@ -211,7 +349,7 @@ def main():
             if started >= next_reload:
                 champion = maybe_reload(mlflow_client, champion)
                 next_reload = started + RELOAD_CHECK_SECONDS
-            score_pending(influx, champion)
+            score_pending(influx, champion, state=state)
         except Exception:
             log.exception("loop failed, will retry next minute")
         time.sleep(max(1, LOOP_SECONDS - (time.time() - started)))
