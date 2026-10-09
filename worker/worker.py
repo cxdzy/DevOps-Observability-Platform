@@ -17,13 +17,14 @@ unusual a minute is. All fault types score in the same range, so the score canno
 separate a harmless CPU spike from a memory leak. The tier therefore comes from
 the signal that moved, and the score only decides whether to act at all.
 
-  model flags the minute, CPU moved most                          tier 1 (low)     notify
-  model flags the minute, memory moved most                       tier 2 (medium)  restart
-  model flags the minute, latency moved most, recent deployment   tier 3 (high)    rollback
-  model flags the minute, latency moved most, no deployment       tier 2 (medium)  restart
-  model flags the minute, no signal clearly moved                 tier 1 (low)     notify
+  model flags the minute, latency SEVERE, recent deployment      tier 3 (high)    rollback
+  model flags the minute, latency SEVERE, no deployment          tier 2 (medium)  restart
+  model flags the minute, memory moved                           tier 2 (medium)  restart
+  model flags the minute, CPU moved                              tier 1 (low)     notify
+  model flags the minute, only a mild latency rise or no signal  tier 1 (low)     notify
 
-"Moves most" means the largest deviation among the signals that moved.
+Latency is SEVERE at DEV_SEVERE (50) normal spreads, about 140 ms above normal. Milder rises
+are symptoms of other faults (a memory leak briefly gives about 60 ms, a CPU spike about 15 ms).
 
 A signal has "moved" when it is at least DEV_MIN times its normal upper spread
 above its normal median. The normal range is measured from the last
@@ -81,6 +82,7 @@ RELOAD_CHECK_SECONDS = int(os.environ.get("RELOAD_CHECK_SECONDS", "300"))
 # Attribution settings
 DEPLOY_WINDOW_MINUTES = int(os.environ.get("DEPLOY_WINDOW_MINUTES", "15"))
 DEV_MIN = float(os.environ.get("DEV_MIN", "3"))
+DEV_SEVERE = float(os.environ.get("DEV_SEVERE", "50"))   # latency this far above normal decides the tier
 REFERENCE_HOURS = int(os.environ.get("REFERENCE_HOURS", "24"))
 REFERENCE_REFRESH_SECONDS = int(os.environ.get("REFERENCE_REFRESH_SECONDS", "1800"))
 MIN_REFERENCE_POINTS = int(os.environ.get("MIN_REFERENCE_POINTS", "200"))
@@ -246,15 +248,22 @@ def classify(row, flagged, reference, deployed):
         return result
 
     result["signals"] = ",".join(moved)
-    # The dominant signal is the one that moved the most (in normal spreads). A CPU
-    # spike also nudges memory a little, so "any moved" would call it a memory fault.
-    signal = moved[0] if moved else "unclear"
-    if signal == "latency" and deployed:
-        level, action = 3, "rollback"
-    elif signal in ("latency", "memory"):
-        level, action = 2, "restart"
+    # Signals are not on the same scale, so "which moved most" is not a fair test: the
+    # first minute of a memory leak briefly slows the service (latency about 60 ms) and a
+    # CPU spike lifts latency to about 15 ms. Latency therefore only decides the tier when
+    # it is SEVERE (DEV_SEVERE normal spreads, about 140 ms). Below that, memory comes
+    # first, then CPU, and a mild latency rise on its own is only a notification.
+    if devs["latency"] >= DEV_SEVERE:
+        signal = "latency"
+        level, action = (3, "rollback") if deployed else (2, "restart")
+    elif "memory" in moved:
+        signal, level, action = "memory", 2, "restart"
+    elif "cpu" in moved:
+        signal, level, action = "cpu", 1, "notify"
+    elif "latency" in moved:
+        signal, level, action = "latency", 1, "notify"
     else:
-        level, action = 1, "notify"
+        signal, level, action = "unclear", 1, "notify"
     result.update(tier_level=level, tier=TIER_NAMES[level], action=action, signal=signal)
     return result
 
@@ -393,12 +402,18 @@ def retrain(influx, mlflow_client, champion):
     t.MLFLOW_EXPERIMENT_NAME = RETRAIN_EXPERIMENT
     results, best = t.run_experiments(features, tiers, cover, info)      # raises if there is too little data
     challenger_f1 = float(best["test_f1_score"])
-    champion_f1 = float(champion_test_metrics(champion, features, tiers, cover)["f1_score"])
+    cm = champion_test_metrics(champion, features, tiers, cover)
+    champion_f1 = float(cm["f1_score"])
 
     outcome = {
         "minutes": len(features), "injections": info["injections_in_log"], "test_anomalies": test_anomalies,
+        "test_start": str(features.index[i2]),
         "challenger_run": best["run"], "challenger_f1": challenger_f1,
+        "challenger_tp": int(best["test_true_positives"]), "challenger_fp": int(best["test_false_positives"]),
+        "challenger_fn": int(best["test_false_negatives"]),
         "champion_version": champion.version, "champion_f1": champion_f1,
+        "champion_tp": int(cm["true_positives"]), "champion_fp": int(cm["false_positives"]),
+        "champion_fn": int(cm["false_negatives"]),
         "promoted": 0, "new_version": "", "reason": "",
     }
     if test_anomalies < MIN_TEST_ANOMALIES:
