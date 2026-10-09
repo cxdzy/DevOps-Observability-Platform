@@ -204,7 +204,7 @@ EXAMPLE_FACTS = (
 )
 EXAMPLE_NOTE = (
     "What happened: Memory use climbed to 170 MB, about 6.3 times its normal 27 MB, for 2 minutes.\n"
-    "Likely cause: Likely a memory leak or a large memory allocation; no recent deployment is involved.\n"
+    "Likely cause: Likely a memory leak or a large memory allocation.\n"
     "Next step: The system response for this tier is to restart the container."
 )
 
@@ -300,6 +300,9 @@ def check_explanation(text, facts):
 
     if not facts["deployment"] and _positive_mention(low, DEPLOY_WORDS):
         problems.append("it mentions a deployment, but there was none")
+    if facts["deployment"] and re.search(
+            r"(no|not any|without( a| any)?|not (due|related|caused)[a-z ]* (to|by)( a| the| any)?)( recent)? (deployment|release|rollout)", low):
+        problems.append("it says there was no deployment, but there was one")
     return problems
 
 
@@ -503,6 +506,8 @@ def run_cycle(influx, memory, call_log, llm=call_ollama, now=None):
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    for noisy in ("chromadb.telemetry.product.posthog", "chromadb.telemetry"):
+        logging.getLogger(noisy).setLevel(logging.CRITICAL)
     log.info("starting: model=%s, ollama=%s, influx=%s:%s", OLLAMA_MODEL, OLLAMA_URL, INFLUXDB_HOST, INFLUXDB_PORT)
     influx = InfluxDBClient(host=INFLUXDB_HOST, port=INFLUXDB_PORT, database=INFLUXDB_DB)
     memory = Memory()
