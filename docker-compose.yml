@@ -121,6 +121,34 @@ services:
     networks:
       - obs-net
 
+  explainer:
+    build:
+      context: .
+      dockerfile: explainer/Dockerfile
+    container_name: explainer
+    restart: unless-stopped
+    environment:
+      - INFLUXDB_HOST=influxdb
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=qwen2.5:1.5b
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - CHROMA_PATH=/data/chroma
+      - ANONYMIZED_TELEMETRY=False
+    volumes:
+      - explainer-data:/data
+      - explainer-cache:/root/.cache
+    mem_limit: 512m
+    memswap_limit: 512m
+    depends_on:
+      - influxdb
+      - ollama
+      - postgres
+    networks:
+      - obs-net
+
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: prometheus
@@ -171,3 +199,5 @@ volumes:
   influxdb-data:
   prometheus-data:
   grafana-data:
+  explainer-data:
+  explainer-cache:

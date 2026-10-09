@@ -1,0 +1,5 @@
+influxdb==5.3.2
+pandas==2.2.3
+requests==2.32.3
+psycopg2-binary==2.9.9
+chromadb==0.5.15
