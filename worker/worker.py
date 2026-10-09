@@ -55,6 +55,7 @@ from datetime import timedelta
 
 import mlflow
 import mlflow.sklearn
+import numpy as np
 import pandas as pd
 from influxdb import InfluxDBClient
 from mlflow.exceptions import MlflowException
@@ -114,12 +115,19 @@ TIER_NAMES = {0: "none", 1: "low", 2: "medium", 3: "high"}
 log = logging.getLogger("worker")
 
 
+def decision_threshold(model):
+    """The score above which the model flags a minute (score = -score_samples, flagged when below offset_)."""
+    estimator = model[-1] if hasattr(model, "steps") else model
+    return float(-np.ravel(estimator.offset_)[0])
+
+
 class Champion:
     def __init__(self, model, columns, version, run_id):
         self.model = model
         self.columns = columns
         self.version = str(version)
         self.run_id = run_id
+        self.threshold = decision_threshold(model)
 
 
 # ------------------------------------------------------------------ registry
@@ -156,9 +164,10 @@ def load_champion(client):
     run = client.get_run(version.run_id)
     columns = run.data.params["features"].split(",")
     model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{version.version}")
-    log.info("loaded %s version %s (run %s), features: %s", MODEL_NAME, version.version,
-             version.run_id[:8], ", ".join(columns))
-    return Champion(model, columns, version.version, version.run_id)
+    champion = Champion(model, columns, version.version, version.run_id)
+    log.info("loaded %s version %s (run %s), features: %s, decision threshold %.3f", MODEL_NAME,
+             version.version, version.run_id[:8], ", ".join(columns), champion.threshold)
+    return champion
 
 
 def maybe_reload(client, champion):
@@ -283,6 +292,7 @@ def make_points(champion, features, scores, flagged, reference, deployments):
         c = classify(row, bool(flag), reference, deployed_recently(minute, deployments))
         fields = {
             "score": float(score),
+            "threshold": champion.threshold,
             "is_anomaly": int(flag),
             "tier_level": c["tier_level"],
             "tier": c["tier"],
