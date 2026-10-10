@@ -38,6 +38,7 @@ def load_explanations(client, since):
     df = pd.DataFrame(list(client.query(query).get_points()))
     if df.empty:
         raise SystemExit("No explanations found in InfluxDB yet.")
+    df["explanation"] = df["explanation"].str.replace("\\n", "\n", regex=False)
     df["time"] = pd.to_datetime(df["time"], utc=True)
     df["end_time"] = pd.to_datetime(df["end_time"], utc=True)
     return df.sort_values("time").reset_index(drop=True)
@@ -100,6 +101,13 @@ def main():
                                                  tier_ok=("tier_ok", "mean"),
                                                  template=("source", lambda s: (s == "template").mean()))
         print(by.round(2).to_string())
+
+    unmatched = df[df["truth_signal"] == "none"]
+    if len(unmatched):
+        print("\nIncidents with no matching injection (real load, or a false alarm worth a look):")
+        for _, row in unmatched.iterrows():
+            print(f"  {row['time']:%Y-%m-%d %H:%M} to {row['end_time']:%H:%M}  {row['signal']} / {row['tier']} "
+                  f"/ {row['minutes']} min")
 
     llm = df[df["source"] == "llm"]
     if len(llm):
