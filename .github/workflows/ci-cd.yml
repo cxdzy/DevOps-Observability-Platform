@@ -103,3 +103,9 @@ jobs:
               -p 127.0.0.1:4000:4000 \
               ${{ needs.build-and-push.outputs.image_tag }}
             docker image prune -f
+            # Record this deployment so the anomaly worker knows a deployment just happened.
+            # Written from inside the VPS (InfluxDB listens on 127.0.0.1:8086). A failure here
+            # never fails the deployment.
+            curl -sS -m 10 --fail -XPOST 'http://127.0.0.1:8086/write?db=prometheus' \
+              --data-binary "deployment_event,container_name=sample-service,branch=master,source=ci commit_sha=\"${{ github.sha }}\",pipeline_run_id=\"${{ github.run_id }}\",is_recent=true" \
+              && echo "deployment event recorded" || echo "WARNING: could not record deployment event"

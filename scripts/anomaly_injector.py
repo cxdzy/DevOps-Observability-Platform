@@ -67,7 +67,7 @@ def write_deployment_event(commit_sha, is_recent):
     matching the ERD's InfluxDB deployment_event measurement."""
     timestamp_ns = int(time.time() * 1e9)
     line = (
-        f"deployment_event,container_name=sample-service,branch=master "
+        f"deployment_event,container_name=sample-service,branch=master,source=simulated "
         f"commit_sha=\"{commit_sha}\",pipeline_run_id=\"{uuid.uuid4()}\","
         f"is_recent={str(is_recent).lower()} {timestamp_ns}"
     )
@@ -114,10 +114,10 @@ def inject(scenario):
     }
     log_event(record)
 
-    # Medium and high tier scenarios are framed as deployment-triggered,
-    # matching the three-tier remediation table's "recent deployment detected"
-    # condition for the high tier.
-    if scenario["tier"] in ("medium", "high"):
+    # Real deployments are recorded by the CI/CD pipeline (source=ci). The high tier needs a
+    # recent deployment before the system may roll back, so the high-tier test writes a
+    # simulated marker, tagged source=simulated so it can always be told apart from real ones.
+    if scenario["tier"] == "high":
         write_deployment_event(commit_sha=uuid.uuid4().hex[:7], is_recent=True)
 
     return duration
