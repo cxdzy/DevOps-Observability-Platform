@@ -603,7 +603,9 @@
         }
       ],
       "title": "Champion vs challenger F1 over time",
-      "type": "timeseries"
+      "type": "timeseries",
+      "timeFrom": "30d",
+      "hideTimeOverride": false
     },
     {
       "datasource": {
@@ -672,7 +674,9 @@
         }
       ],
       "title": "Retraining History",
-      "type": "table"
+      "type": "table",
+      "timeFrom": "30d",
+      "hideTimeOverride": false
     },
     {
       "datasource": {
@@ -738,7 +742,9 @@
         }
       ],
       "title": "Alert Count",
-      "type": "stat"
+      "type": "stat",
+      "timeFrom": "24h",
+      "hideTimeOverride": false
     },
     {
       "datasource": {
@@ -846,6 +852,6 @@
   "timezone": "browser",
   "title": "Anomaly Detection - Live",
   "uid": "eg0m83mriyfb4e",
-  "version": 8,
+  "version": 9,
   "weekStart": ""
 }
