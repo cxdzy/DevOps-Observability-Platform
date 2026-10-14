@@ -28,7 +28,11 @@ are symptoms of other faults (a memory leak briefly gives about 60 ms, a CPU spi
 
 A signal has "moved" when it is at least DEV_MIN times its normal upper spread
 above its normal median. The normal range is measured from the last
-REFERENCE_HOURS hours of minutes the model called normal.
+REFERENCE_HOURS hours of minutes the model called normal. A reference guard stops a
+model that misses anomalies from widening its own normal range: a new reference is only
+accepted if its spread is within REFERENCE_MAX_GROWTH times the smallest accepted spread
+of the last REFERENCE_ANCHOR_DAYS days (accepted references are kept in the measurement
+"reference_level").
 
 If the registry has no champion yet, the run tagged "selected" in the source
 experiment is registered as the first champion.
@@ -38,7 +42,8 @@ dataset from the last week of live metrics and the ground truth log, trains the 
 candidate grid as the training script (Isolation Forest and One-Class SVM, two feature
 sets), and picks the best candidate on validation F1. The candidate becomes the new
 champion only if its test F1 beats the current champion's test F1 on the SAME test
-minutes by at least PROMOTE_MARGIN. The previous champion keeps the alias "previous"
+minutes by at least PROMOTE_MARGIN and its recall is at least MIN_RECALL and no more than
+MAX_RECALL_DROP below the champion's. The previous champion keeps the alias "previous"
 so a bad promotion can be undone in the MLflow UI. Every attempt is written to InfluxDB
 as the measurement "model_retrain" for Grafana and the report.
 
@@ -87,6 +92,14 @@ DEV_SEVERE = float(os.environ.get("DEV_SEVERE", "50"))   # latency this far abov
 REFERENCE_HOURS = int(os.environ.get("REFERENCE_HOURS", "24"))
 REFERENCE_REFRESH_SECONDS = int(os.environ.get("REFERENCE_REFRESH_SECONDS", "1800"))
 MIN_REFERENCE_POINTS = int(os.environ.get("MIN_REFERENCE_POINTS", "200"))
+# Reference guard. The reference is measured from the minutes the model did NOT flag, so a model that
+# misses anomalies pollutes its own reference (seen on 12 to 14 October 2026: CPU p99 rose from 0.011
+# to 0.30 and latency p99 from 9 ms to 860 ms, which hid the next spikes). A new reference is only
+# accepted for a signal if its spread is at most REFERENCE_MAX_GROWTH times the smallest spread accepted in
+# the last REFERENCE_ANCHOR_DAYS days. Otherwise the last accepted reference for that signal is kept.
+REFERENCE_MEASUREMENT = os.environ.get("REFERENCE_MEASUREMENT", "reference_level")
+REFERENCE_MAX_GROWTH = float(os.environ.get("REFERENCE_MAX_GROWTH", "10"))
+REFERENCE_ANCHOR_DAYS = int(os.environ.get("REFERENCE_ANCHOR_DAYS", "7"))
 
 # Nightly retraining
 RETRAIN_HOUR_UTC = int(os.environ.get("RETRAIN_HOUR_UTC", "19"))          # 19:00 UTC is 03:00 in Malaysia
@@ -94,6 +107,10 @@ RETRAIN_ON_START = os.environ.get("RETRAIN_ON_START", "0") == "1"
 RETRAIN_EXPERIMENT = os.environ.get("RETRAIN_EXPERIMENT", "anomaly-retraining")
 PROMOTE_MARGIN = float(os.environ.get("PROMOTE_MARGIN", "0.01"))          # test F1 the challenger must win by
 MIN_TEST_ANOMALIES = int(os.environ.get("MIN_TEST_ANOMALIES", "10"))      # below this the comparison is not trusted
+# Promotion guard. A higher F1 alone is not enough: version 4 (decision threshold 0.664) won on F1 by
+# trading recall for precision and then missed a quarter of the injections for two days.
+MIN_RECALL = float(os.environ.get("MIN_RECALL", "0.90"))                  # the challenger must find at least this share
+MAX_RECALL_DROP = float(os.environ.get("MAX_RECALL_DROP", "0.05"))        # and may not lose more than this against the champion
 RETRAIN_MEASUREMENT = os.environ.get("RETRAIN_MEASUREMENT", "model_retrain")
 t.GROUND_TRUTH_LOG = os.environ.get("GROUND_TRUTH_LOG", "/data/ground_truth_log.jsonl")
 
@@ -205,11 +222,62 @@ def load_reference(influx, now=None):
     return reference, "measured"
 
 
+def _spread(column, median, p99):
+    return max(p99 - median, MIN_SPREAD[column])
+
+
+def read_reference_history(influx, now=None):
+    """Accepted references of the last REFERENCE_ANCHOR_DAYS days, oldest first."""
+    now = now or pd.Timestamp.now(tz="UTC")
+    since = (now - timedelta(days=REFERENCE_ANCHOR_DAYS)).isoformat()
+    query = (f'SELECT * FROM "{REFERENCE_MEASUREMENT}" WHERE "job" = \'{JOB}\' AND time >= \'{since}\'')
+    try:
+        return list(influx.query(query).get_points())
+    except Exception:
+        log.exception("could not read the reference history")
+        return []
+
+
+def guard_reference(influx, measured, now=None):
+    """Applies the reference guard to a freshly measured reference and records the accepted result.
+
+    Returns (reference, rejected_columns).
+    """
+    now = now or pd.Timestamp.now(tz="UTC")
+    history = read_reference_history(influx, now)
+    reference, rejected = {}, []
+    for column, (median, p99) in measured.items():
+        spreads = [_spread(column, h[f"{column}_median"], h[f"{column}_p99"]) for h in history
+                   if h.get(f"{column}_median") is not None and h.get(f"{column}_p99") is not None]
+        new_spread = _spread(column, median, p99)
+        if spreads and new_spread > REFERENCE_MAX_GROWTH * min(spreads):
+            last = [h for h in history if h.get(f"{column}_median") is not None][-1]
+            reference[column] = (float(last[f"{column}_median"]), float(last[f"{column}_p99"]))
+            rejected.append(column)
+            log.warning("reference rejected for %s: spread %.3g is %.0f times the smallest accepted spread %.3g "
+                        "of the last %d days (limit %.0f times). Keeping the last accepted reference.",
+                        column, new_spread, new_spread / min(spreads), min(spreads), REFERENCE_ANCHOR_DAYS,
+                        REFERENCE_MAX_GROWTH)
+        else:
+            reference[column] = (median, p99)
+    fields = {"rejected": ",".join(rejected)}
+    for column, (median, p99) in reference.items():
+        fields[f"{column}_median"], fields[f"{column}_p99"] = float(median), float(p99)
+    try:
+        influx.write_points([{"measurement": REFERENCE_MEASUREMENT, "tags": {"job": JOB},
+                              "time": now.isoformat(), "fields": fields}])
+    except Exception:
+        log.exception("could not record the reference")
+    return reference, rejected
+
+
 def get_reference(influx, state, now=None):
     """The reference, refreshed at most every REFERENCE_REFRESH_SECONDS."""
     clock = time.time()
     if state.get("reference") is None or clock >= state.get("reference_until", 0):
         reference, source = load_reference(influx, now)
+        if source == "measured":
+            reference, _ = guard_reference(influx, reference, now)
         state["reference"] = reference
         state["reference_source"] = source
         state["reference_until"] = clock + REFERENCE_REFRESH_SECONDS
@@ -403,6 +471,10 @@ def promote(client, run_id, challenger_f1, champion_f1):
     return str(version.version)
 
 
+def recall(tp, fn):
+    return float(tp) / (tp + fn) if (tp + fn) else 0.0
+
+
 def retrain(influx, mlflow_client, champion):
     """One retraining cycle. Returns a dict describing what happened."""
     features, tiers, cover, info = load_dataset(influx)
@@ -426,10 +498,19 @@ def retrain(influx, mlflow_client, champion):
         "champion_fn": int(cm["false_negatives"]),
         "promoted": 0, "new_version": "", "reason": "",
     }
+    challenger_recall = recall(outcome["challenger_tp"], outcome["challenger_fn"])
+    champion_recall = recall(outcome["champion_tp"], outcome["champion_fn"])
+    outcome["challenger_recall"], outcome["champion_recall"] = challenger_recall, champion_recall
     if test_anomalies < MIN_TEST_ANOMALIES:
         outcome["reason"] = f"only {test_anomalies} anomalous test minutes"
     elif challenger_f1 < champion_f1 + PROMOTE_MARGIN:
         outcome["reason"] = f"challenger {challenger_f1:.3f} does not beat champion {champion_f1:.3f} by {PROMOTE_MARGIN}"
+    elif challenger_recall < MIN_RECALL:
+        outcome["reason"] = (f"challenger F1 {challenger_f1:.3f} wins, but its recall {challenger_recall:.2f} "
+                             f"is below the minimum {MIN_RECALL:.2f}")
+    elif challenger_recall < champion_recall - MAX_RECALL_DROP:
+        outcome["reason"] = (f"challenger F1 {challenger_f1:.3f} wins, but its recall {challenger_recall:.2f} is more than "
+                             f"{MAX_RECALL_DROP:.2f} below the champion's {champion_recall:.2f}")
     else:
         outcome["new_version"] = promote(mlflow_client, best["run_id"], challenger_f1, champion_f1)
         outcome["promoted"] = 1
