@@ -20,6 +20,26 @@ scrape_configs:
     static_configs:
       - targets: ['sample-service:4000']
 
+  # Old Hetzner server (staging and Discord bot host), reached over Tailscale through small forwarders.
+  # Labelled server=old so it stays out of the InfluxDB copy used for ML training.
+  - job_name: node-exporter-old
+    static_configs:
+      - targets: ['100.118.186.120:9101']
+        labels:
+          server: old
+          instance: naqib-emqx-vps-1
+
+  - job_name: cadvisor-old
+    static_configs:
+      - targets: ['100.118.186.120:8081']
+        labels:
+          server: old
+          instance: naqib-emqx-vps-1
+
 # Long-term copy of every metric into InfluxDB (ML training dataset)
 remote_write:
   - url: http://influxdb:8086/api/v1/prom/write?db=prometheus
+    write_relabel_configs:
+      - source_labels: [server]
+        regex: old
+        action: drop
