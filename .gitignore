@@ -6,3 +6,8 @@ chroma/venv/
 node_modules/
 scripts/venv/
 scripts/injector.log
+
+# Local backups (may contain secrets)
+.env.bak.*
+*.bak.*
+*.env.bak*

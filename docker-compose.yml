@@ -7,6 +7,9 @@ services:
     network_mode: host
     command:
       - '--path.rootfs=/host'
+      # Bind to the docker0 bridge only (what host.docker.internal resolves to for Prometheus),
+      # so the exporter is not reachable from the internet.
+      - '--web.listen-address=172.17.0.1:9100'
     volumes:
       - '/:/host:ro,rslave'
 
@@ -79,7 +82,7 @@ services:
       - obs-net
 
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.35.1
     container_name: ollama
     restart: unless-stopped
     ports:
@@ -180,12 +183,32 @@ services:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
       - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      # Served to outsiders over HTTPS via the Cloudflare Tunnel
+      - GF_SERVER_ROOT_URL=https://${GRAFANA_HOSTNAME}
+      - GF_SECURITY_COOKIE_SECURE=true
+      - GF_SNAPSHOTS_EXTERNAL_ENABLED=false
+      # Needed for the shared anomaly dashboard (fixed server-side queries, behind Cloudflare Access)
+      - GF_PUBLIC_DASHBOARDS_ENABLED=true
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
       - influxdb
+    networks:
+      - obs-net
+
+  # Outbound-only tunnel to grafana.cxdzy.dev (behind Cloudflare Access). No published ports.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.0
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - grafana
     networks:
       - obs-net
 
