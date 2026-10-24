@@ -58,12 +58,11 @@ MLFLOW_EXPERIMENT_NAME = "anomaly-detection-v3"
 GROUND_TRUTH_LOG = os.path.join(SCRIPT_DIR, "ground_truth_log.jsonl")
 RESULTS_CSV = os.path.join(SCRIPT_DIR, "training_results.csv")
 
-# Only data from this moment on is used. The memory-leak injection was fixed so that it
-# releases its memory (the sample-service container restarted at 03:34:05 UTC on
-# 4 October 2026). Before that, memory stayed high for 10+ minutes after an injection and
-# 36 percent of injections had no visible effect, so the memory labels were not valid.
+# Only data from this moment on is used. Data before it is excluded because the platform
+# moved to a new server on 23 October 2026 (different hardware baseline) and
+# sample-service moved to Node 24 at 12:19 UTC the same day.
 # Set to None to use all data.
-DATA_START = "2026-10-04T03:35:00Z"
+DATA_START = "2026-10-23T12:19:00Z"
 
 RESAMPLE = "1min"
 MAX_GAP_S = 120          # a longer gap between two samples is treated as missing data
