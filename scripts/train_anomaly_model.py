@@ -60,9 +60,10 @@ RESULTS_CSV = os.path.join(SCRIPT_DIR, "training_results.csv")
 
 # Only data from this moment on is used. Data before it is excluded because the platform
 # moved to a new server on 23 October 2026 (different hardware baseline) and
-# sample-service moved to Node 24 at 12:19 UTC the same day.
+# sample-service moved to Node 24 at 12:19 UTC the same day. Memory settled at its new
+# level at about 15:00 UTC.
 # Set to None to use all data.
-DATA_START = "2026-10-23T12:19:00Z"
+DATA_START = "2026-10-23T15:00:00Z"
 
 RESAMPLE = "1min"
 MAX_GAP_S = 120          # a longer gap between two samples is treated as missing data
