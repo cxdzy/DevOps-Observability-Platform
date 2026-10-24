@@ -212,6 +212,32 @@ services:
     networks:
       - obs-net
 
+  # Notifications only. Localhost-only port, no Docker socket mounted.
+  n8n:
+    image: n8nio/n8n:2.42.6
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_SECURE_COOKIE=false
+      - GENERIC_TIMEZONE=UTC
+      - TZ=UTC
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_PERSONALIZATION_ENABLED=false
+    volumes:
+      - n8n-data:/home/node/.n8n
+    mem_limit: 768m
+    memswap_limit: 768m
+    depends_on:
+      - influxdb
+    networks:
+      - obs-net
+
 networks:
   obs-net:
     driver: bridge
@@ -224,3 +250,4 @@ volumes:
   grafana-data:
   explainer-data:
   explainer-cache:
+  n8n-data:
