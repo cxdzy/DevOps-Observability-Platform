@@ -37,6 +37,8 @@ INFLUXDB_DB = os.environ.get("INFLUXDB_DB", "prometheus")
 JOB = os.environ.get("JOB", "sample-service")
 SCORE_MEASUREMENT = os.environ.get("SCORE_MEASUREMENT", "anomaly_score")
 EXPLANATION_MEASUREMENT = os.environ.get("EXPLANATION_MEASUREMENT", "incident_explanation")
+OPEN_MEASUREMENT = os.environ.get("OPEN_MEASUREMENT", "incident_open")
+OPEN_MIN_TIER = int(os.environ.get("OPEN_MIN_TIER", "2"))                  # open incidents at this tier or higher are recorded early
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:1.5b")
@@ -480,13 +482,46 @@ def write_result(influx, facts, result, similar):
     }])
 
 
-def run_cycle(influx, memory, call_log, llm=call_ollama, now=None):
-    """Explains every closed, not yet explained incident. Returns the number explained."""
+def write_open(influx, incident, opened):
+    """Records an open incident at tier OPEN_MIN_TIER or higher once, so it can be seen before it closes.
+    Never raises: a failure here must not stop the explanations."""
+    try:
+        if incident["start"] in opened:
+            return
+        facts = build_facts(incident)
+        if facts["tier_level"] < OPEN_MIN_TIER:
+            return
+        influx.write_points([{
+            "measurement": OPEN_MEASUREMENT,
+            "tags": {"job": JOB},
+            "time": facts["start"].isoformat(),
+            "fields": {
+                "tier": facts["tier"], "tier_level": facts["tier_level"], "action": facts["action"],
+                "signal": facts["signal"], "peak_score": facts["peak_score"], "minutes": facts["minutes"],
+                "deployment": int(facts["deployment"]),
+            },
+        }])
+        opened.add(incident["start"])
+        log.info("open incident %s recorded (%s, tier %s)",
+                 facts["start"].strftime("%Y-%m-%d %H:%M"), facts["signal"], facts["tier"])
+    except Exception:
+        log.warning("could not record open incident %s", incident["start"], exc_info=True)
+
+
+def run_cycle(influx, memory, call_log, llm=call_ollama, now=None, opened=None):
+    """Explains every closed, not yet explained incident. Returns the number explained.
+    Open incidents are recorded first (write_open), so a backlog of closed ones cannot hide them."""
     now = now or pd.Timestamp.now(tz="UTC")
+    opened = opened if opened is not None else set()
     since = last_processed_end(influx) or (now - timedelta(hours=BACKFILL_HOURS))
     flagged = read_flagged(influx, since)
+    incidents = find_incidents(flagged)
+    still_open = [i for i in incidents if i["end"] > now - timedelta(minutes=CLOSE_AFTER_MINUTES)]
+    opened &= {i["start"] for i in still_open}         # forget incidents that have closed
+    for incident in still_open:
+        write_open(influx, incident, opened)
     done = 0
-    for incident in find_incidents(flagged):
+    for incident in incidents:
         if incident["end"] > now - timedelta(minutes=CLOSE_AFTER_MINUTES):
             break                                   # still open
         if done >= MAX_PER_CYCLE:
@@ -512,10 +547,11 @@ def main():
     influx = InfluxDBClient(host=INFLUXDB_HOST, port=INFLUXDB_PORT, database=INFLUXDB_DB)
     memory = Memory()
     call_log = CallLog()
+    opened = set()
     while True:
         started = time.time()
         try:
-            run_cycle(influx, memory, call_log)
+            run_cycle(influx, memory, call_log, opened=opened)
         except Exception:
             log.exception("cycle failed, will retry")
         time.sleep(max(1, LOOP_SECONDS - (time.time() - started)))
