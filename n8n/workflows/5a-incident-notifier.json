@@ -1,0 +1,141 @@
+{
+  "name": "5a Incident notifier",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "b6e6f87b-0af2-4d2a-bad7-4a37f3a83317",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "url": "http://influxdb:8086/query",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "db",
+              "value": "prometheus"
+            },
+            {
+              "name": "epoch",
+              "value": "ms"
+            },
+            {
+              "name": "q",
+              "value": "SELECT\n\"tier\",\"action\",\"signal\",\"peak_score\",\"minutes\",\"source\",\"deployment\",\"explanation\" FROM \"incident_explanation\" WHERE time > now() - 30m ORDER BY time ASC"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        224,
+        0
+      ],
+      "id": "cdfe51d1-183b-424e-82c4-1765a9e44a57",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "jsCode": "const store = $getWorkflowStaticData('global');\nconst res = $input.first().json;\nconst series = res.results && res.results[0] && res.results[0].series ? res.results[0].series[0] : null;\nif (!store.last) { store.last = Date.now(); return []; }   // first run: remember \"now\", send nothing old\nif (!series) return [];\nconst out = [];\nlet newest = store.last;\nfor (const row of series.values) {\n  const r = {};\n  series.columns.forEach((c, i) => { r[c] = row[i]; });\n  if (r.time > store.last) {\n    const explanation = String(r.explanation || '').replace(/\\\\n/g, '\\n');\n    const dep = r.deployment ? '\\nRecent deployment: yes' : '';\n    out.push({ json: { text:\n      `Incident: ${r.tier} tier, signal ${r.signal}\\n` +\n      `Planned action (not executed in this phase): ${r.action}\\n` +\n      `Peak score ${Number(r.peak_score).toFixed(2)}, ${r.minutes} min${dep}\\n\\n` + explanation } });\n    if (r.time > newest) newest = r.time;\n  }\n}\nstore.last = newest;\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "6caee809-aaec-428b-b6b1-79fbb4ce1446",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "chatId": "763653428",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        672,
+        0
+      ],
+      "id": "59342ef9-870d-4171-a717-2f976ea26129",
+      "name": "Send a text message",
+      "webhookId": "00476d37-8d49-483d-96d2-642aac94af9f",
+      "credentials": {
+        "telegramApi": {
+          "id": "Bvw7NQseUMpPlDDU",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "5c638f22-af0b-47df-a568-d1616fef9ef0",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "nodeGroups": [],
+  "id": "rCbxoSgVJURzSKd7",
+  "tags": []
+}
