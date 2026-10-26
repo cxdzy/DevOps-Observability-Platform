@@ -483,13 +483,16 @@ def write_result(influx, facts, result, similar):
 
 
 def write_open(influx, incident, opened):
-    """Records an open incident at tier OPEN_MIN_TIER or higher once, so it can be seen before it closes.
+    """Records an open incident at tier OPEN_MIN_TIER or higher, so it can be seen before it closes.
+    Rewritten (same timestamp, so it overwrites) only when minutes or tier_level has grown since the
+    last write; opened maps incident start -> (minutes, tier_level) last written.
     Never raises: a failure here must not stop the explanations."""
     try:
-        if incident["start"] in opened:
-            return
         facts = build_facts(incident)
         if facts["tier_level"] < OPEN_MIN_TIER:
+            return
+        last = opened.get(incident["start"])
+        if last and facts["minutes"] <= last[0] and facts["tier_level"] <= last[1]:
             return
         influx.write_points([{
             "measurement": OPEN_MEASUREMENT,
@@ -501,9 +504,9 @@ def write_open(influx, incident, opened):
                 "deployment": int(facts["deployment"]),
             },
         }])
-        opened.add(incident["start"])
-        log.info("open incident %s recorded (%s, tier %s)",
-                 facts["start"].strftime("%Y-%m-%d %H:%M"), facts["signal"], facts["tier"])
+        opened[incident["start"]] = (facts["minutes"], facts["tier_level"])
+        log.info("open incident %s recorded (%s, tier %s, %d min)",
+                 facts["start"].strftime("%Y-%m-%d %H:%M"), facts["signal"], facts["tier"], facts["minutes"])
     except Exception:
         log.warning("could not record open incident %s", incident["start"], exc_info=True)
 
@@ -512,12 +515,13 @@ def run_cycle(influx, memory, call_log, llm=call_ollama, now=None, opened=None):
     """Explains every closed, not yet explained incident. Returns the number explained.
     Open incidents are recorded first (write_open), so a backlog of closed ones cannot hide them."""
     now = now or pd.Timestamp.now(tz="UTC")
-    opened = opened if opened is not None else set()
+    opened = opened if opened is not None else {}
     since = last_processed_end(influx) or (now - timedelta(hours=BACKFILL_HOURS))
     flagged = read_flagged(influx, since)
     incidents = find_incidents(flagged)
     still_open = [i for i in incidents if i["end"] > now - timedelta(minutes=CLOSE_AFTER_MINUTES)]
-    opened &= {i["start"] for i in still_open}         # forget incidents that have closed
+    for start in set(opened) - {i["start"] for i in still_open}:
+        del opened[start]                               # forget incidents that have closed
     for incident in still_open:
         write_open(influx, incident, opened)
     done = 0
@@ -547,7 +551,7 @@ def main():
     influx = InfluxDBClient(host=INFLUXDB_HOST, port=INFLUXDB_PORT, database=INFLUXDB_DB)
     memory = Memory()
     call_log = CallLog()
-    opened = set()
+    opened = {}
     while True:
         started = time.time()
         try:
