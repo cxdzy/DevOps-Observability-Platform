@@ -37,7 +37,7 @@
             },
             {
               "name": "q",
-              "value": "SELECT\n\"tier\",\"action\",\"signal\",\"peak_score\",\"minutes\",\"source\",\"deployment\",\"explanation\" FROM \"incident_explanation\" WHERE time > now() - 30m ORDER BY time ASC"
+              "value": "SELECT\n\"tier\",\"action\",\"signal\",\"peak_score\",\"minutes\",\"source\",\"deployment\",\"explanation\" FROM \"incident_explanation\" WHERE time > now() - 3h ORDER BY time ASC"
             }
           ]
         },
@@ -131,7 +131,7 @@
     "executionOrder": "v1",
     "binaryMode": "separate"
   },
-  "versionId": "5c638f22-af0b-47df-a568-d1616fef9ef0",
+  "versionId": "937d052c-5471-4a17-b0fc-6ceab16ee364",
   "meta": {
     "templateCredsSetupCompleted": true
   },
