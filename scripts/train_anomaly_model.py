@@ -270,7 +270,8 @@ def label_rows(features, ground_truth):
 
 def candidate_models():
     models = []
-    for c in (0.05, 0.10, 0.15):
+    # Isolation Forest contamination grid (c05, c07, c10, c15). c07 adds a step between 0.05 and 0.10.
+    for c in (0.05, 0.07, 0.10, 0.15):
         models.append({
             "name": f"isolation_forest_c{round(c * 100):02d}",
             "algorithm": "isolation_forest",
@@ -323,7 +324,10 @@ def evaluate(y_true, y_pred, scores, tiers, cover):
     return metrics
 
 
-def run_experiments(features, tiers, cover, info):
+def run_experiments(features, tiers, cover, info, select=None):
+    """Trains and logs every candidate. The best one is the highest validation F1, unless select is
+    given: select(results, val_flags, val_index) then returns the chosen result, where val_flags maps
+    each run name to its flagged validation minutes. The test part is never used for the choice."""
     n = len(features)
     if n < MIN_ROWS:
         raise RuntimeError(
@@ -348,6 +352,7 @@ def run_experiments(features, tiers, cover, info):
     mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
 
     results = []
+    val_flags = {}
     for fset, cols in FEATURE_SETS.items():
         X = features[cols].to_numpy()
         for cfg in candidate_models():
@@ -360,8 +365,11 @@ def run_experiments(features, tiers, cover, info):
                 scores = -model.score_samples(X[sl])  # higher means more anomalous
                 m = evaluate(y[sl], pred, scores, tier_arr[sl], cover[sl])
                 metrics.update({f"{split_name}_{k}": v for k, v in m.items()})
+                if split_name == "val":
+                    flags_val = pred
 
             run_name = f"{fset}__{cfg['name']}"
+            val_flags[run_name] = flags_val
             with mlflow.start_run(run_name=run_name):
                 mlflow.log_params({
                     "feature_set": fset,
@@ -390,7 +398,10 @@ def run_experiments(features, tiers, cover, info):
                             "algorithm": cfg["algorithm"], **cfg["params"], **metrics})
             print(f"  {run_name}: validation F1 {metrics['val_f1_score']}, test F1 {metrics['test_f1_score']}")
 
-    best = max(results, key=lambda r: (r["val_f1_score"], r.get("val_roc_auc", 0)))
+    if select:
+        best = select(results, val_flags, features.index[i1:i2])
+    else:
+        best = max(results, key=lambda r: (r["val_f1_score"], r.get("val_roc_auc", 0)))
     MlflowClient().set_tag(best["run_id"], "selected", "true")
     return results, best
 

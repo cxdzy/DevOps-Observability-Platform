@@ -40,7 +40,9 @@ experiment is registered as the first champion.
 Nightly retraining (part 2). Once a day at RETRAIN_HOUR_UTC it rebuilds the labelled
 dataset from the last week of live metrics and the ground truth log, trains the same
 candidate grid as the training script (Isolation Forest and One-Class SVM, two feature
-sets), and picks the best candidate on validation F1. The candidate becomes the new
+sets), and picks the candidate with the best validation F1 among those that detect at least
+MIN_INJECTION_DETECTION of the validation injections (if none does, the best validation F1
+overall, which the guard then rejects). The test part is not used for the choice. The candidate becomes the new
 champion only if the test part holds at least MIN_TEST_INJECTIONS injections, its test F1
 beats the current champion's test F1 on the SAME test minutes by at least PROMOTE_MARGIN,
 it detects at least MIN_INJECTION_DETECTION of the test injections (at least one flagged
@@ -116,6 +118,7 @@ MIN_TEST_ANOMALIES = int(os.environ.get("MIN_TEST_ANOMALIES", "10"))      # belo
 MIN_TEST_INJECTIONS = int(os.environ.get("MIN_TEST_INJECTIONS", "20"))    # below this the injection rate is not trusted
 MIN_INJECTION_DETECTION = float(os.environ.get("MIN_INJECTION_DETECTION", "0.95"))  # share of test injections caught
 MIN_RECALL = float(os.environ.get("MIN_RECALL", "0.75"))                  # share of anomalous test minutes flagged
+MIN_VAL_INJECTIONS = int(os.environ.get("MIN_VAL_INJECTIONS", "5"))       # candidate selection needs this many validation injections
 RETRAIN_MEASUREMENT = os.environ.get("RETRAIN_MEASUREMENT", "model_retrain")
 t.GROUND_TRUTH_LOG = os.environ.get("GROUND_TRUTH_LOG", "/data/ground_truth_log.jsonl")
 
@@ -491,6 +494,25 @@ def injection_detection(test_index, flagged, ground_truth):
     return detected, total
 
 
+def choose_candidate(results, val_flags, val_index, ground_truth):
+    """The candidate with the highest validation F1 among those that detect at least MIN_INJECTION_DETECTION
+    of the validation injections, when the validation part holds at least MIN_VAL_INJECTIONS. If none is
+    eligible, the highest validation F1 overall. Uses only the validation part. Returns (best, eligible)."""
+    eligible = []
+    for r in results:
+        detected, total = injection_detection(val_index, val_flags[r["run"]], ground_truth)
+        r["val_inj_detected"], r["val_injections"] = detected, total
+        r["val_inj_rate"] = detected / total if total else 0.0
+        if total >= MIN_VAL_INJECTIONS and r["val_inj_rate"] >= MIN_INJECTION_DETECTION:
+            eligible.append(r)
+    key = lambda r: (r["val_f1_score"], r.get("val_roc_auc", 0))
+    best = max(eligible or results, key=key)
+    log.info("candidate selection: %d of %d candidates detect at least %.2f of the validation injections, "
+             "chose %s (validation F1 %.3f, %d of %d injections)", len(eligible), len(results),
+             MIN_INJECTION_DETECTION, best["run"], best["val_f1_score"], best["val_inj_detected"], best["val_injections"])
+    return best, len(eligible)
+
+
 def promotion_reason(o):
     """Why the challenger is kept out, or None if it may be promoted. o is the retraining outcome."""
     if o["test_anomalies"] < MIN_TEST_ANOMALIES:
@@ -532,7 +554,13 @@ def retrain(influx, mlflow_client, champion):
     test_anomalies = int(tiers.notna().to_numpy()[i2:].sum())
 
     t.MLFLOW_EXPERIMENT_NAME = RETRAIN_EXPERIMENT
-    results, best = t.run_experiments(features, tiers, cover, info)      # raises if there is too little data
+    chosen = {}
+
+    def select(results, val_flags, val_index):
+        best, chosen["eligible"] = choose_candidate(results, val_flags, val_index, info["ground_truth"])
+        return best
+
+    results, best = t.run_experiments(features, tiers, cover, info, select=select)   # raises if there is too little data
     challenger_f1 = float(best["test_f1_score"])
     cm, champion_flags = champion_test_metrics(champion, features, tiers, cover)
     champion_f1 = float(cm["f1_score"])
@@ -550,6 +578,7 @@ def retrain(influx, mlflow_client, champion):
         "champion_version": champion.version, "champion_f1": champion_f1,
         "champion_tp": int(cm["true_positives"]), "champion_fp": int(cm["false_positives"]),
         "champion_fn": int(cm["false_negatives"]),
+        "eligible_candidates": chosen["eligible"],
         "test_injections": test_injections,
         "challenger_inj_detected": challenger_inj,
         "challenger_inj_rate": challenger_inj / test_injections if test_injections else 0.0,
