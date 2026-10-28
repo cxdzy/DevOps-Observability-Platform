@@ -58,12 +58,11 @@ MLFLOW_EXPERIMENT_NAME = "anomaly-detection-v3"
 GROUND_TRUTH_LOG = os.path.join(SCRIPT_DIR, "ground_truth_log.jsonl")
 RESULTS_CSV = os.path.join(SCRIPT_DIR, "training_results.csv")
 
-# Only data from this moment on is used. Data before it is excluded because the platform
-# moved to a new server on 23 October 2026 (different hardware baseline) and
-# sample-service moved to Node 24 at 12:19 UTC the same day. Memory settled at its new
-# level at about 15:00 UTC.
+# Only data from this moment on is used. sample-service was restarted at about 17:29 and
+# 17:45 UTC on 26 October 2026, which shifted its memory baseline, so training restarts
+# after that.
 # Set to None to use all data.
-DATA_START = "2026-10-23T15:00:00Z"
+DATA_START = "2026-10-26T18:00:00Z"
 
 RESAMPLE = "1min"
 MAX_GAP_S = 120          # a longer gap between two samples is treated as missing data

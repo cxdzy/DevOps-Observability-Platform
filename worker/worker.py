@@ -41,9 +41,10 @@ Nightly retraining (part 2). Once a day at RETRAIN_HOUR_UTC it rebuilds the labe
 dataset from the last week of live metrics and the ground truth log, trains the same
 candidate grid as the training script (Isolation Forest and One-Class SVM, two feature
 sets), and picks the best candidate on validation F1. The candidate becomes the new
-champion only if its test F1 beats the current champion's test F1 on the SAME test
-minutes by at least PROMOTE_MARGIN and its recall is at least MIN_RECALL and no more than
-MAX_RECALL_DROP below the champion's. The previous champion keeps the alias "previous"
+champion only if the test part holds at least MIN_TEST_INJECTIONS injections, its test F1
+beats the current champion's test F1 on the SAME test minutes by at least PROMOTE_MARGIN,
+it detects at least MIN_INJECTION_DETECTION of the test injections (at least one flagged
+minute each) and its minute recall is at least MIN_RECALL. The previous champion keeps the alias "previous"
 so a bad promotion can be undone in the MLflow UI. Every attempt is written to InfluxDB
 as the measurement "model_retrain" for Grafana and the report.
 
@@ -108,9 +109,13 @@ RETRAIN_EXPERIMENT = os.environ.get("RETRAIN_EXPERIMENT", "anomaly-retraining")
 PROMOTE_MARGIN = float(os.environ.get("PROMOTE_MARGIN", "0.01"))          # test F1 the challenger must win by
 MIN_TEST_ANOMALIES = int(os.environ.get("MIN_TEST_ANOMALIES", "10"))      # below this the comparison is not trusted
 # Promotion guard. A higher F1 alone is not enough: version 4 (decision threshold 0.664) won on F1 by
-# trading recall for precision and then missed a quarter of the injections for two days.
-MIN_RECALL = float(os.environ.get("MIN_RECALL", "0.90"))                  # the challenger must find at least this share
-MAX_RECALL_DROP = float(os.environ.get("MAX_RECALL_DROP", "0.05"))        # and may not lose more than this against the champion
+# trading recall for precision and then missed a quarter of the injections for two days. What matters
+# is that every injection is caught at least once, so the main guard counts injections, not minutes.
+# Minute recall stays as a looser check, because partly covered minutes (10 to 45 s of an
+# injection) are often not flagged even when the injection itself is caught.
+MIN_TEST_INJECTIONS = int(os.environ.get("MIN_TEST_INJECTIONS", "20"))    # below this the injection rate is not trusted
+MIN_INJECTION_DETECTION = float(os.environ.get("MIN_INJECTION_DETECTION", "0.95"))  # share of test injections caught
+MIN_RECALL = float(os.environ.get("MIN_RECALL", "0.75"))                  # share of anomalous test minutes flagged
 RETRAIN_MEASUREMENT = os.environ.get("RETRAIN_MEASUREMENT", "model_retrain")
 t.GROUND_TRUTH_LOG = os.environ.get("GROUND_TRUTH_LOG", "/data/ground_truth_log.jsonl")
 
@@ -448,16 +453,61 @@ def load_dataset(influx):
     spans, _ = t.expand_exclusions(t.EXCLUDE_WINDOWS, ground_truth)
     features, dropped = t.drop_excluded(features, spans)
     tiers, cover = t.label_rows(features, ground_truth)
-    return features, tiers, cover, {"minutes_excluded": dropped, "injections_in_log": injections}
+    return features, tiers, cover, {"minutes_excluded": dropped, "injections_in_log": injections,
+                                    "ground_truth": ground_truth}
 
 
 def champion_test_metrics(champion, features, tiers, cover):
-    """The champion's own decisions on the test minutes of the new dataset."""
+    """The champion's own decisions on the test minutes of the new dataset. Returns (metrics, flagged)."""
     i2 = int(len(features) * (t.TRAIN_FRACTION + t.VAL_FRACTION))
     X = features[champion.columns].to_numpy()[i2:]
     pred = champion.model.predict(X) == -1
     scores = -champion.model.score_samples(X)
-    return t.evaluate(tiers.notna().to_numpy()[i2:], pred, scores, tiers.to_numpy()[i2:], cover[i2:])
+    return t.evaluate(tiers.notna().to_numpy()[i2:], pred, scores, tiers.to_numpy()[i2:], cover[i2:]), pred
+
+
+def challenger_test_flags(best, features):
+    """The challenger's decisions on the test minutes, from the model logged by run_experiments."""
+    i2 = int(len(features) * (t.TRAIN_FRACTION + t.VAL_FRACTION))
+    model = mlflow.sklearn.load_model(f"runs:/{best['run_id']}/model")
+    X = features[t.FEATURE_SETS[best["feature_set"]]].to_numpy()[i2:]
+    return model.predict(X) == -1
+
+
+def injection_detection(test_index, flagged, ground_truth):
+    """(detected, total) over the injections with at least one labelled minute in test_index.
+    An injection counts as detected if at least one of its labelled minutes is flagged.
+    Labelled means the same rule as label_rows (LABEL_MIN_OVERLAP_S), so excluded injections,
+    which have no minutes left, are not counted."""
+    detected = total = 0
+    for rec in ground_truth:
+        if not rec.get("triggered_successfully"):
+            continue
+        start, end = t.injection_span(rec)
+        labelled = t.overlap_seconds(test_index, start, end) >= t.LABEL_MIN_OVERLAP_S
+        if labelled.any():
+            total += 1
+            detected += int(flagged[labelled].any())
+    return detected, total
+
+
+def promotion_reason(o):
+    """Why the challenger is kept out, or None if it may be promoted. o is the retraining outcome."""
+    if o["test_anomalies"] < MIN_TEST_ANOMALIES:
+        return f"only {o['test_anomalies']} anomalous test minutes (need {MIN_TEST_ANOMALIES}), champion kept"
+    if o["test_injections"] < MIN_TEST_INJECTIONS:
+        return f"only {o['test_injections']} test injections (need {MIN_TEST_INJECTIONS}), champion kept"
+    if o["challenger_f1"] < o["champion_f1"] + PROMOTE_MARGIN:
+        return (f"challenger {o['challenger_f1']:.3f} does not beat champion {o['champion_f1']:.3f} "
+                f"by {PROMOTE_MARGIN}")
+    if o["challenger_inj_rate"] < MIN_INJECTION_DETECTION:
+        return (f"challenger F1 {o['challenger_f1']:.3f} wins, but it detects only {o['challenger_inj_detected']} "
+                f"of {o['test_injections']} test injections ({o['challenger_inj_rate']:.2f}), "
+                f"below the minimum {MIN_INJECTION_DETECTION:.2f}")
+    if o["challenger_recall"] < MIN_RECALL:
+        return (f"challenger F1 {o['challenger_f1']:.3f} wins, but its minute recall {o['challenger_recall']:.2f} "
+                f"is below the minimum {MIN_RECALL:.2f}")
+    return None
 
 
 def promote(client, run_id, challenger_f1, champion_f1):
@@ -484,8 +534,12 @@ def retrain(influx, mlflow_client, champion):
     t.MLFLOW_EXPERIMENT_NAME = RETRAIN_EXPERIMENT
     results, best = t.run_experiments(features, tiers, cover, info)      # raises if there is too little data
     challenger_f1 = float(best["test_f1_score"])
-    cm = champion_test_metrics(champion, features, tiers, cover)
+    cm, champion_flags = champion_test_metrics(champion, features, tiers, cover)
     champion_f1 = float(cm["f1_score"])
+    challenger_flags = challenger_test_flags(best, features)
+    test_index = features.index[i2:]
+    challenger_inj, test_injections = injection_detection(test_index, challenger_flags, info["ground_truth"])
+    champion_inj, _ = injection_detection(test_index, champion_flags, info["ground_truth"])
 
     outcome = {
         "minutes": len(features), "injections": info["injections_in_log"], "test_anomalies": test_anomalies,
@@ -496,21 +550,19 @@ def retrain(influx, mlflow_client, champion):
         "champion_version": champion.version, "champion_f1": champion_f1,
         "champion_tp": int(cm["true_positives"]), "champion_fp": int(cm["false_positives"]),
         "champion_fn": int(cm["false_negatives"]),
+        "test_injections": test_injections,
+        "challenger_inj_detected": challenger_inj,
+        "challenger_inj_rate": challenger_inj / test_injections if test_injections else 0.0,
+        "champion_inj_detected": champion_inj,
+        "champion_inj_rate": champion_inj / test_injections if test_injections else 0.0,
         "promoted": 0, "new_version": "", "reason": "",
     }
     challenger_recall = recall(outcome["challenger_tp"], outcome["challenger_fn"])
     champion_recall = recall(outcome["champion_tp"], outcome["champion_fn"])
     outcome["challenger_recall"], outcome["champion_recall"] = challenger_recall, champion_recall
-    if test_anomalies < MIN_TEST_ANOMALIES:
-        outcome["reason"] = f"only {test_anomalies} anomalous test minutes"
-    elif challenger_f1 < champion_f1 + PROMOTE_MARGIN:
-        outcome["reason"] = f"challenger {challenger_f1:.3f} does not beat champion {champion_f1:.3f} by {PROMOTE_MARGIN}"
-    elif challenger_recall < MIN_RECALL:
-        outcome["reason"] = (f"challenger F1 {challenger_f1:.3f} wins, but its recall {challenger_recall:.2f} "
-                             f"is below the minimum {MIN_RECALL:.2f}")
-    elif challenger_recall < champion_recall - MAX_RECALL_DROP:
-        outcome["reason"] = (f"challenger F1 {challenger_f1:.3f} wins, but its recall {challenger_recall:.2f} is more than "
-                             f"{MAX_RECALL_DROP:.2f} below the champion's {champion_recall:.2f}")
+    reason = promotion_reason(outcome)
+    if reason:
+        outcome["reason"] = reason
     else:
         outcome["new_version"] = promote(mlflow_client, best["run_id"], challenger_f1, champion_f1)
         outcome["promoted"] = 1
