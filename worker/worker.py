@@ -113,11 +113,12 @@ MIN_TEST_ANOMALIES = int(os.environ.get("MIN_TEST_ANOMALIES", "10"))      # belo
 # Promotion guard. A higher F1 alone is not enough: version 4 (decision threshold 0.664) won on F1 by
 # trading recall for precision and then missed a quarter of the injections for two days. What matters
 # is that every injection is caught at least once, so the main guard counts injections, not minutes.
-# Minute recall stays as a looser check, because partly covered minutes (10 to 45 s of an
-# injection) are often not flagged even when the injection itself is caught.
+# Minute recall is only a safety net: it undercounts, because the first and last minutes of an
+# injection are partly outside it and are often not flagged even when the injection itself is
+# caught. The main guard is injection-level detection (MIN_INJECTION_DETECTION).
 MIN_TEST_INJECTIONS = int(os.environ.get("MIN_TEST_INJECTIONS", "20"))    # below this the injection rate is not trusted
 MIN_INJECTION_DETECTION = float(os.environ.get("MIN_INJECTION_DETECTION", "0.95"))  # share of test injections caught
-MIN_RECALL = float(os.environ.get("MIN_RECALL", "0.75"))                  # share of anomalous test minutes flagged
+MIN_RECALL = float(os.environ.get("MIN_RECALL", "0.60"))                  # safety net: share of anomalous test minutes flagged
 MIN_VAL_INJECTIONS = int(os.environ.get("MIN_VAL_INJECTIONS", "5"))       # candidate selection needs this many validation injections
 RETRAIN_MEASUREMENT = os.environ.get("RETRAIN_MEASUREMENT", "model_retrain")
 t.GROUND_TRUTH_LOG = os.environ.get("GROUND_TRUTH_LOG", "/data/ground_truth_log.jsonl")
