@@ -1,0 +1,439 @@
+{
+  "name": "5b Restart with approval",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const store = $getWorkflowStaticData('global');\nstore.lastRestart = Date.now();\nconst pick = $('Pick incident').first().json;\nconst res = $input.first().json;\nconst result = res.data && res.data.result && res.data.result[0];\nconst up = result ? String(result.value[1]) === '1' : false;\nconst mode = pick.auto ? 'auto' : 'approved';\nconst how = pick.auto ? 'Automatic restart' : 'Approved restart';\nconst text = `${how} of sample-service (signal ${pick.signal}, ${pick.minutes} flagged minutes). ` +\n  (up ? 'Monitoring shows it is up again (checked 60 seconds after the restart).'\n      : 'Monitoring does not show it as up yet. Please check it.');\nreturn [{ json: { text, mode, signal: pick.signal, minutes: Math.round(Number(pick.minutes)), up: up ? 1 : 0, at: Date.now() - 60000 } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1632,
+        -16
+      ],
+      "id": "1af8786f-a68c-4128-a477-787c9eea4e67",
+      "name": "Build Result"
+    },
+    {
+      "parameters": {
+        "url": "http://influxdb:8086/query",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "db",
+              "value": "prometheus"
+            },
+            {
+              "name": "epoch",
+              "value": "ms"
+            },
+            {
+              "name": "q",
+              "value": "SELECT \"tier\",\"action\",\"signal\",\"peak_score\",\"minutes\",\"deployment\" FROM \"incident_open\" WHERE time > now() - 3h ORDER BY time ASC"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        64,
+        192
+      ],
+      "id": "7b7dbb5a-be18-4acb-ad30-dccd214ff6be",
+      "name": "Query incident_open"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://docker-socket-proxy:2375/containers/sample-service/restart?t=10",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        976,
+        -16
+      ],
+      "id": "5fc384ed-642e-4b4f-a514-3ab1ed368594",
+      "name": "Restart sample-service"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -112,
+        16
+      ],
+      "id": "ae7b844d-6f6a-4810-b178-486183fdc4a7",
+      "name": "Every minute"
+    },
+    {
+      "parameters": {
+        "jsCode": "const AUTO = false;           // true: restart without asking once an incident has 2 flagged minutes. false: ask on Telegram first\nconst MIN_MINUTES_AUTO = 2;\nconst COOLDOWN_MS = 10 * 60 * 1000;\nconst store = $getWorkflowStaticData('global');\nconst res = $input.first().json;\nconst series = res.results && res.results[0] && res.results[0].series ? res.results[0].series[0] : null;\nconst rows = [];\nif (series) {\n  for (const v of series.values) {\n    const r = {};\n    series.columns.forEach((c, i) => { r[c] = v[i]; });\n    rows.push(r);\n  }\n}\nstore.handled = store.handled || {};\nif (!store.init) {\n  rows.forEach(r => { store.handled[r.time] = true; });\n  store.init = true;\n  return [];\n}\nconst now = Date.now();\nfor (const t of Object.keys(store.handled)) {\n  if (now - Number(t) > 12 * 3600 * 1000) delete store.handled[t];\n}\nfor (const r of rows) {\n  if (store.handled[r.time]) continue;\n  if (r.action !== 'restart') { store.handled[r.time] = true; continue; }\n  if (AUTO && Number(r.minutes) < MIN_MINUTES_AUTO) continue;\n  store.handled[r.time] = true;\n  if (store.lastRestart && now - store.lastRestart < COOLDOWN_MS) continue;\n  const dep = r.deployment ? '\\nRecent deployment: yes' : '';\n  return [{ json: { auto: AUTO, signal: r.signal, minutes: r.minutes, text:\n    `Medium incident on sample-service, signal ${r.signal}\\n` +\n    `Peak score ${Number(r.peak_score).toFixed(2)}, ${r.minutes} min so far${dep}\\n\\n` +\n    `Restart sample-service now?` } }];\n}\nreturn [];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        272,
+        -32
+      ],
+      "id": "d4adf650-a3af-4bda-9e0a-5e00bb2971c4",
+      "name": "Pick incident"
+    },
+    {
+      "parameters": {
+        "operation": "sendAndWait",
+        "chatId": "763653428",
+        "message": "={{ $json.text }}",
+        "approvalOptions": {
+          "values": {
+            "approvalType": "double"
+          }
+        },
+        "options": {
+          "limitWaitTime": {
+            "values": {
+              "resumeAmount": 15,
+              "resumeUnit": "minutes"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        608,
+        96
+      ],
+      "id": "fa6e6b97-203b-440e-9ac8-950befd65f06",
+      "name": "Ask for approval",
+      "webhookId": "9b5c0f23-b32b-4b3e-9901-40d6ad3fc6aa",
+      "credentials": {
+        "telegramApi": {
+          "id": "Bvw7NQseUMpPlDDU",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "e65344ed-1660-4c4a-8824-16c1ef990e5c",
+              "leftValue": "={{ $json.data ? $json.data.approved : false }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        816,
+        -112
+      ],
+      "id": "48da92db-6b49-4e8b-a917-8e348bf28812",
+      "name": "Approved?"
+    },
+    {
+      "parameters": {
+        "amount": 60
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1168,
+        -16
+      ],
+      "id": "d5bf8e79-2a37-4fb9-98d9-730ce45cde90",
+      "name": "Wait 60 s",
+      "webhookId": "202088b7-ca34-4366-b40f-8d6eb7a4599e"
+    },
+    {
+      "parameters": {
+        "chatId": "763653428",
+        "text": "=",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1840,
+        -16
+      ],
+      "id": "95ca09d3-9243-48e5-ac92-273bfc9c1f60",
+      "name": "Send result",
+      "webhookId": "1e932e98-4f00-4867-8126-420e9c7196f8",
+      "credentials": {
+        "telegramApi": {
+          "id": "Bvw7NQseUMpPlDDU",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "http://prometheus:9090/api/v1/query",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "up{job=\"sample-service\"}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1408,
+        -16
+      ],
+      "id": "41c88476-0675-4e51-a9e9-0365c0c261e2",
+      "name": "Check service is up"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "522a9d2a-ed2b-4db5-969a-c4393d3fdcbe",
+              "leftValue": "={{ $json.auto }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        448,
+        32
+      ],
+      "id": "ff6e4427-ae25-4278-9f47-464eda7fdff6",
+      "name": "Auto mode?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://influxdb:8086/write",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "db",
+              "value": "prometheus"
+            },
+            {
+              "name": "precision",
+              "value": "ms"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "body": "=remediation_action,job=sample-service,mode={{ $json.mode }} action=\"restart\",signal=\"{{ $json.signal }}\",minutes={{ $json.minutes }}i,service_up={{ $json.up }}i {{ $json.at }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1840,
+        192
+      ],
+      "id": "5dcc687e-7b6a-484a-abf2-14fcc62c8707",
+      "name": "Log action"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Build Result": {
+      "main": [
+        [
+          {
+            "node": "Send result",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query incident_open": {
+      "main": [
+        [
+          {
+            "node": "Pick incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restart sample-service": {
+      "main": [
+        [
+          {
+            "node": "Wait 60 s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every minute": {
+      "main": [
+        [
+          {
+            "node": "Query incident_open",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick incident": {
+      "main": [
+        [
+          {
+            "node": "Auto mode?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask for approval": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Restart sample-service",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Wait 60 s": {
+      "main": [
+        [
+          {
+            "node": "Check service is up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check service is up": {
+      "main": [
+        [
+          {
+            "node": "Build Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto mode?": {
+      "main": [
+        [
+          {
+            "node": "Restart sample-service",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ask for approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log action": {
+      "main": [
+        [
+          {
+            "node": "Send result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "f424d4df-2c23-402e-96ee-004b5c3ca58c",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "nodeGroups": [],
+  "id": "CH19nEGIqzKhAo0K",
+  "tags": []
+}
