@@ -54,7 +54,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const store = $getWorkflowStaticData('global');\nconst res = $input.first().json;\nconst series = res.results && res.results[0] && res.results[0].series ? res.results[0].series[0] : null;\nif (!store.last) { store.last = Date.now(); return []; }   // first run: remember \"now\", send nothing old\nif (!series) return [];\nconst out = [];\nlet newest = store.last;\nfor (const row of series.values) {\n  const r = {};\n  series.columns.forEach((c, i) => { r[c] = row[i]; });\n  if (r.time > store.last) {\n    const explanation = String(r.explanation || '').replace(/\\\\n/g, '\\n');\n    const dep = r.deployment ? '\\nRecent deployment: yes' : '';\n    out.push({ json: { text:\n      `Incident: ${r.tier} tier, signal ${r.signal}\\n` +\n      `Planned action (not executed in this phase): ${r.action}\\n` +\n      `Peak score ${Number(r.peak_score).toFixed(2)}, ${r.minutes} min${dep}\\n\\n` + explanation } });\n    if (r.time > newest) newest = r.time;\n  }\n}\nstore.last = newest;\nreturn out;"
+        "jsCode": "const store = $getWorkflowStaticData('global');\nconst res = $input.first().json;\nconst series = res.results && res.results[0] && res.results[0].series ? res.results[0].series[0] : null;\nif (!store.last) { store.last = Date.now(); return []; }   // first run: remember \"now\", send nothing old\nif (!series) return [];\nconst out = [];\nlet newest = store.last;\nfor (const row of series.values) {\n  const r = {};\n  series.columns.forEach((c, i) => { r[c] = row[i]; });\n  if (r.time > store.last) {\n    const explanation = String(r.explanation || '').replace(/\\\\n/g, '\\n');\n    const dep = r.deployment ? '\\nRecent deployment: yes' : '';\n    out.push({ json: { text:\n      `Incident: ${r.tier} tier, signal ${r.signal}\\n` +\n      `Action for this tier: ${r.action}\\n` +\n      `Peak score ${Number(r.peak_score).toFixed(2)}, ${r.minutes} min${dep}\\n\\n` + explanation } });\n    if (r.time > newest) newest = r.time;\n  }\n}\nstore.last = newest;\nreturn out;"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -131,7 +131,7 @@
     "executionOrder": "v1",
     "binaryMode": "separate"
   },
-  "versionId": "937d052c-5471-4a17-b0fc-6ceab16ee364",
+  "versionId": "95a1e995-7e19-40c5-9613-eb820aeef55d",
   "meta": {
     "templateCredsSetupCompleted": true
   },
