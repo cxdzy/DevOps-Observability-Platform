@@ -212,7 +212,7 @@ services:
     networks:
       - obs-net
 
-  # Notifications only. Published on localhost and on the Tailscale address (N8N_TS_IP), no Docker socket mounted.
+  # n8n workflows. Published on localhost and on the Tailscale address (N8N_TS_IP). No Docker socket is mounted; restarts go through docker-socket-proxy.
   n8n:
     image: n8nio/n8n:2.42.6
     container_name: n8n
