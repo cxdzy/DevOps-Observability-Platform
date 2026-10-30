@@ -76,31 +76,46 @@ test("per-email limit does not count successful logins", async (t) => {
   assert.equal((await app.login("ok@example.com", "bad", ip(41))).res.status, 429);
 });
 
-test("an email longer than 254 characters is refused before keying or bcrypt", async (t) => {
+// Counts bcrypt.compare calls for the duration of one test.
+function countCompares(t) {
   const original = bcrypt.compare;
-  let compares = 0;
+  const counter = { n: 0 };
   bcrypt.compare = async (...args) => {
-    compares++;
+    counter.n++;
     return original(...args);
   };
   t.after(() => {
     bcrypt.compare = original;
   });
+  return counter;
+}
+
+test("an email longer than 254 characters gets 401 without bcrypt, and is still rate limited per IP", async (t) => {
+  const compares = countCompares(t);
   const app = await startApp({ trustLoopback: false });
   t.after(app.close);
   const long = "a".repeat(243) + "@example.com"; // 255 characters
   assert.equal(long.length, 255);
-  // 40 attempts from one address: the per-IP limiter (30) would block them if they reached it.
+  // 40 attempts from one address: the first 30 fit the per-IP limit, the rest are blocked.
+  const statuses = [];
   for (let i = 0; i < 40; i++) {
     const { res } = await app.login(long, "x");
-    assert.equal(res.status, 401);
-    assert.deepEqual(await res.json(), { error: "Invalid email or password" });
+    statuses.push(res.status);
+    if (res.status === 401) assert.deepEqual(await res.json(), { error: "Invalid email or password" });
+    else assert.deepEqual(await res.json(), { error: "Too many attempts, try again later" });
   }
-  assert.equal(compares, 0);
-  // 254 characters is a normal attempt.
+  assert.deepEqual(statuses, [...Array(30).fill(401), ...Array(10).fill(429)]);
+  assert.equal(compares.n, 0);
+});
+
+test("254 characters is a normal attempt with one bcrypt compare", async (t) => {
+  const compares = countCompares(t);
+  const app = await startApp({ trustLoopback: false });
+  t.after(app.close);
   const ok = "a".repeat(242) + "@example.com";
-  await app.login(ok, "x");
-  assert.equal(compares, 1);
+  assert.equal(ok.length, 254);
+  assert.equal((await app.login(ok, "x")).res.status, 401);
+  assert.equal(compares.n, 1);
 });
 
 test("absolute session limit: renewals stop at the cap and the session ends there", async (t) => {
@@ -273,4 +288,84 @@ test("set-password and disable-user end the user's sessions and leave others alo
 
   await assert.rejects(setUserPassword(db, "nobody@example.com", "x"), /No user/);
   await assert.rejects(disableUserAccount(db, "nobody@example.com"), /No user/);
+});
+
+test("Google sign-in also ends the session the browser already had", async (t) => {
+  const tx = { verifier: "v".repeat(43), state: "s1", nonce: "n1" };
+  const oidc = {
+    async start() {
+      return { url: "https://accounts.google.com/o/oauth2/v2/auth?x=1", tx };
+    },
+    async finish(currentUrl, gotTx) {
+      if (!gotTx || gotTx.state !== currentUrl.searchParams.get("state")) throw new Error("state mismatch");
+      return { email: "both@example.com", email_verified: true };
+    },
+  };
+  const app = await startApp({ googleClientId: "client-id", oidc });
+  t.after(app.close);
+  const user = await app.addUser("both@example.com", "viewer", PASSWORD);
+  const first = await app.login("both@example.com", PASSWORD, { "cf-connecting-ip": "198.20.0.8" });
+  assert.ok(first.cookie);
+  const start = await app.request("/auth/google");
+  const txCookie = start.headers.getSetCookie().find((c) => c.startsWith("dash_oidc=")).split(";")[0];
+  const cb = await app.request("/auth/google/callback?code=abc&state=s1", { headers: { cookie: `${first.cookie}; ${txCookie}` } });
+  assert.equal(cb.headers.get("location"), "/");
+  const mine = [...app.db.sessions.values()].filter((s) => s.userId === user.id);
+  assert.equal(mine.length, 1);
+  assert.equal(app.db.sessions.has(hashToken(first.cookie.split("=")[1])), false);
+  assert.equal((await app.request("/auth/me", { headers: { cookie: first.cookie } })).status, 401);
+  assert.equal((await app.request("/auth/me", { headers: { cookie: app.sessionCookie(cb) } })).status, 200);
+});
+
+test("a presented cookie that is not a valid session is left alone at sign-in", async (t) => {
+  const app = await startApp();
+  t.after(app.close);
+  await app.addUser("x1@example.com", "viewer", PASSWORD);
+  const calls = [];
+  const original = app.db.deleteSession;
+  app.db.deleteSession = async (id) => {
+    calls.push(id);
+    return original(id);
+  };
+  await app.login("x1@example.com", PASSWORD, { cookie: "dash_session=" + "c".repeat(64), "cf-connecting-ip": "198.20.0.9" });
+  assert.deepEqual(calls, []);
+});
+
+test("Express does not trust any proxy", () => {
+  const { createApp } = require("../app");
+  const { app } = createApp({
+    db: createFakeDb(),
+    query: async () => [],
+    influxUrl: "http://127.0.0.1:1",
+    config: { appOrigin: "http://localhost:3100", cookieSecure: false, clientDist: null, bcryptCost: 4 },
+  });
+  assert.equal(app.get("trust proxy"), false);
+});
+
+test("session cap boundary: refused and deleted at exactly createdAt + SESSION_MAX_AGE_HOURS", async (t) => {
+  const MAX = 24 * HOUR;
+  const app = await startApp({ config: { sessionMaxAgeMs: MAX } });
+  t.after(app.close);
+  await app.addUser("edge@example.com", "viewer", PASSWORD);
+  // As specified: expiresAt is exactly createdAt + max and the clock is at that instant.
+  // (Here the expiry check alone would also refuse it.)
+  const a = await app.login("edge@example.com", PASSWORD, { "cf-connecting-ip": "198.20.0.10" });
+  const idA = hashToken(a.cookie.split("=")[1]);
+  const sA = app.db.sessions.get(idA);
+  sA.createdAt = new Date(app.clock.t - MAX);
+  sA.expiresAt = new Date(sA.createdAt.getTime() + MAX);
+  assert.equal((await app.request("/auth/me", { headers: { cookie: a.cookie } })).status, 401);
+  assert.equal(app.db.sessions.has(idA), false);
+  // Only the cap applies: one millisecond before the cap the session works, at the cap it is
+  // refused even though its expiry is later (this is what catches a > instead of >=).
+  const b = await app.login("edge@example.com", PASSWORD, { "cf-connecting-ip": "198.20.0.11" });
+  const idB = hashToken(b.cookie.split("=")[1]);
+  const sB = app.db.sessions.get(idB);
+  sB.createdAt = new Date(app.clock.t - MAX + 1);
+  sB.expiresAt = new Date(app.clock.t + HOUR);
+  assert.equal((await app.request("/auth/me", { headers: { cookie: b.cookie } })).status, 200);
+  app.clock.t += 1;
+  sB.expiresAt = new Date(app.clock.t + HOUR);
+  assert.equal((await app.request("/auth/me", { headers: { cookie: b.cookie } })).status, 401);
+  assert.equal(app.db.sessions.has(idB), false);
 });

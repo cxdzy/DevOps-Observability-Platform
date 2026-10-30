@@ -53,7 +53,11 @@ function createAuth(opts) {
     return clearCookie(SESSION_COOKIE, { secure: cookieSecure, sameSite: "Lax" });
   }
 
+  // Used by password and Google sign-in. A valid session the browser already had is ended first,
+  // so only the new one stays usable.
   async function startSession(req, res, user) {
+    const previous = presentedSession(req);
+    if (previous && (await db.getSession(previous.idHash))) await db.deleteSession(previous.idHash);
     const { token, idHash } = sessions.newSessionToken();
     const userAgent = String(req.get("user-agent") || "").slice(0, 255);
     const t = now();
@@ -178,15 +182,14 @@ function createAuth(opts) {
   const router = express.Router();
   const json = express.json({ limit: "4kb" });
 
-  const loginLimits = [rejectLongEmail, limitPerIp, limitPerIpEmail, limitPerEmail];
+  // The per-IP limit comes first so every attempt, including over-long emails, is rate limited.
+  // It keys on the address only, so a long email is still never hashed or compared.
+  const loginLimits = [limitPerIp, rejectLongEmail, limitPerIpEmail, limitPerEmail];
   router.post("/login", stateChanging, json, ...loginLimits, async (req, res, next) => {
     try {
       const email = normaliseEmail(req.body && req.body.email);
       const user = await verifyPassword(email, req.body && req.body.password);
       if (!user) return loginFailed(req, res, email);
-      // A session the browser already had is ended, so only the new one stays valid.
-      const previous = presentedSession(req);
-      if (previous) await db.deleteSession(previous.idHash);
       await startSession(req, res, user);
       res.json({ email: user.email, role: user.role });
     } catch (err) {
