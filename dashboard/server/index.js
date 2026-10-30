@@ -1,95 +1,64 @@
+// Entry point: reads the environment, waits for PostgreSQL, then serves the dashboard.
 const path = require("path");
-const express = require("express");
+const { Pool } = require("pg");
 const { query, INFLUX_URL } = require("./influx");
-const { mergeIncidents } = require("./incidents");
+const { createDb } = require("./db");
+const { createApp } = require("./app");
+const { parseTrustProxy } = require("./security");
 
 const PORT = process.env.PORT || 3000;
-const CLIENT_DIST = path.resolve(process.env.CLIENT_DIST || "/app/client/dist");
+const HOUR_MS = 60 * 60 * 1000;
+const RETRY_MS = 5000;
 
-const app = express();
-app.disable("x-powered-by");
+const config = {
+  appOrigin: (process.env.APP_ORIGIN || "http://localhost:3100").replace(/\/+$/, ""),
+  cookieSecure: !/^(false|0|no)$/i.test(process.env.COOKIE_SECURE || "true"),
+  trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
+  googleClientId: process.env.GOOGLE_CLIENT_ID || "",
+  googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+  clientDist: path.resolve(process.env.CLIENT_DIST || "/app/client/dist"),
+};
 
-app.get("/api/health", async (req, res) => {
-  let influx = false;
-  try {
-    const r = await fetch(`${INFLUX_URL}/ping`, { signal: AbortSignal.timeout(2000) });
-    influx = r.ok;
-  } catch (err) {
-    influx = false;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function main() {
+  if (!process.env.DATABASE_URL) {
+    console.error("DATABASE_URL is not set; the dashboard needs its PostgreSQL database");
+    process.exit(1);
   }
-  res.json({ status: "ok", time: new Date().toISOString(), influx });
-});
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5 });
+  pool.on("error", (err) => console.error("postgres pool error:", err.message));
+  const db = createDb(pool);
 
-app.get("/api/anomaly/latest", async (req, res) => {
-  try {
-    const rows = await query('SELECT * FROM "anomaly_score" ORDER BY time DESC LIMIT 1');
-    res.json(rows[0] || {});
-  } catch (err) {
-    res.status(502).json({ error: "influxdb unreachable" });
+  // The database may start after this container, so keep trying.
+  for (;;) {
+    try {
+      await db.init();
+      break;
+    } catch (err) {
+      console.error(`database not ready (${err.message}); retrying in ${RETRY_MS / 1000} s`);
+      await sleep(RETRY_MS);
+    }
   }
-});
 
-// Returns the validated hours value, or null after sending a 400.
-function hoursParam(req, res) {
-  const raw = req.query.hours;
-  if (raw === undefined) return 24;
-  if (typeof raw !== "string" || !/^-?\d+$/.test(raw.trim())) {
-    res.status(400).json({ error: "hours must be an integer" });
-    return null;
+  async function cleanup() {
+    try {
+      const removed = await db.deleteExpiredSessions(new Date());
+      if (removed) console.log(`removed ${removed} expired sessions`);
+    } catch (err) {
+      console.error("expired session cleanup failed:", err.message);
+    }
   }
-  return Math.min(168, Math.max(1, parseInt(raw, 10)));
+  await cleanup();
+  setInterval(cleanup, HOUR_MS).unref();
+
+  const { app } = createApp({ db, query, influxUrl: INFLUX_URL, config });
+  app.listen(PORT, () => {
+    console.log(
+      `dashboard listening on ${PORT} (origin ${config.appOrigin}, secure cookies ${config.cookieSecure}, ` +
+        `trust proxy ${config.trustProxy}, google sign-in ${config.googleClientId ? "on" : "off"})`
+    );
+  });
 }
 
-app.get("/api/anomaly", async (req, res) => {
-  const hours = hoursParam(req, res);
-  if (hours === null) return;
-  try {
-    const rows = await query(
-      'SELECT "score","threshold","is_anomaly","tier","tier_level","signal","cpu_rate","memory_mb","latency_ms","recent_deployment","model" ' +
-        `FROM "anomaly_score" WHERE time > now() - ${hours}h ORDER BY time ASC`
-    );
-    res.json(rows);
-  } catch (err) {
-    res.status(502).json({ error: "influxdb unreachable" });
-  }
-});
-
-app.get("/api/incidents", async (req, res) => {
-  const hours = hoursParam(req, res);
-  if (hours === null) return;
-  try {
-    const [expl, open] = await Promise.all([
-      query(
-        'SELECT "tier","action","signal","peak_score","minutes","source","deployment","explanation" ' +
-          `FROM "incident_explanation" WHERE time > now() - ${hours}h ORDER BY time ASC`
-      ),
-      query(
-        'SELECT "tier","tier_level","action","signal","peak_score","minutes","deployment" ' +
-          `FROM "incident_open" WHERE time > now() - ${hours}h ORDER BY time ASC`
-      ),
-    ]);
-    res.json(mergeIncidents(expl, open, Date.now()));
-  } catch (err) {
-    res.status(502).json({ error: "influxdb unreachable" });
-  }
-});
-
-app.use("/api", (req, res) => {
-  res.status(404).json({ error: "not found" });
-});
-
-app.use(express.static(CLIENT_DIST));
-app.get("*", (req, res) => {
-  if (path.extname(req.path)) {
-    return res.status(404).type("text").send("Not found");
-  }
-  res.sendFile(path.join(CLIENT_DIST, "index.html"), (err) => {
-    if (err && !res.headersSent) {
-      res.status(404).type("text").send("Not found");
-    }
-  });
-});
-
-app.listen(PORT, () => {
-  console.log(`dashboard listening on ${PORT}`);
-});
+main();

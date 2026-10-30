@@ -268,12 +268,21 @@ services:
       - PORT=3000
       - INFLUX_URL=http://influxdb:8086
       - INFLUX_DB=prometheus
+      # Login (6A-3, 6A-4). The dashboard role and database are created once with dashboard/db/init.sql.
+      - DATABASE_URL=postgres://dashboard:${DASHBOARD_DB_PASSWORD:-}@postgres:5432/dashboard
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - APP_ORIGIN=${APP_ORIGIN:-http://localhost:3100}
+      - COOKIE_SECURE=${COOKIE_SECURE:-true}
+      - TRUST_PROXY=${TRUST_PROXY:-1}
     ports:
       - "127.0.0.1:3100:3000"
     mem_limit: 256m
     memswap_limit: 256m
+    # postgres has no healthcheck, so the dashboard retries the database connection itself.
     depends_on:
       - influxdb
+      - postgres
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
       interval: 30s
