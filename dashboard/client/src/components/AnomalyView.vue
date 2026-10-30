@@ -1,13 +1,23 @@
 <script setup lang="ts">
 import type { AnomalyPoint, Incident } from '@/types'
-import { computed } from 'vue'
-import AnomalyChart from '@/components/AnomalyChart.vue'
+import { computed, defineAsyncComponent } from 'vue'
+import ChartLoadError from '@/components/ChartLoadError.vue'
+import ChartSkeleton from '@/components/ChartSkeleton.vue'
 import PointDetail from '@/components/PointDetail.vue'
 import RangeSelect from '@/components/RangeSelect.vue'
 import SummaryCards from '@/components/SummaryCards.vue'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { incidentAt } from '@/lib/incident'
+
+// ECharts is most of the bundle, so the chart is downloaded only when this tab first shows it.
+const AnomalyChart = defineAsyncComponent({
+  loader: () => import('@/components/AnomalyChart.vue'),
+  loadingComponent: ChartSkeleton,
+  errorComponent: ChartLoadError,
+  delay: 0,
+  timeout: 30000,
+})
 
 const props = defineProps<{
   points: AnomalyPoint[]
@@ -36,7 +46,7 @@ const incident = computed(() => (point.value ? incidentAt(props.incidents, point
       <div class="grid gap-4 sm:grid-cols-3">
         <Skeleton v-for="n in 3" :key="n" class="h-24" />
       </div>
-      <Skeleton class="h-[260px] md:h-[320px]" />
+      <ChartSkeleton />
     </div>
 
     <p v-else-if="pointsFailed" class="rounded-lg border border-red-200 bg-red-50 p-3 text-center text-sm text-red-800">

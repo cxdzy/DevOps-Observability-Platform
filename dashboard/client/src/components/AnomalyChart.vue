@@ -2,9 +2,9 @@
 import type { AnomalyPoint } from '@/types'
 import { LineChart, ScatterChart } from 'echarts/charts'
 import {
-  DataZoomComponent,
+  DataZoomInsideComponent,
   GridComponent,
-  LegendComponent,
+  LegendPlainComponent,
   TooltipComponent,
 } from 'echarts/components'
 import { use } from 'echarts/core'
@@ -15,7 +15,7 @@ import VChart from 'vue-echarts'
 import { clockTime, fixed, shortDate } from '@/lib/format'
 import { FLAG_TIERS, TIER_STYLE, toTier } from '@/lib/tier'
 
-use([LineChart, ScatterChart, GridComponent, TooltipComponent, DataZoomComponent, LegendComponent, CanvasRenderer])
+use([LineChart, ScatterChart, GridComponent, TooltipComponent, DataZoomInsideComponent, LegendPlainComponent, CanvasRenderer])
 
 const props = defineProps<{
   points: AnomalyPoint[]
