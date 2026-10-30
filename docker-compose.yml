@@ -259,6 +259,29 @@ services:
     networks:
       - obs-net
 
+  # Phase 6 dashboard and API, bound to localhost only.
+  dashboard:
+    build: ./dashboard
+    container_name: dashboard
+    restart: unless-stopped
+    environment:
+      - PORT=3000
+      - INFLUX_URL=http://influxdb:8086
+      - INFLUX_DB=prometheus
+    ports:
+      - "127.0.0.1:3100:3000"
+    mem_limit: 256m
+    memswap_limit: 256m
+    depends_on:
+      - influxdb
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - obs-net
+
 networks:
   obs-net:
     driver: bridge
