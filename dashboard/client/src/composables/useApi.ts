@@ -1,16 +1,19 @@
+import type { Ref } from 'vue'
 import axios from 'axios'
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 
 export const api = axios.create({ timeout: 10000 })
 
-// Runs load on mount and then every intervalMs. A tick is skipped while the previous
-// load is still running. refresh() asks for a reload now, or right after the current one.
-export function usePoll(load: () => Promise<void>, intervalMs: number) {
+// Runs load on mount and then every intervalMs while enabled is true. A tick is skipped
+// while the previous load is still running. refresh() asks for a reload now, or right after
+// the current one. Becoming enabled again loads at once.
+export function usePoll(load: () => Promise<void>, intervalMs: number, enabled: Ref<boolean> = ref(true)) {
   let timer: number | undefined
   let running = false
   let queued = false
 
   async function run(force = false) {
+    if (!enabled.value) return
     if (running) {
       if (force) queued = true
       return
@@ -26,6 +29,10 @@ export function usePoll(load: () => Promise<void>, intervalMs: number) {
       run()
     }
   }
+
+  watch(enabled, (on) => {
+    if (on) run(true)
+  })
 
   onMounted(() => {
     run()

@@ -12,7 +12,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { useMediaQuery } from '@vueuse/core'
 import { computed, ref } from 'vue'
 import VChart from 'vue-echarts'
-import { clockTime, fixed, shortDate } from '@/lib/format'
+import { clockTime, fixed, localDateTime, shortDate } from '@/lib/format'
 import { FLAG_TIERS, TIER_STYLE, toTier } from '@/lib/tier'
 
 use([LineChart, ScatterChart, GridComponent, TooltipComponent, DataZoomInsideComponent, LegendPlainComponent, CanvasRenderer])
@@ -42,12 +42,14 @@ function tooltip(params: unknown): string {
   if (!point) return ''
   const tier = TIER_STYLE[toTier(point.tier)].label
   return [
-    new Date(point.time).toLocaleString(),
+    localDateTime(point.time),
     `Score: ${fixed(point.score)}`,
     `Threshold: ${fixed(point.threshold)}`,
     `Tier: ${tier}`,
   ].join('<br>')
 }
+
+const flaggedPoints = computed(() => props.points.filter(p => p.is_anomaly === 1 && p.score !== null))
 
 const option = computed(() => {
   const score = props.points.map(p => [p.time, p.score])
@@ -55,10 +57,11 @@ const option = computed(() => {
   const flagged = FLAG_TIERS.map(tier => ({
     name: TIER_STYLE[tier].label,
     type: 'scatter',
-    symbolSize: 8,
+    symbol: TIER_STYLE[tier].symbol,
+    symbolSize: 9,
     itemStyle: { color: TIER_STYLE[tier].color },
-    data: props.points
-      .filter(p => p.is_anomaly === 1 && toTier(p.tier) === tier)
+    data: flaggedPoints.value
+      .filter(p => toTier(p.tier) === tier)
       .map(p => [p.time, p.score]),
   }))
   const selectedPoint = props.selected === null ? undefined : byTime.value.get(props.selected)
@@ -82,6 +85,8 @@ const option = computed(() => {
         name: 'Score',
         type: 'line',
         data: score,
+        // Thins the drawn line on long ranges while keeping peaks; flagged minutes are separate series.
+        sampling: 'lttb',
         showSymbol: false,
         lineStyle: { width: 1.5, color: '#0f172a' },
         itemStyle: { color: '#0f172a' },
@@ -110,12 +115,32 @@ const option = computed(() => {
   }
 })
 
-// Any click inside the plot selects the nearest minute, so a marker or a point on the line both work.
+const MARKER_HIT_PX = 8
+
+// A click on a marker selects that flagged minute. Any other click inside the plot selects
+// the nearest minute, so points on the line work too. On long ranges one pixel covers several
+// minutes, which is why markers are matched by pixel distance first.
 function onClick(event: { offsetX: number, offsetY: number }) {
   const instance = chart.value
   if (!instance || props.points.length === 0) return
   const pixel = [event.offsetX, event.offsetY]
   if (!instance.containPixel('grid', pixel)) return
+
+  let marker: AnomalyPoint | null = null
+  let best = MARKER_HIT_PX
+  for (const p of flaggedPoints.value) {
+    const [x, y] = instance.convertToPixel({ gridIndex: 0 }, [p.time, p.score]) as number[]
+    const distance = Math.hypot(x - pixel[0], y - pixel[1])
+    if (distance <= best) {
+      best = distance
+      marker = p
+    }
+  }
+  if (marker) {
+    emit('select', marker.time)
+    return
+  }
+
   const value = instance.convertFromPixel({ gridIndex: 0 }, pixel) as number[]
   const target = value[0]
   const pts = props.points
@@ -135,7 +160,7 @@ function onClick(event: { offsetX: number, offsetY: number }) {
   <div
     class="h-[260px] w-full md:h-[320px]"
     role="img"
-    aria-label="Anomaly score over time with the detection threshold and flagged minutes coloured by tier"
+    aria-label="Anomaly score over time with the detection threshold and flagged minutes marked by tier: low circle, medium triangle, high diamond"
   >
     <VChart ref="chart" class="size-full" :option="option" autoresize @zr:click="onClick" />
   </div>

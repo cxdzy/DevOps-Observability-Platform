@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import AnomalyView from '@/components/AnomalyView.vue'
 import IncidentsView from '@/components/IncidentsView.vue'
 import OverviewView from '@/components/OverviewView.vue'
@@ -23,10 +23,19 @@ const onHashChange = () => { tab.value = tabFromHash() }
 onMounted(() => window.addEventListener('hashchange', onHashChange))
 onUnmounted(() => window.removeEventListener('hashchange', onHashChange))
 
-// One time range and one data load shared by the Anomaly and Incidents tabs.
-// Each tab keeps its own selection.
+// One time range and one data load shared by the Anomaly and Incidents tabs, polled only while
+// one of them is open (the Overview has its own timer). Each tab keeps its own selection.
 const hours = ref(24)
-const { points, incidents, loading, pointsFailed, incidentsFailed } = useRangeData(hours)
+const dataTabActive = computed(() => tab.value === 'anomaly' || tab.value === 'incidents')
+const {
+  points,
+  incidents,
+  loading,
+  pointsFailed,
+  incidentsFailed,
+  pointsLoaded,
+  incidentsLoaded,
+} = useRangeData(hours, dataTabActive)
 const selectedMinute = ref<number | null>(null)
 const selectedIncident = ref<number | null>(null)
 </script>
@@ -54,6 +63,8 @@ const selectedIncident = ref<number | null>(null)
           :loading="loading"
           :points-failed="pointsFailed"
           :incidents-failed="incidentsFailed"
+          :points-loaded="pointsLoaded"
+          :incidents-loaded="incidentsLoaded"
         />
       </TabsContent>
       <TabsContent value="incidents">
@@ -63,6 +74,7 @@ const selectedIncident = ref<number | null>(null)
           :incidents="incidents"
           :loading="loading"
           :failed="incidentsFailed"
+          :loaded="incidentsLoaded"
         />
       </TabsContent>
     </Tabs>

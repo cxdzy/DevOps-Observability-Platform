@@ -25,6 +25,8 @@ const props = defineProps<{
   loading: boolean
   pointsFailed: boolean
   incidentsFailed: boolean
+  pointsLoaded: boolean
+  incidentsLoaded: boolean
 }>()
 const hours = defineModel<number>('hours', { required: true })
 const selected = defineModel<number | null>('selected', { required: true })
@@ -49,15 +51,19 @@ const incident = computed(() => (point.value ? incidentAt(props.incidents, point
       <ChartSkeleton />
     </div>
 
-    <p v-else-if="pointsFailed" class="rounded-lg border border-red-200 bg-red-50 p-3 text-center text-sm text-red-800">
+    <p v-else-if="pointsFailed && !pointsLoaded" class="rounded-lg border border-red-200 bg-red-50 p-3 text-center text-sm text-red-800">
       Anomaly data unavailable. Retrying every 30 seconds.
     </p>
 
     <template v-else>
-      <SummaryCards :points="points" :incidents="incidents" :incidents-failed="incidentsFailed" />
+      <p v-if="pointsFailed" class="rounded-lg border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
+        Anomaly data could not be refreshed. Showing the last loaded data.
+      </p>
+
+      <SummaryCards :points="points" :incidents="incidents" :incidents-failed="incidentsFailed && !incidentsLoaded" />
 
       <p v-if="incidentsFailed" class="rounded-lg border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
-        Incident details unavailable
+        {{ incidentsLoaded ? 'Incident details could not be refreshed. Showing the last loaded data.' : 'Incident details unavailable' }}
       </p>
 
       <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">

@@ -46,6 +46,18 @@ test("open row matched to an explanation gives one incident", () => {
   assert.equal(out[0].tier, "medium");
 });
 
+test("open row exactly 120 seconds from an explanation is merged", () => {
+  const out = mergeIncidents([expl(T0)], [open(T0 + 120 * 1000)], T0 + 10 * MIN);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].status, "closed");
+});
+
+test("open row 121 seconds from an explanation is a separate incident", () => {
+  const out = mergeIncidents([expl(T0)], [open(T0 + 121 * 1000)], T0 + 4 * MIN);
+  assert.equal(out.length, 2);
+  assert.deepEqual(out.map((i) => i.status), ["open", "closed"]);
+});
+
 test("open row 3 minutes from an explanation is a separate incident", () => {
   const out = mergeIncidents([expl(T0)], [open(T0 + 3 * MIN)], T0 + 4 * MIN);
   assert.equal(out.length, 2);

@@ -13,6 +13,7 @@ const props = defineProps<{
   incidents: Incident[]
   loading: boolean
   failed: boolean
+  loaded: boolean
 }>()
 const hours = defineModel<number>('hours', { required: true })
 const selected = defineModel<number | null>('selected', { required: true })
@@ -54,17 +55,23 @@ const incident = computed(() => props.incidents.find(i => i.start === selected.v
       <Skeleton v-for="n in 3" :key="n" class="h-24" />
     </div>
 
-    <p v-else-if="failed" class="rounded-lg border border-red-200 bg-red-50 p-3 text-center text-sm text-red-800">
+    <p v-else-if="failed && !loaded" class="rounded-lg border border-red-200 bg-red-50 p-3 text-center text-sm text-red-800">
       Incident data unavailable. Retrying every 30 seconds.
     </p>
 
-    <div v-else class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
-      <div class="min-w-0">
-        <p v-if="incidents.length === 0" class="py-16 text-center text-sm text-muted-foreground">No data in this range</p>
-        <p v-else-if="visible.length === 0" class="py-16 text-center text-sm text-muted-foreground">No incidents match this filter</p>
-        <IncidentList v-else :incidents="visible" :selected="selected" @select="selected = $event" />
+    <template v-else>
+      <p v-if="failed" class="rounded-lg border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
+        Incident data could not be refreshed. Showing the last loaded data.
+      </p>
+
+      <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <div class="min-w-0">
+          <p v-if="incidents.length === 0" class="py-16 text-center text-sm text-muted-foreground">No data in this range</p>
+          <p v-else-if="visible.length === 0" class="py-16 text-center text-sm text-muted-foreground">No incidents match this filter</p>
+          <IncidentList v-else :incidents="visible" :selected="selected" @select="selected = $event" />
+        </div>
+        <IncidentDetail :incident="incident" />
       </div>
-      <IncidentDetail :incident="incident" />
-    </div>
+    </template>
   </div>
 </template>

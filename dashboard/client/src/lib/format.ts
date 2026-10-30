@@ -1,7 +1,7 @@
-// Display helpers. All times are shown in the browser's local time zone.
+// Display helpers. All times are shown in the browser's local time zone with a 24-hour clock.
 
 export function localDateTime(ms: number | null | undefined): string {
-  return ms ? new Date(ms).toLocaleString() : '-'
+  return ms ? new Date(ms).toLocaleString([], { hour12: false }) : '-'
 }
 
 export function clockTime(ms: number): string {
