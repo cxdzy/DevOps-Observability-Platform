@@ -1,146 +1,70 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import axios from 'axios'
-import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
+import AnomalyView from '@/components/AnomalyView.vue'
+import IncidentsView from '@/components/IncidentsView.vue'
+import OverviewView from '@/components/OverviewView.vue'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useRangeData } from '@/composables/useRangeData'
 
-interface Health {
-  status: string
-  time: string
-  influx: boolean
+const TABS = ['overview', 'anomaly', 'incidents'] as const
+type Tab = typeof TABS[number]
+
+function tabFromHash(): Tab {
+  const name = window.location.hash.slice(1)
+  return (TABS as readonly string[]).includes(name) ? (name as Tab) : 'overview'
 }
 
-interface Anomaly {
-  time?: number
-  score?: number
-  threshold?: number
-  tier?: string
-}
-
-const health = ref<Health | null>(null)
-const anomaly = ref<Anomaly | null>(null)
-const loading = ref(true)
-const failed = ref(false)
-const anomalyFailed = ref(false)
-let timer: number | undefined
-let running = false
-
-async function load() {
-  if (running) return
-  running = true
-  const [h, a] = await Promise.allSettled([
-    axios.get<Health>('/api/health', { timeout: 10000 }),
-    axios.get<Anomaly>('/api/anomaly/latest', { timeout: 10000 }),
-  ])
-  failed.value = h.status === 'rejected'
-  if (h.status === 'fulfilled') health.value = h.value.data
-  anomalyFailed.value = a.status === 'rejected'
-  if (a.status === 'fulfilled') anomaly.value = a.value.data
-  loading.value = false
-  running = false
-}
-
-onMounted(() => {
-  load()
-  timer = window.setInterval(load, 15000)
+// The selected tab is kept in the URL hash so a reload or a shared link opens the same tab.
+const tab = ref<string | number>(tabFromHash())
+watch(tab, (name) => {
+  if (window.location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`)
 })
-onUnmounted(() => window.clearInterval(timer))
+const onHashChange = () => { tab.value = tabFromHash() }
+onMounted(() => window.addEventListener('hashchange', onHashChange))
+onUnmounted(() => window.removeEventListener('hashchange', onHashChange))
 
-const hasAnomaly = computed(() => anomaly.value !== null && anomaly.value.score !== undefined)
-
-// The worker writes tier "none" for minutes the model did not flag.
-const tierLabel = computed(() => {
-  const tier = anomaly.value?.tier
-  return !tier || tier === 'none' ? 'normal' : tier
-})
-
-const tierClass = computed(() => {
-  switch (tierLabel.value) {
-    case 'low':
-      return 'bg-blue-100 text-blue-800'
-    case 'medium':
-      return 'bg-amber-100 text-amber-800'
-    case 'high':
-      return 'bg-red-100 text-red-800'
-    default:
-      return 'bg-secondary text-secondary-foreground'
-  }
-})
-
-const localTime = computed(() =>
-  anomaly.value?.time ? new Date(anomaly.value.time).toLocaleString() : '-',
-)
+// One time range and one data load shared by the Anomaly and Incidents tabs.
+// Each tab keeps its own selection.
+const hours = ref(24)
+const { points, incidents, loading, pointsFailed, incidentsFailed } = useRangeData(hours)
+const selectedMinute = ref<number | null>(null)
+const selectedIncident = ref<number | null>(null)
 </script>
 
 <template>
-  <main class="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 px-4 py-8">
+  <main class="mx-auto flex min-h-screen max-w-6xl flex-col gap-6 px-4 py-8">
     <h1 class="text-center text-2xl font-semibold">Observability Dashboard</h1>
 
-    <p v-if="failed" class="rounded-lg border border-red-200 bg-red-50 p-3 text-center text-sm text-red-800">
-      API unreachable. Retrying every 15 seconds.
-    </p>
+    <Tabs v-model="tab" class="gap-6">
+      <TabsList class="self-center">
+        <TabsTrigger value="overview">Overview</TabsTrigger>
+        <TabsTrigger value="anomaly">Anomaly</TabsTrigger>
+        <TabsTrigger value="incidents">Incidents</TabsTrigger>
+      </TabsList>
 
-    <div class="grid gap-6 md:grid-cols-2">
-      <Card>
-        <CardHeader>
-          <CardTitle>System</CardTitle>
-        </CardHeader>
-        <CardContent class="flex flex-col gap-3">
-          <template v-if="loading">
-            <Skeleton class="h-6 w-full" />
-            <Skeleton class="h-6 w-full" />
-          </template>
-          <template v-else-if="health">
-            <div class="flex items-center justify-between">
-              <span>API</span>
-              <Badge :class="health.status === 'ok' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'">
-                {{ health.status === 'ok' ? 'OK' : 'Down' }}
-              </Badge>
-            </div>
-            <div class="flex items-center justify-between">
-              <span>InfluxDB</span>
-              <Badge :class="health.influx ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'">
-                {{ health.influx ? 'Reachable' : 'Unreachable' }}
-              </Badge>
-            </div>
-          </template>
-          <p v-else class="text-sm text-muted-foreground">No data.</p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Latest anomaly score</CardTitle>
-        </CardHeader>
-        <CardContent class="flex flex-col gap-3">
-          <template v-if="loading">
-            <Skeleton class="h-6 w-full" />
-            <Skeleton class="h-6 w-full" />
-            <Skeleton class="h-6 w-full" />
-          </template>
-          <p v-else-if="anomalyFailed" class="text-sm text-muted-foreground">Anomaly data unavailable.</p>
-          <template v-else-if="hasAnomaly && anomaly">
-            <div class="flex items-center justify-between">
-              <span>Score</span>
-              <span class="font-mono">{{ anomaly.score?.toFixed(3) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span>Threshold</span>
-              <span class="font-mono">{{ anomaly.threshold?.toFixed(3) }}</span>
-            </div>
-            <div class="flex items-center justify-between">
-              <span>Tier</span>
-              <Badge :class="tierClass">{{ tierLabel }}</Badge>
-            </div>
-            <div class="flex items-center justify-between">
-              <span>Time</span>
-              <span class="text-sm">{{ localTime }}</span>
-            </div>
-          </template>
-          <p v-else class="text-sm text-muted-foreground">No anomaly scores yet.</p>
-        </CardContent>
-      </Card>
-    </div>
+      <TabsContent value="overview">
+        <OverviewView />
+      </TabsContent>
+      <TabsContent value="anomaly">
+        <AnomalyView
+          v-model:hours="hours"
+          v-model:selected="selectedMinute"
+          :points="points"
+          :incidents="incidents"
+          :loading="loading"
+          :points-failed="pointsFailed"
+          :incidents-failed="incidentsFailed"
+        />
+      </TabsContent>
+      <TabsContent value="incidents">
+        <IncidentsView
+          v-model:hours="hours"
+          v-model:selected="selectedIncident"
+          :incidents="incidents"
+          :loading="loading"
+          :failed="incidentsFailed"
+        />
+      </TabsContent>
+    </Tabs>
   </main>
 </template>
