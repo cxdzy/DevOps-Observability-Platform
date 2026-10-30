@@ -19,13 +19,17 @@ function googleDecision(claims, user) {
 
 // Real openid-client calls. Discovery runs on first use and is cached, so startup never
 // depends on reaching Google.
-function openidClient({ clientId, clientSecret }) {
+// discover(client) returns the openid-client Configuration; tests pass one built without the network.
+function openidClient({ clientId, clientSecret, discover }) {
+  const discoverGoogle =
+    discover ||
+    ((client) =>
+      client.discovery(new URL("https://accounts.google.com"), clientId, undefined, client.ClientSecretPost(clientSecret)));
   let configPromise = null;
   async function config() {
     const client = await import("openid-client");
     if (!configPromise) {
-      configPromise = client
-        .discovery(new URL("https://accounts.google.com"), clientId, undefined, client.ClientSecretPost(clientSecret))
+      configPromise = Promise.resolve(discoverGoogle(client))
         .catch((err) => {
           configPromise = null;
           throw err;
@@ -46,6 +50,8 @@ function openidClient({ clientId, clientSecret }) {
         code_challenge_method: "S256",
         state,
         nonce,
+        // Always show Google's account chooser, so signing out and in again can switch accounts.
+        prompt: "select_account",
       });
       return { url: url.href, tx: { verifier, state, nonce } };
     },
@@ -116,4 +122,4 @@ function createGoogle(opts) {
   return { router, enabled };
 }
 
-module.exports = { createGoogle, googleDecision, DENIED_REDIRECT };
+module.exports = { createGoogle, googleDecision, openidClient, DENIED_REDIRECT };

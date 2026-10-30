@@ -143,3 +143,45 @@ test("with Secure cookies the transaction and session cookies use the __Host- pr
   assert.ok(cb.headers.getSetCookie().some((c) => c.startsWith("__Host-dash_oidc=;") && /Max-Age=0/.test(c)));
   assert.equal(app.db.sessions.size, 1);
 });
+
+test("the redirect to Google uses the real openid-client with PKCE S256, state, nonce and prompt=select_account", async (t) => {
+  const { openidClient } = require("../google");
+  // Google's endpoints, without the network discovery call.
+  const oidc = openidClient({
+    clientId: "client-id",
+    clientSecret: "client-secret",
+    discover: (client) =>
+      new client.Configuration(
+        {
+          issuer: "https://accounts.google.com",
+          authorization_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+          token_endpoint: "https://oauth2.googleapis.com/token",
+          jwks_uri: "https://www.googleapis.com/oauth2/v3/certs",
+        },
+        "client-id",
+        undefined,
+        client.ClientSecretPost("client-secret")
+      ),
+  });
+  const app = await startApp({ googleClientId: "client-id", oidc });
+  t.after(app.close);
+  const res = await app.request("/auth/google");
+  assert.equal(res.status, 302);
+  const url = new URL(res.headers.get("location"));
+  assert.equal(url.origin + url.pathname, "https://accounts.google.com/o/oauth2/v2/auth");
+  const q = url.searchParams;
+  assert.equal(q.get("prompt"), "select_account");
+  assert.equal(q.get("code_challenge_method"), "S256");
+  assert.match(q.get("code_challenge"), /^[A-Za-z0-9_-]{43}$/);
+  assert.ok(q.get("state"));
+  assert.ok(q.get("nonce"));
+  assert.equal(q.get("scope"), "openid email profile");
+  assert.equal(q.get("response_type"), "code");
+  assert.equal(q.get("client_id"), "client-id");
+  assert.equal(q.get("redirect_uri"), "http://localhost:3100/auth/google/callback");
+  // The state and nonce in the URL are the ones kept in the transaction cookie.
+  const tx = res.headers.getSetCookie().find((c) => c.startsWith("dash_oidc="));
+  const saved = JSON.parse(Buffer.from(decodeURIComponent(tx.split(";")[0].split("=")[1]), "base64url").toString("utf8"));
+  assert.equal(saved.state, q.get("state"));
+  assert.equal(saved.nonce, q.get("nonce"));
+});
