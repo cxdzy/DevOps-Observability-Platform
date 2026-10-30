@@ -30,15 +30,15 @@ function createFakeDb() {
       const u = users.find((x) => x.id === userId);
       if (u) u.last_login_at = at;
     },
-    async createSession({ idHash, userId, expiresAt, userAgent }) {
-      sessions.set(idHash, { idHash, userId, expiresAt: new Date(expiresAt), userAgent });
+    async createSession({ idHash, userId, createdAt, expiresAt, userAgent }) {
+      sessions.set(idHash, { idHash, userId, createdAt: new Date(createdAt), expiresAt: new Date(expiresAt), userAgent });
     },
     async getSession(idHash) {
       const s = sessions.get(idHash);
       if (!s) return null;
       const u = users.find((x) => x.id === s.userId);
       if (!u) return null;
-      return { idHash, expiresAt: s.expiresAt, user: { id: u.id, email: u.email, role: u.role, disabled: u.disabled } };
+      return { idHash, createdAt: s.createdAt, expiresAt: s.expiresAt, user: { id: u.id, email: u.email, role: u.role, disabled: u.disabled } };
     },
     async renewSession(idHash, expiresAt) {
       const s = sessions.get(idHash);

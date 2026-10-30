@@ -3,6 +3,7 @@
 // With --password the password is read from a hidden prompt. Without it the user can only
 // sign in with Google.
 const { fail, parseEmail, askNewPasswordHash, openDb } = require("./common");
+const { createUserAccount } = require("./actions");
 
 async function main() {
   const args = process.argv.slice(2);
@@ -15,12 +16,10 @@ async function main() {
   const passwordHash = withPassword ? await askNewPasswordHash() : null;
   const { db, close } = await openDb();
   try {
-    if (await db.findUserByEmail(email)) fail(`A user with the email ${email} already exists.`);
-    await db.createUser({ email, role, passwordHash });
-    console.log(`Created ${role} ${email} (${passwordHash ? "password and Google" : "Google sign-in only"}).`);
+    console.log(await createUserAccount(db, { email, role, passwordHash }));
   } finally {
     await close();
   }
 }
 
-main().catch((err) => fail(`create-user failed: ${err.message}`));
+main().catch((err) => fail(err.message));

@@ -213,7 +213,7 @@ test("a forged or malformed session cookie is rejected", async (t) => {
 });
 
 test("requireRole('admin') lets admins through and blocks viewers", async () => {
-  const auth = createAuth({ db: {}, appOrigin: "x", cookieSecure: false, trustProxy: false });
+  const auth = createAuth({ db: {}, appOrigin: "x", cookieSecure: false });
   const run = (user) => {
     let status = null;
     let passed = false;

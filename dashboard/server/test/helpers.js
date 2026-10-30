@@ -16,10 +16,12 @@ async function startApp(options = {}) {
     now: () => clock.t,
     log: (line) => logs.push(line),
     oidc: options.oidc,
+    // By default the test client (127.0.0.1) plays the trusted proxy, so tests can choose the client
+    // address with CF-Connecting-IP. trustLoopback: false makes it an untrusted direct caller.
+    trusted: { has: (ip) => options.trustLoopback !== false && ip === "127.0.0.1" },
     config: {
       appOrigin: ORIGIN,
       cookieSecure: false,
-      trustProxy: options.trustProxy === undefined ? 1 : options.trustProxy,
       googleClientId: options.googleClientId || "",
       googleClientSecret: "",
       clientDist: null,
@@ -54,7 +56,7 @@ async function startApp(options = {}) {
   // Returns the session cookie pair ("dash_session=...") from a response, or null.
   function sessionCookie(res) {
     const all = res.headers.getSetCookie();
-    const c = all.find((x) => x.startsWith("dash_session=") && !x.startsWith("dash_session=;"));
+    const c = all.find((x) => /^(__Host-)?dash_session=[0-9a-f]/.test(x));
     return c ? c.split(";")[0] : null;
   }
 

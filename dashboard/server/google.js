@@ -1,10 +1,10 @@
 // Google sign-in with the authorization code flow, PKCE, state and nonce (openid-client).
 // Only users already in the users table can sign in this way. Google tokens are never stored.
 const express = require("express");
-const { parseCookies, serializeCookie, clearCookie } = require("./cookies");
+const { cookieName, parseCookies, serializeCookie, clearCookie } = require("./cookies");
 const { normaliseEmail, maskEmail } = require("./security");
 
-const TX_COOKIE = "dash_oidc";
+const TX_COOKIE_BASE = "dash_oidc";
 const TX_MAX_AGE_MS = 10 * 60 * 1000;
 const SCOPE = "openid email profile";
 const DENIED_REDIRECT = "/login?error=denied";
@@ -70,7 +70,9 @@ function createGoogle(opts) {
   const log = opts.log || console.log;
   const oidc = opts.oidc || (enabled ? openidClient(opts) : null);
   const redirectUri = `${appOrigin}/auth/google/callback`;
-  const txCookieOpts = { path: "/auth/google", secure: cookieSecure, sameSite: "Lax" };
+  // Path=/ because the __Host- prefix (used with Secure cookies) allows no other path.
+  const TX_COOKIE = cookieName(TX_COOKIE_BASE, cookieSecure);
+  const txCookieOpts = { path: "/", secure: cookieSecure, sameSite: "Lax" };
 
   const router = express.Router();
 

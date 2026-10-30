@@ -58,17 +58,18 @@ function createDb(pool) {
       await pool.query("UPDATE users SET last_login_at = $2 WHERE id = $1", [userId, at]);
     },
 
-    async createSession({ idHash, userId, expiresAt, userAgent }) {
+    // createdAt comes from the app clock, the same clock that checks the absolute session limit.
+    async createSession({ idHash, userId, createdAt, expiresAt, userAgent }) {
       await pool.query(
-        "INSERT INTO sessions (id, user_id, expires_at, user_agent) VALUES ($1, $2, $3, $4)",
-        [idHash, userId, expiresAt, userAgent]
+        "INSERT INTO sessions (id, user_id, created_at, expires_at, user_agent) VALUES ($1, $2, $3, $4, $5)",
+        [idHash, userId, createdAt, expiresAt, userAgent]
       );
     },
 
     // The session with its user, or null.
     async getSession(idHash) {
       const row = await one(
-        `SELECT s.id, s.expires_at, u.id AS user_id, u.email, u.role, u.disabled
+        `SELECT s.id, s.created_at, s.expires_at, u.id AS user_id, u.email, u.role, u.disabled
            FROM sessions s JOIN users u ON u.id = s.user_id
           WHERE s.id = $1`,
         [idHash]
@@ -76,6 +77,7 @@ function createDb(pool) {
       if (!row) return null;
       return {
         idHash: row.id,
+        createdAt: row.created_at,
         expiresAt: row.expires_at,
         user: { id: row.user_id, email: row.email, role: row.role, disabled: row.disabled },
       };
@@ -101,4 +103,19 @@ function createDb(pool) {
   };
 }
 
-module.exports = { createDb, SCHEMA };
+// True when the connection string parses the way pg will parse it. Never logs the value, which
+// contains the password.
+function isValidDatabaseUrl(value) {
+  if (typeof value !== "string" || value === "") return false;
+  try {
+    // pg-connection-string parses with this base and then percent-decodes the user and password.
+    const url = new URL(value, "postgres://base");
+    decodeURIComponent(url.username);
+    decodeURIComponent(url.password);
+    return /^postgres(ql)?:$/.test(url.protocol) && url.hostname !== "" && url.hostname !== "base";
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { createDb, isValidDatabaseUrl, SCHEMA };

@@ -2,6 +2,7 @@
 // Usage: node server/scripts/set-password.js <email>
 // The new password is read from a hidden prompt.
 const { fail, parseEmail, askNewPasswordHash, openDb } = require("./common");
+const { setUserPassword } = require("./actions");
 
 async function main() {
   const args = process.argv.slice(2);
@@ -10,15 +11,13 @@ async function main() {
 
   const { db, close } = await openDb();
   try {
-    const user = await db.findUserByEmail(email);
-    if (!user) fail(`No user with the email ${email}.`);
+    // Check the user first so nobody types a password for an address that does not exist.
+    if (!(await db.findUserByEmail(email))) fail(`No user with the email ${email}.`);
     const passwordHash = await askNewPasswordHash();
-    await db.setPassword(user.id, passwordHash);
-    await db.deleteUserSessions(user.id);
-    console.log(`Password changed for ${email}; existing sessions were ended.`);
+    console.log(await setUserPassword(db, email, passwordHash));
   } finally {
     await close();
   }
 }
 
-main().catch((err) => fail(`set-password failed: ${err.message}`));
+main().catch((err) => fail(err.message));

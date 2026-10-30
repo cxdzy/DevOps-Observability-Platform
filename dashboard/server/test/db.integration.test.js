@@ -32,10 +32,12 @@ test("db.js against PostgreSQL", opts, async (t) => {
 
   const t0 = new Date("2026-10-30T08:00:00Z");
   const later = new Date("2026-10-30T16:00:00Z");
-  await db.createSession({ idHash: "a".repeat(64), userId: user.id, expiresAt: later, userAgent: "test" });
-  await db.createSession({ idHash: "b".repeat(64), userId: user.id, expiresAt: t0, userAgent: null });
+  await db.createSession({ idHash: "a".repeat(64), userId: user.id, createdAt: t0, expiresAt: later, userAgent: "test" });
+  await db.createSession({ idHash: "b".repeat(64), userId: user.id, createdAt: t0, expiresAt: t0, userAgent: null });
   const s = await db.getSession("a".repeat(64));
   assert.equal(new Date(s.expiresAt).getTime(), later.getTime());
+  // created_at comes from the app clock, which the absolute session limit is measured against.
+  assert.equal(new Date(s.createdAt).getTime(), t0.getTime());
   assert.deepEqual(s.user, { id: user.id, email: "ann@example.com", role: "viewer", disabled: false });
 
   const renewed = new Date("2026-10-30T17:00:00Z");

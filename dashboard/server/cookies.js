@@ -17,8 +17,17 @@ function parseCookies(header) {
   return out;
 }
 
+// The one place cookie names are decided. With Secure cookies the __Host- prefix is used, which
+// the browser accepts only with Secure, Path=/ and no Domain, so a sibling subdomain cannot set it.
+function cookieName(base, secure) {
+  return secure ? `__Host-${base}` : base;
+}
+
 // opts: { maxAgeMs, path, httpOnly, secure, sameSite }
 function serializeCookie(name, value, opts = {}) {
+  if (name.startsWith("__Host-") && (!opts.secure || (opts.path && opts.path !== "/"))) {
+    throw new Error(`${name} must be Secure with Path=/`);
+  }
   const parts = [`${name}=${encodeURIComponent(value)}`];
   parts.push(`Path=${opts.path || "/"}`);
   if (opts.maxAgeMs !== undefined) {
@@ -36,4 +45,4 @@ function clearCookie(name, opts = {}) {
   return serializeCookie(name, "", { ...opts, maxAgeMs: 0 });
 }
 
-module.exports = { parseCookies, serializeCookie, clearCookie };
+module.exports = { cookieName, parseCookies, serializeCookie, clearCookie };

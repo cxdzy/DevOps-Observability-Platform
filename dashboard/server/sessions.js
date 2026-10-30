@@ -32,9 +32,33 @@ function newExpiry(nowMs) {
   return new Date(nowMs + SESSION_MS);
 }
 
+// Absolute lifetime (SESSION_MAX_AGE_HOURS): however active, a session ends this long after sign-in.
+const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function isPastMaxAge(createdAt, nowMs, maxAgeMs) {
+  return nowMs - new Date(createdAt).getTime() >= maxAgeMs;
+}
+
+// 8 hours from now, but never past the absolute limit.
+function cappedExpiry(createdAt, nowMs, maxAgeMs) {
+  return new Date(Math.min(nowMs + SESSION_MS, new Date(createdAt).getTime() + maxAgeMs));
+}
+
+// The new expiry for a sliding renewal, or null when no renewal is due or it would not extend the
+// session (it has reached the absolute limit).
+function renewedExpiry(expiresAt, createdAt, nowMs, maxAgeMs) {
+  if (!needsRenewal(expiresAt, nowMs)) return null;
+  const next = cappedExpiry(createdAt, nowMs, maxAgeMs);
+  return next.getTime() > new Date(expiresAt).getTime() ? next : null;
+}
+
 module.exports = {
   SESSION_MS,
   RENEW_EVERY_MS,
+  DEFAULT_MAX_AGE_MS,
+  isPastMaxAge,
+  cappedExpiry,
+  renewedExpiry,
   hashToken,
   newSessionToken,
   isValidTokenFormat,

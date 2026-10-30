@@ -48,8 +48,12 @@ function securityHeaders(https) {
   });
 }
 
-// deps: { db, query, influxUrl, config, now, log, oidc }
-// config: { appOrigin, cookieSecure, trustProxy, googleClientId, googleClientSecret, clientDist, bcryptCost }
+// Trusts no proxy; used when no trusted set is passed.
+const TRUST_NOBODY = { has: () => false };
+
+// deps: { db, query, influxUrl, config, trusted, now, log, oidc }
+// config: { appOrigin, cookieSecure, sessionMaxAgeMs, googleClientId, googleClientSecret, clientDist, bcryptCost }
+// trusted: the resolved trusted proxy addresses (security.createTrustedProxies).
 function createApp(deps) {
   const { db, query, config } = deps;
   const now = deps.now || Date.now;
@@ -57,10 +61,17 @@ function createApp(deps) {
 
   const app = express();
   app.disable("x-powered-by");
-  app.set("trust proxy", config.trustProxy);
+  // Forwarded headers are never trusted by Express; the client address comes from security.clientIp.
+  // Nothing uses req.ip, req.secure or req.protocol: HSTS follows APP_ORIGIN, cookies COOKIE_SECURE.
+  app.set("trust proxy", false);
   app.use(securityHeaders(config.appOrigin.startsWith("https://")));
+  // API and auth responses are per user and must never be cached.
+  app.use(["/api", "/auth"], (req, res, next) => {
+    res.set("Cache-Control", "no-store");
+    next();
+  });
 
-  const auth = createAuth({ db, now, log, ...config });
+  const auth = createAuth({ db, now, log, trusted: deps.trusted || TRUST_NOBODY, ...config });
   const google = createGoogle({
     db,
     auth,
@@ -140,13 +151,24 @@ function createApp(deps) {
   });
 
   // The page and its assets are public so the login screen can load; all data comes from /api.
+  // Built assets have content hashes in their names, so they can be cached for a year; the page
+  // itself must be revalidated so a new build is picked up.
   if (config.clientDist) {
-    app.use(express.static(config.clientDist));
+    const assetsDir = path.join(config.clientDist, "assets") + path.sep;
+    app.use(
+      express.static(config.clientDist, {
+        cacheControl: false,
+        setHeaders(res, filePath) {
+          const immutable = filePath.startsWith(assetsDir);
+          res.set("Cache-Control", immutable ? "public, max-age=31536000, immutable" : "no-cache");
+        },
+      })
+    );
     app.get("*", (req, res) => {
       if (path.extname(req.path)) {
         return res.status(404).type("text").send("Not found");
       }
-      res.sendFile(path.join(config.clientDist, "index.html"), (err) => {
+      res.sendFile(path.join(config.clientDist, "index.html"), { cacheControl: false, headers: { "Cache-Control": "no-cache" } }, (err) => {
         if (err && !res.headersSent) {
           res.status(404).type("text").send("Not found");
         }

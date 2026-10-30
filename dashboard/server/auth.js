@@ -3,17 +3,29 @@ const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const express = require("express");
 const { rateLimit } = require("express-rate-limit");
-const { parseCookies, serializeCookie, clearCookie } = require("./cookies");
+const { cookieName, parseCookies, serializeCookie, clearCookie } = require("./cookies");
 const sessions = require("./sessions");
-const { normaliseEmail, originAllowed, clientIp, loginIpEmailKey, loginIpKey, maskEmail } = require("./security");
+const {
+  MAX_EMAIL_LENGTH,
+  normaliseEmail,
+  originAllowed,
+  clientIp,
+  emailKey,
+  loginIpEmailKey,
+  loginIpKey,
+  maskEmail,
+} = require("./security");
 
-const SESSION_COOKIE = "dash_session";
+const SESSION_COOKIE_BASE = "dash_session";
 const GENERIC_LOGIN_ERROR = "Invalid email or password";
 const MAX_PASSWORD_LENGTH = 1024;
 
-// opts: { db, appOrigin, cookieSecure, trustProxy, bcryptCost = 12, now = Date.now, log = console.log }
+// opts: { db, appOrigin, cookieSecure, trusted (createTrustedProxies), sessionMaxAgeMs = 24 h,
+//         bcryptCost = 12, now = Date.now, log = console.log }
 function createAuth(opts) {
-  const { db, appOrigin, cookieSecure, trustProxy } = opts;
+  const { db, appOrigin, cookieSecure, trusted } = opts;
+  const sessionMaxAgeMs = opts.sessionMaxAgeMs || sessions.DEFAULT_MAX_AGE_MS;
+  const SESSION_COOKIE = cookieName(SESSION_COOKIE_BASE, cookieSecure);
   const bcryptCost = opts.bcryptCost || 12;
   const now = opts.now || Date.now;
   const log = opts.log || console.log;
@@ -28,9 +40,9 @@ function createAuth(opts) {
   }
   getDummyHash();
 
-  function sessionCookie(token) {
+  function sessionCookie(token, expiresAt) {
     return serializeCookie(SESSION_COOKIE, token, {
-      maxAgeMs: sessions.SESSION_MS,
+      maxAgeMs: new Date(expiresAt).getTime() - now(),
       httpOnly: true,
       secure: cookieSecure,
       sameSite: "Lax",
@@ -44,27 +56,41 @@ function createAuth(opts) {
   async function startSession(req, res, user) {
     const { token, idHash } = sessions.newSessionToken();
     const userAgent = String(req.get("user-agent") || "").slice(0, 255);
-    await db.createSession({ idHash, userId: user.id, expiresAt: sessions.newExpiry(now()), userAgent });
-    await db.recordLogin(user.id, new Date(now()));
-    res.append("Set-Cookie", sessionCookie(token));
+    const t = now();
+    const expiresAt = sessions.cappedExpiry(t, t, sessionMaxAgeMs);
+    await db.createSession({ idHash, userId: user.id, createdAt: new Date(t), expiresAt, userAgent });
+    await db.recordLogin(user.id, new Date(t));
+    res.append("Set-Cookie", sessionCookie(token, expiresAt));
   }
 
-  // Sets req.user from a valid session; sliding renewal at most once per hour.
-  async function loadSession(req, res) {
+  // The session token the request carries and its hash, or null.
+  function presentedSession(req) {
     const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-    if (!sessions.isValidTokenFormat(token)) return null;
-    const idHash = sessions.hashToken(token);
+    return sessions.isValidTokenFormat(token) ? { token, idHash: sessions.hashToken(token) } : null;
+  }
+
+  // Sets req.user from a valid session. Sliding renewal at most once per hour, never past the
+  // absolute limit; a session older than that limit is deleted.
+  async function loadSession(req, res) {
+    const presented = presentedSession(req);
+    if (!presented) return null;
+    const { token, idHash } = presented;
     const session = await db.getSession(idHash);
     if (!session) return null;
     const t = now();
-    if (sessions.isExpired(session.expiresAt, t) || session.user.disabled) {
+    if (
+      sessions.isExpired(session.expiresAt, t) ||
+      sessions.isPastMaxAge(session.createdAt, t, sessionMaxAgeMs) ||
+      session.user.disabled
+    ) {
       await db.deleteSession(idHash);
       res.append("Set-Cookie", clearSessionCookie());
       return null;
     }
-    if (sessions.needsRenewal(session.expiresAt, t)) {
-      await db.renewSession(idHash, sessions.newExpiry(t));
-      res.append("Set-Cookie", sessionCookie(token));
+    const renewed = sessions.renewedExpiry(session.expiresAt, session.createdAt, t, sessionMaxAgeMs);
+    if (renewed) {
+      await db.renewSession(idHash, renewed);
+      res.append("Set-Cookie", sessionCookie(token, renewed));
     }
     req.sessionIdHash = idHash;
     return session.user;
@@ -107,34 +133,60 @@ function createAuth(opts) {
   }
 
   const limitHandler = (req, res) => res.status(429).json({ error: "Too many attempts, try again later" });
-  const limitPerIpEmail = rateLimit({
-    windowMs: 60 * 1000,
-    limit: 5,
+  const ip = (req) => clientIp(req, trusted);
+  // X-Forwarded-For is ignored on purpose (cloudflared sends it), so the library's check for it is off.
+  const limiterDefaults = {
     standardHeaders: "draft-7",
     legacyHeaders: false,
-    keyGenerator: (req) => loginIpEmailKey(clientIp(req, trustProxy), req.body && req.body.email),
     handler: limitHandler,
-  });
+    validate: { xForwardedForHeader: false },
+  };
   const limitPerIp = rateLimit({
+    ...limiterDefaults,
     windowMs: 10 * 60 * 1000,
     limit: 30,
-    standardHeaders: "draft-7",
-    legacyHeaders: false,
-    keyGenerator: (req) => loginIpKey(clientIp(req, trustProxy)),
-    handler: limitHandler,
+    keyGenerator: (req) => loginIpKey(ip(req)),
   });
+  const limitPerIpEmail = rateLimit({
+    ...limiterDefaults,
+    windowMs: 60 * 1000,
+    limit: 5,
+    keyGenerator: (req) => loginIpEmailKey(ip(req), req.body && req.body.email),
+  });
+  // Failed attempts per email address from all sources together, so rotating addresses does not
+  // help. Applies to every email, known or not. Google sign-in does not pass through it.
+  const limitPerEmail = rateLimit({
+    ...limiterDefaults,
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    skipSuccessfulRequests: true,
+    keyGenerator: (req) => `email|${emailKey(req.body && req.body.email)}`,
+  });
+
+  function loginFailed(req, res, email) {
+    log(JSON.stringify({ event: "login_failed", email: maskEmail(email), ip: ip(req) }));
+    res.status(401).json({ error: GENERIC_LOGIN_ERROR });
+  }
+
+  // An address longer than any valid email is refused before any keying or bcrypt work.
+  function rejectLongEmail(req, res, next) {
+    const email = normaliseEmail(req.body && req.body.email);
+    if (email.length > MAX_EMAIL_LENGTH) return loginFailed(req, res, email);
+    next();
+  }
 
   const router = express.Router();
   const json = express.json({ limit: "4kb" });
 
-  router.post("/login", stateChanging, json, limitPerIp, limitPerIpEmail, async (req, res, next) => {
+  const loginLimits = [rejectLongEmail, limitPerIp, limitPerIpEmail, limitPerEmail];
+  router.post("/login", stateChanging, json, ...loginLimits, async (req, res, next) => {
     try {
       const email = normaliseEmail(req.body && req.body.email);
       const user = await verifyPassword(email, req.body && req.body.password);
-      if (!user) {
-        log(JSON.stringify({ event: "login_failed", email: maskEmail(email), ip: clientIp(req, trustProxy) }));
-        return res.status(401).json({ error: GENERIC_LOGIN_ERROR });
-      }
+      if (!user) return loginFailed(req, res, email);
+      // A session the browser already had is ended, so only the new one stays valid.
+      const previous = presentedSession(req);
+      if (previous) await db.deleteSession(previous.idHash);
       await startSession(req, res, user);
       res.json({ email: user.email, role: user.role });
     } catch (err) {
@@ -144,8 +196,8 @@ function createAuth(opts) {
 
   router.post("/logout", stateChanging, async (req, res, next) => {
     try {
-      const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-      if (sessions.isValidTokenFormat(token)) await db.deleteSession(sessions.hashToken(token));
+      const presented = presentedSession(req);
+      if (presented) await db.deleteSession(presented.idHash);
       res.append("Set-Cookie", clearSessionCookie());
       res.status(204).end();
     } catch (err) {
@@ -157,7 +209,15 @@ function createAuth(opts) {
     res.json({ email: req.user.email, role: req.user.role });
   });
 
-  return { router, requireAuth, requireRole, startSession, verifyPassword, GENERIC_LOGIN_ERROR };
+  return {
+    router,
+    requireAuth,
+    requireRole,
+    startSession,
+    verifyPassword,
+    sessionCookieName: SESSION_COOKIE,
+    GENERIC_LOGIN_ERROR,
+  };
 }
 
-module.exports = { createAuth, SESSION_COOKIE };
+module.exports = { createAuth, SESSION_COOKIE_BASE };
