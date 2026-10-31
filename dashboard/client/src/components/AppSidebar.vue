@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import ThemeToggle from '@/components/ThemeToggle.vue'
 import { useAuth } from '@/composables/useAuth'
-import { useTheme } from '@/composables/useTheme'
 
 const props = defineProps<{
   current: string
@@ -11,7 +11,6 @@ const props = defineProps<{
 }>()
 
 const { me, logout } = useAuth()
-const { theme, toggle } = useTheme()
 
 // Only the views that exist today. Icons are 24 by 24 stroke paths.
 const NAV = [
@@ -26,8 +25,6 @@ const initials = computed(() => {
   return (local.slice(0, 2) || '?').toUpperCase()
 })
 const rangeLabel = computed(() => (props.hours > 24 && props.hours % 24 === 0 ? `${props.hours / 24} d` : `${props.hours} h`))
-const toggleLabel = computed(() => (theme.value === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'))
-
 const leaving = ref(false)
 async function signOut() {
   leaving.value = true
@@ -52,16 +49,7 @@ async function signOut() {
       <!-- Phone only: the user card and the top bar toggle are hidden there. -->
       <div class="ml-auto flex items-center gap-2 md:hidden">
         <span class="rounded-md bg-chip px-2 py-px text-xs font-medium text-chipfg">{{ roleLabel }}</span>
-        <button
-          type="button"
-          class="flex size-11 items-center justify-center rounded-lg border border-border bg-card text-foreground hover:bg-chip"
-          :aria-label="toggleLabel"
-          :title="toggleLabel"
-          @click="toggle"
-        >
-          <svg v-if="theme === 'dark'" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
-          <svg v-else class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" /></svg>
-        </button>
+        <ThemeToggle class="size-11 bg-card" />
         <button
           type="button"
           class="min-h-11 rounded-lg border border-border bg-card px-3 text-sm font-medium hover:bg-chip disabled:opacity-50"

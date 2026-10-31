@@ -4,9 +4,9 @@ import { LineChart } from 'echarts/charts'
 import { GridComponent, LegendPlainComponent, TooltipComponent } from 'echarts/components'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import VChart from 'vue-echarts'
-import { useTheme } from '@/composables/useTheme'
+import { LINE_ICON, MONO, useChartTheme, withAlpha } from '@/lib/chartTheme'
 import { clockTime, localDateTime } from '@/lib/format'
 
 use([LineChart, GridComponent, TooltipComponent, LegendPlainComponent, CanvasRenderer])
@@ -32,44 +32,8 @@ const latest = computed(() => {
   return null
 })
 
-// The same theme handling as AnomalyChart: colours are read from CSS when drawing and again
-// when the theme changes, because canvas drawing cannot use CSS variables.
-const { theme } = useTheme()
-
-function cssVar(name: string, fallback: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback
-}
-
-function withAlpha(hex: string, alpha: number): string {
-  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex)
-  if (!m) return hex
-  return `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, ${alpha})`
-}
-
-function readPalette() {
-  return {
-    panel: cssVar('--panel', '#FFFFFF'),
-    ink: cssVar('--ink', '#18181B'),
-    muted: cssVar('--muted-foreground', '#52525B'),
-    faint: cssVar('--faint', '#71717A'),
-    line: cssVar('--line', '#E4E4E7'),
-    chartline: cssVar('--chartline', '#18181B'),
-    thresh: cssVar('--thresh', '#A1A1AA'),
-    grid: cssVar('--grid', '#E4E4E7'),
-  }
-}
-
-const palette = ref(readPalette())
-watch(theme, () => { palette.value = readPalette() })
-
-const MONO = '"Geist Mono", ui-monospace, monospace'
-const fontReady = ref(0)
-onMounted(() => {
-  document.fonts?.load(`11px ${MONO}`).then(() => { fontReady.value++ }, () => {})
-})
-
-// Legend icon drawn as a filled path, the same as the Score entry in AnomalyChart.
-const LINE_ICON = 'path://M0 0h24v2H0z'
+// The same theme handling as AnomalyChart, from lib/chartTheme.
+const { palette, fontReady } = useChartTheme()
 
 function tooltip(params: unknown): string {
   const list = Array.isArray(params) ? params : [params]

@@ -3,10 +3,11 @@
 const { createPrometheus } = require("./prometheus");
 const { mergeIncidents } = require("./incidents");
 
-// One entry per server. The jobs are the scrape jobs in prometheus/prometheus.yml.
+// One entry per server. The jobs are the scrape jobs in prometheus/prometheus.yml. displayName is
+// the name shown on the card; the real hostname comes from node_uname_info.
 const SERVERS = [
-  { key: "main", nodeJob: "node-exporter", cadvisorJob: "cadvisor", role: "Platform", provider: "Tencent Cloud", location: "Singapore" },
-  { key: "old", nodeJob: "node-exporter-old", cadvisorJob: "cadvisor-old", role: "Staging", provider: "Hetzner", location: "Finland" },
+  { key: "main", displayName: "fyp-main", nodeJob: "node-exporter", cadvisorJob: "cadvisor", role: "Platform", provider: "Tencent Cloud", location: "Singapore" },
+  { key: "old", displayName: "staging", nodeJob: "node-exporter-old", cadvisorJob: "cadvisor-old", role: "Staging", provider: "Hetzner", location: "Finland" },
 ];
 
 const NODE_JOBS = 'job=~"node-exporter|node-exporter-old"';
@@ -107,6 +108,7 @@ function createOverview({ query, prometheus }) {
       const up = value("up", s.nodeJob);
       return {
         key: s.key,
+        displayName: s.displayName,
         hostname: text(r.uname.get(s.nodeJob)?.labels.nodename),
         role: s.role,
         provider: s.provider,
@@ -130,9 +132,12 @@ function createOverview({ query, prometheus }) {
       const name = text(row.labels.name);
       if (name && !seen.has(name)) seen.set(name, { name, memoryBytes: numberOrNull(row.value) });
     }
+    // No named container at all means cAdvisor is not running or cannot read Docker, not that
+    // every service is down. unknown tells the client not to list the services as missing.
     return {
       expected: EXPECTED,
       containers: [...seen.values()].sort((a, b) => a.name.localeCompare(b.name)),
+      unknown: seen.size === 0,
     };
   }
 
@@ -142,21 +147,12 @@ function createOverview({ query, prometheus }) {
       query(DEPLOY_QUERY),
       query(RETRAIN_QUERY),
     ]);
-    const items = incidents
-      .filter((i) => i.status === "closed")
-      .slice(0, ACTIVITY_LIMIT)
-      .map((i) => ({
-        type: "incident",
-        time: i.start,
-        tier: i.tier,
-        signal: i.signal,
-        action: i.action,
-        minutes: i.minutes,
-        peakScore: i.peakScore,
-      }));
+    // The latest CI deployment and the latest retraining always keep a slot when they exist;
+    // the newest closed incidents fill the rest.
+    const fixed = [];
     const deploy = deploys[0];
     if (deploy && deploy.time) {
-      items.push({
+      fixed.push({
         type: "deployment",
         time: Number(deploy.time),
         commit: text(deploy.commit_sha),
@@ -166,7 +162,7 @@ function createOverview({ query, prometheus }) {
     }
     const retrain = retrains[0];
     if (retrain && retrain.time) {
-      items.push({
+      fixed.push({
         type: "retrain",
         time: Number(retrain.time),
         promoted: Number(retrain.promoted) === 1,
@@ -176,7 +172,20 @@ function createOverview({ query, prometheus }) {
         challengerF1: toNumber(retrain.challenger_f1),
       });
     }
-    return items.sort((a, b) => b.time - a.time).slice(0, ACTIVITY_LIMIT);
+    // mergeIncidents returns the newest first.
+    const recent = incidents
+      .filter((i) => i.status === "closed")
+      .slice(0, ACTIVITY_LIMIT - fixed.length)
+      .map((i) => ({
+        type: "incident",
+        time: i.start,
+        tier: i.tier,
+        signal: i.signal,
+        action: i.action,
+        minutes: i.minutes,
+        peakScore: i.peakScore,
+      }));
+    return [...fixed, ...recent].sort((a, b) => b.time - a.time);
   }
 
   return { nodes, services, activity };

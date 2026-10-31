@@ -10,9 +10,9 @@ import {
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { useMediaQuery } from '@vueuse/core'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import VChart from 'vue-echarts'
-import { useTheme } from '@/composables/useTheme'
+import { LINE_ICON, MONO, useChartTheme, withAlpha } from '@/lib/chartTheme'
 import { clockTime, fixed, localDateTime, shortDate } from '@/lib/format'
 import { FLAG_TIERS, TIER_STYLE, toTier } from '@/lib/tier'
 
@@ -30,53 +30,11 @@ const chart = ref<InstanceType<typeof VChart> | null>(null)
 // On phones the legend wraps to two lines, so the plot starts lower.
 const narrow = useMediaQuery('(max-width: 639px)')
 
-// Canvas drawing cannot use CSS variables, so the colours are read from the theme when drawing
-// and read again when the theme changes.
-const { theme } = useTheme()
+// Theme colours and the font redraw come from lib/chartTheme.
+const { palette, fontReady } = useChartTheme()
 
-function cssVar(name: string, fallback: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback
-}
-
-// #RRGGBB with an alpha, for the area fill that fades out.
-function withAlpha(hex: string, alpha: number): string {
-  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex)
-  if (!m) return hex
-  return `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, ${alpha})`
-}
-
-function readPalette() {
-  return {
-    panel: cssVar('--panel', '#FFFFFF'),
-    ink: cssVar('--ink', '#18181B'),
-    muted: cssVar('--muted-foreground', '#52525B'),
-    faint: cssVar('--faint', '#71717A'),
-    line: cssVar('--line', '#E4E4E7'),
-    primary: cssVar('--primary', '#18181B'),
-    chartline: cssVar('--chartline', '#18181B'),
-    thresh: cssVar('--thresh', '#A1A1AA'),
-    grid: cssVar('--grid', '#E4E4E7'),
-    tiers: {
-      low: cssVar(TIER_STYLE.low.markerVar, '#2563EB'),
-      medium: cssVar(TIER_STYLE.medium.markerVar, '#D97706'),
-      high: cssVar(TIER_STYLE.high.markerVar, '#DC2626'),
-    },
-  }
-}
-
-const palette = ref(readPalette())
-watch(theme, () => { palette.value = readPalette() })
-
-// Canvas text does not wait for web fonts, so the chart is drawn again once Geist Mono has loaded.
-const MONO = '"Geist Mono", ui-monospace, monospace'
-const fontReady = ref(0)
-
-// Legend icons drawn as filled paths: a solid bar and a dashed bar, 24 by 2.
-const LINE_ICON = 'path://M0 0h24v2H0z'
+// Legend icon for the threshold: a dashed bar, 24 by 2, next to the solid LINE_ICON.
 const DASHED_ICON = 'path://M0 0h5v2H0zM9 0h5v2H9zM18 0h6v2h-6z'
-onMounted(() => {
-  document.fonts?.load(`11px ${MONO}`).then(() => { fontReady.value++ }, () => {})
-})
 
 const byTime = computed(() => new Map(props.points.map(p => [p.time, p])))
 

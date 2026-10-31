@@ -81,10 +81,13 @@ const greeting = computed(() => {
 
 const mainNode = computed(() => nodes.data.value.find(n => n.key === 'main') ?? null)
 
+// cAdvisor named no container at all, so which services run is not known.
+const servicesUnknown = computed(() => services.data.value?.unknown === true)
+
 // Services: expected containers that are running, and how many are expected.
 const serviceCount = computed(() => {
   const s = services.data.value
-  if (!s) return null
+  if (!s || s.unknown) return null
   const running = new Set(s.containers.map(c => c.name))
   return { up: s.expected.filter(e => running.has(e.name)).length, total: s.expected.length }
 })
@@ -104,7 +107,10 @@ const status = computed(() => {
     const missing = count.total - count.up
     return { chip: 'Attention', ok: false, title: `${missing} ${missing === 1 ? 'service' : 'services'} missing`, line: 'See the services table below' }
   }
-  if (!known) return { chip: 'Unknown', ok: null, title: 'No data', line: 'Incidents or services did not load' }
+  if (!known) {
+    const line = servicesUnknown.value ? 'Container metrics are not available' : 'Incidents or services did not load'
+    return { chip: 'Unknown', ok: null, title: 'No data', line }
+  }
   return { chip: 'Normal', ok: true, title: 'All systems normal', line: 'No incident open, every service up' }
 })
 
@@ -190,6 +196,10 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
           </div>
           <div v-if="mainNode?.hostname" class="mt-0.5 text-xs text-muted-foreground">on <span class="font-mono">{{ mainNode.hostname }}</span></div>
         </template>
+        <template v-else-if="servicesUnknown">
+          <div class="mt-2 text-[22px] font-semibold tracking-[-0.02em]">No data</div>
+          <div class="mt-1 text-xs text-muted-foreground">Container metrics are not available</div>
+        </template>
         <p v-else class="mt-2.5 text-[13px] text-muted-foreground">No data. Retrying in 30 s.</p>
       </section>
     </template>
@@ -234,7 +244,17 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
     />
   </div>
 
+  <!-- Shown instead of the table, which would otherwise list every expected service as missing. -->
+  <section v-if="!loading && servicesUnknown" aria-labelledby="services-title" class="overflow-hidden rounded-xl border border-border">
+    <h2 id="services-title" class="px-[18px] py-3.5 text-[15px] font-semibold">
+      Services<template v-if="mainNode?.hostname"> on <span class="font-mono">{{ mainNode.hostname }}</span></template>
+    </h2>
+    <p class="mx-[18px] mb-4 rounded-lg bg-tier-high-bg p-3 text-[13px] text-tier-high-fg" role="alert">
+      Container metrics are not available. Check that cAdvisor is running.
+    </p>
+  </section>
   <ServicesTable
+    v-else
     :services="services.data.value"
     :host="mainNode?.hostname ?? null"
     :loading="loading"

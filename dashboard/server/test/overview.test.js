@@ -36,7 +36,7 @@ function samples({ staging = true } = {}) {
 
 // Answers requests to the default Prometheus URL; everything else goes to the real fetch
 // (the test client talks to the app with it). Records every Prometheus query that was sent.
-function stubPrometheus(t, { staging = true, down = false } = {}) {
+function stubPrometheus(t, { staging = true, down = false, noContainers = false } = {}) {
   const sent = [];
   const original = globalThis.fetch;
   const byQuery = new Map(Object.entries(QUERIES).map(([k, q]) => [q, k]));
@@ -46,7 +46,9 @@ function stubPrometheus(t, { staging = true, down = false } = {}) {
     const q = new URL(href).searchParams.get("query");
     sent.push(q);
     if (down) throw new TypeError("fetch failed");
-    const rows = samples({ staging })[byQuery.get(q)] || [];
+    const key = byQuery.get(q);
+    // cAdvisor that names no container returns nothing for both container queries.
+    const rows = noContainers && (key === "services" || key === "containers") ? [] : samples({ staging })[key] || [];
     const result = rows.map((r) => ({ metric: r.metric, value: [1700000000, String(r.value)] }));
     return new Response(JSON.stringify({ status: "success", data: { resultType: "vector", result } }), {
       headers: { "content-type": "application/json" },
@@ -82,6 +84,7 @@ test("GET /api/nodes returns both servers with their values and static labels", 
   const [main, old] = await res.json();
   assert.deepEqual(main, {
     key: "main",
+    displayName: "fyp-main",
     hostname: "fyp-main",
     role: "Platform",
     provider: "Tencent Cloud",
@@ -96,6 +99,7 @@ test("GET /api/nodes returns both servers with their values and static labels", 
     containers: 3,
   });
   assert.equal(old.key, "old");
+  assert.equal(old.displayName, "staging");
   assert.equal(old.hostname, "naqib-emqx-vps-1");
   assert.equal(old.role, "Staging");
   assert.equal(old.provider, "Hetzner");
@@ -112,6 +116,7 @@ test("a staging server with no data is returned with null values, not guesses", 
   const { get } = await signedIn(t);
   const [, old] = await (await get("/api/nodes")).json();
   assert.equal(old.key, "old");
+  assert.equal(old.displayName, "staging");
   assert.equal(old.role, "Staging");
   for (const field of ["hostname", "up", "memoryTotalBytes", "memoryAvailableBytes", "diskSizeBytes", "diskAvailableBytes", "cpuCount", "cpuBusy", "containers"]) {
     assert.equal(old[field], null, field);
@@ -128,6 +133,21 @@ test("GET /api/services lists the main server's containers and the expected name
     { name: "influxdb", memoryBytes: 200e6 },
     { name: "worker", memoryBytes: 300e6 },
   ]);
+  assert.equal(body.unknown, false);
+});
+
+test("GET /api/services marks the result unknown when cAdvisor names no container", async (t) => {
+  stubPrometheus(t, { noContainers: true });
+  const { get } = await signedIn(t);
+  const res = await get("/api/services");
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.unknown, true);
+  assert.deepEqual(body.containers, []);
+  assert.deepEqual(body.expected, EXPECTED);
+  // The node cards show no container count instead of 0.
+  const [main] = await (await get("/api/nodes")).json();
+  assert.equal(main.containers, null);
 });
 
 test("the services query reads only the main server's cAdvisor job", () => {
@@ -214,6 +234,27 @@ test("activity keeps only the newest five items", async (t) => {
   const items = await (await get("/api/activity")).json();
   assert.equal(items.length, 5);
   assert.equal(items[0].time, T - 3600000);
+});
+
+test("activity keeps the latest deployment and retraining even when newer incidents fill the list", async (t) => {
+  stubPrometheus(t);
+  const T = Date.UTC(2026, 9, 30, 7, 0, 0);
+  const HOUR = 3600000;
+  const query = async (q) => {
+    if (q.includes('FROM "incident_explanation"')) {
+      // Eight closed incidents, all newer than the deployment and the retraining.
+      return Array.from({ length: 8 }, (_, i) => ({ time: T - (i + 1) * HOUR, tier: "low", minutes: 1 }));
+    }
+    if (q.includes('FROM "deployment_event"')) return [{ time: T - 50 * HOUR, commit_sha: "abc1234", branch: "master" }];
+    if (q.includes('FROM "model_retrain"')) return [{ time: T - 40 * HOUR, promoted: 1, new_version: "11" }];
+    return [];
+  };
+  const { get } = await signedIn(t, { query });
+  const items = await (await get("/api/activity")).json();
+  assert.deepEqual(items.map((i) => i.type), ["incident", "incident", "incident", "retrain", "deployment"]);
+  assert.deepEqual(items.slice(0, 3).map((i) => i.time), [T - HOUR, T - 2 * HOUR, T - 3 * HOUR]);
+  assert.equal(items[3].newVersion, "11");
+  assert.equal(items[4].commit, "abc1234");
 });
 
 test("InfluxDB down gives 502 on activity while nodes still work", async (t) => {

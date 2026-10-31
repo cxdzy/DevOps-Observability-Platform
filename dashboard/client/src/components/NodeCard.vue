@@ -11,8 +11,9 @@ const METRICS = ['memoryTotalBytes', 'memoryAvailableBytes', 'diskSizeBytes', 'd
 // A server that answers with some values missing shows "No data" on those rows only.
 const noData = computed(() => props.node.up !== true || METRICS.every(k => props.node[k] === null))
 
-const name = computed(() => props.node.hostname ?? (props.node.key === 'main' ? 'Main server' : 'Staging server'))
-const place = computed(() => `${props.node.role} server, ${props.node.provider}, ${props.node.location}`)
+// The title is the fixed display name; the real hostname, when known, leads the line under it.
+const name = computed(() => props.node.displayName)
+const place = computed(() => [props.node.hostname, props.node.role, props.node.provider, props.node.location].filter(Boolean).join(' · '))
 
 function usage(total: number | null, available: number | null) {
   const used = total === null || available === null ? null : total - available
@@ -48,7 +49,7 @@ const border = computed(() => (noData.value ? 'border-dashed' : 'border-solid'))
       />
       <span class="flex min-w-0 flex-col">
         <span class="truncate font-mono font-medium">{{ name }}</span>
-        <span class="text-xs text-muted-foreground">{{ place }}</span>
+        <span class="truncate font-mono text-[11px] text-muted-foreground" :title="place">{{ place }}</span>
       </span>
       <span
         class="ml-auto shrink-0 rounded-md px-2 py-px text-xs font-medium"

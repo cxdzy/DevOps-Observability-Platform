@@ -52,6 +52,8 @@ export interface Incident {
 // One server from GET /api/nodes. Null means Prometheus returned no value.
 export interface NodeInfo {
   key: 'main' | 'old'
+  // Fixed card title (fyp-main, staging); hostname is the real one from node_uname_info.
+  displayName: string
   hostname: string | null
   role: string
   provider: string
@@ -71,6 +73,8 @@ export interface NodeInfo {
 export interface ServicesInfo {
   expected: { name: string, role: string }[]
   containers: { name: string, memoryBytes: number | null }[]
+  // True when cAdvisor named no container at all, so it is not known which services run.
+  unknown: boolean
 }
 
 // One item from GET /api/activity, newest first.
