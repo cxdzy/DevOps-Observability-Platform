@@ -6,7 +6,8 @@ if present) of RUN and writes RUN/summary.csv and RUN/summary.md.
   --stage 1  screening rule of plan section 4, prints the stage 2 --models list
   --stage 2  decision rule of plan section 8, step by step
 
-Timing: medians and p95 over repetitions 1 to 3 (all repetitions present), warm-up excluded.
+Timing: medians and p95 over the repetitions of the chat questions (all present), warm-up
+excluded. Explanations have one run each, so their reply time is the median over the incidents.
 A failed call (for example a timeout) counts as the timeout value in the reply time, so a model
 cannot look fast by failing. Quality scores come from repetition 1 (plan section 5).
 Grounding means are exact fractions, so the 0.2 margin is compared without rounding error.
@@ -398,10 +399,11 @@ def write_outputs(run, stage, metrics, results, decision_lines, chosen_line, cfg
             w.writerow(row)
 
     md = [f"# Chat model test, stage {stage}: {run.name}", "",
-          f"Timing: medians and p95 over repetitions 1 to 3, warm-up excluded, failed calls counted as "
-          f"{cfg['timeout_s']} s. Quality from repetition 1, hand scored blind (0 to 2). Questions share the "
-          f"system prompt and FACTS prefix, so Ollama reuses the cached prompt between questions; warm reply "
-          f"times are lower than a chat call with a new FACTS block (prompt_tokens per call is in raw.jsonl).", "",
+          f"Timing: medians and p95 over the repetitions of the chat questions, warm-up excluded, failed calls "
+          f"counted as {cfg['timeout_s']} s. Quality from repetition 1, hand scored blind (0 to 2). Each chat call "
+          f"starts with a unique request line before the FACTS block, so only the system prompt can be reused from "
+          f"the Ollama prompt cache. Explanations run once per incident. prompt_tokens and prompt_tok_s per call "
+          f"are in raw.jsonl.", "",
           "## Results", "", *chapter4_table(metrics), ""]
     if stage == 1:
         md += ["## Stage 1 screening", "",

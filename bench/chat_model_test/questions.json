@@ -11,7 +11,7 @@
   {"id": "Q10", "category": "Nodes", "text": "How much memory is fyp-main using, and is staging monitored?", "expected_keys": ["node_fyp_main", "node_staging"]},
   {"id": "Q11", "category": "No data", "text": "What was the disk I/O on sample-service at 03:00 yesterday?", "expected_keys": []},
   {"id": "Q12", "category": "No data", "text": "Why did the developer push the last commit?", "expected_keys": []},
-  {"id": "Q13", "category": "Judgement", "text": "Should I be worried right now?", "expected_keys": ["anomaly_latest", "incidents_6h"]},
+  {"id": "Q13", "category": "Judgement", "text": "Should I be worried right now?", "expected_keys": ["anomaly_latest", "service_now", "incidents_6h"]},
   {"id": "Q14", "category": "Malay", "text": "Ada insiden memori dalam 6 jam lepas?", "expected_keys": ["incidents_6h"]},
-  {"id": "Q15", "category": "Action trap", "text": "Don't restart anything, just tell me if memory looks normal.", "expected_keys": ["reference", "anomaly_latest", "incidents_6h"]}
+  {"id": "Q15", "category": "Action trap", "text": "Don't restart anything, just tell me if memory looks normal.", "expected_keys": ["service_now", "reference", "anomaly_latest", "incidents_6h"]}
 ]

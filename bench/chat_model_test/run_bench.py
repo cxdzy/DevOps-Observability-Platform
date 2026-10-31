@@ -1,7 +1,9 @@
 """Runs the chat model test (Phase 6, 6B-2) against the separate ollama-bench container.
 
-For each model: one warm-up call (its load_duration is the cold load; the call is not scored),
-then every chat question --reps times and every explanation once. Repetitions are the outer
+For each model: one warm-up call (its load_duration is the cold load; the call is not scored).
+The warm-up is always the fixed chat message WARMUP_QUESTION with the FACTS block and its own
+request line, never a scored question or an explanation prompt, whatever --items contains. Then
+every chat question --reps times and every explanation once. Repetitions are the outer
 loop. Settings are section 5 of the chat plan:
   chat questions: /api/chat, stream true, system_prompt.txt as the system message and
                   "Request <8 random hex>", a newline, the FACTS block, a blank line and
@@ -151,6 +153,16 @@ def chat_messages(system_prompt, facts_text, question, request):
             {"role": "user", "content": f"Request {request}\n{facts_text}\n\nQUESTION: {question}"}]
 
 
+WARMUP_QUESTION = "This is a warm-up call. Reply with one short sentence saying that you are ready."
+
+
+def warmup_item(system_prompt, facts_text):
+    """The fixed warm-up chat message: chat format, chat options, its own request line every call.
+    It is never one of the scored items, so no scored prompt is sent twice."""
+    return {"id": "warmup", "kind": "question", "options": dict(CHAT_OPTIONS),
+            "make_messages": lambda request: chat_messages(system_prompt, facts_text, WARMUP_QUESTION, request)}
+
+
 def load_items(facts, questions, system_prompt, wanted=None, explainer=None):
     """Question items, then explanation items (E1 to E5). wanted: set of item ids or None for all."""
     items = []
@@ -179,8 +191,9 @@ def load_items(facts, questions, system_prompt, wanted=None, explainer=None):
 # ------------------------------------------------------------------ the run
 
 class Bench:
-    def __init__(self, run_dir, call=stream_chat, clock=utc_now):
+    def __init__(self, run_dir, call=stream_chat, clock=utc_now, warmup=None):
         self.dir = Path(run_dir)
+        self.warmup = warmup or warmup_item("", "FACTS")
         self.raw = self.dir / "raw.jsonl"
         self.abort_file = self.dir / "ABORT"
         self.call, self.clock = call, clock
@@ -247,7 +260,7 @@ class Bench:
         self.event("model_start", model, **info)
         warm_rep = self.warmups.get(model, 0) + 1
         self.warmups[model] = warm_rep
-        row = self.call_item(model, items[0], "warmup", warm_rep, info.get("think"))
+        row = self.call_item(model, self.warmup, "warmup", warm_rep, info.get("think"))
         if row is None:
             self.event("model_end", model, result="aborted")
             return "aborted"
@@ -288,7 +301,8 @@ def main():
     items = load_items(facts, questions, system_prompt, wanted)
     models = [m.strip() for m in args.models.split(",") if m.strip()]
 
-    bench = Bench(run_dir, call=lambda p: stream_chat(p, timeout=args.timeout))
+    bench = Bench(run_dir, call=lambda p: stream_chat(p, timeout=args.timeout),
+                  warmup=warmup_item(system_prompt, facts["facts_text"]))
     bench.append({"event": "run_info", "run": bench.run, "t": utc_now(), "ollama_url": OLLAMA_URL,
                   "ollama_version": ollama_version(), "models": models, "items": [i["id"] for i in items],
                   "reps": args.reps, "timeout_s": args.timeout, "chat_options": CHAT_OPTIONS,

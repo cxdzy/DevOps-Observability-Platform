@@ -144,8 +144,8 @@ def test_resume_skips_rows_already_present(tmp_path):
     calls = []
     bench = run_bench.Bench(tmp_path, call=lambda p: calls.append(p["messages"][0]["content"]) or fake_result())
     assert bench.run_model("m1", items("Q1", "Q2"), 2, {"think": True}) == "done"
-    # warm-up, then rep 1 Q2, rep 2 Q1, rep 2 Q2 (rep is the outer loop)
-    assert calls == ["Q1", "Q2", "Q1", "Q2"]
+    # fixed warm-up (default system prompt ""), then rep 1 Q2, rep 2 Q1, rep 2 Q2 (rep is the outer loop)
+    assert calls == ["", "Q2", "Q1", "Q2"]
     rows = [r for r in raw_rows(tmp_path) if r.get("kind") == "question"]
     assert [(r["item_id"], r["rep"]) for r in rows] == [("Q1", 1), ("Q2", 1), ("Q1", 2), ("Q2", 2)]
     assert all(r["think_false_sent"] for r in rows[1:])      # rows[0] was written before the run
@@ -178,7 +178,7 @@ def test_abort_stops_cleanly_and_resume_reruns_the_aborted_call(tmp_path):
     bench = run_bench.Bench(tmp_path, call=call)
     assert bench.run_model("m1", items("Q1", "Q2", "Q3"), 1, {}) == "aborted"
     rows = raw_rows(tmp_path)
-    assert [(r["kind"], r["item_id"]) for r in rows if "kind" in r] == [("warmup", "Q1"), ("question", "Q1")]
+    assert [(r["kind"], r["item_id"]) for r in rows if "kind" in r] == [("warmup", "warmup"), ("question", "Q1")]
     assert rows[-1]["event"] == "model_end" and rows[-1]["result"] == "aborted"
     assert not any(r.get("status") == "failed" for r in rows)
 
@@ -228,7 +228,8 @@ def test_every_chat_call_gets_a_new_request_line(tmp_path):
     questions = [{"id": "Q1", "text": "Up?"}, {"id": "Q2", "text": "Score?"}]
     its = run_bench.load_items(facts, questions, "SYS", None)
     payloads = []
-    bench = run_bench.Bench(tmp_path, call=lambda p: payloads.append(p) or fake_result())
+    bench = run_bench.Bench(tmp_path, call=lambda p: payloads.append(p) or fake_result(),
+                            warmup=run_bench.warmup_item("SYS", facts["facts_text"]))
     assert bench.run_model("m1", its, 3, {}) == "done"
     users = [p["messages"][1]["content"] for p in payloads]
     assert len(users) == 1 + 2 * 3                               # warm-up plus 2 questions x 3 reps
@@ -515,3 +516,52 @@ def test_explanations_run_once_whatever_reps_is(tmp_path):
     assert len(expl) == 1 and not expl[0]["messages"][-1]["content"].startswith("Request ")
     # resume: nothing is left, explanation reps 2 and 3 are never wanted
     assert run_bench.Bench(tmp_path, call=lambda p: fake_result()).run_model("m1", its, 3, {}) == "skipped"
+
+
+def test_warmup_is_a_fixed_chat_message_even_with_only_explanations(tmp_path):
+    ex = sf.load_explainer()
+    stored = stored_incident()
+    stored["facts_text"] = ex.facts_text(ex.build_facts(sf.incident_from_stored(stored)))
+    facts = {"facts_text": "FACTS (snapshot)", "explanation_incidents": [stored]}
+    its = run_bench.load_items(facts, [{"id": "Q1", "text": "Up?"}], "SYS", {"E1"}, ex)
+    assert [i["kind"] for i in its] == ["explanation"]
+    payloads = []
+    bench = run_bench.Bench(tmp_path, call=lambda p: payloads.append(p) or fake_result("x"),
+                            warmup=run_bench.warmup_item("SYS", facts["facts_text"]))
+    assert bench.run_model("m1", its, 3, {}) == "done"
+    assert len(payloads) == 2
+    warm, expl = payloads
+    assert warm["messages"][0] == {"role": "system", "content": "SYS"}
+    user = warm["messages"][1]["content"]
+    assert re.fullmatch(r"Request [0-9a-f]{8}\nFACTS \(snapshot\)\n\nQUESTION: " + re.escape(run_bench.WARMUP_QUESTION), user)
+    assert warm["options"] == run_bench.CHAT_OPTIONS
+    assert warm["messages"] != expl["messages"] and expl["messages"] == its[0]["messages"]
+    rows = [r for r in raw_rows(tmp_path) if "kind" in r]
+    assert [(r["kind"], r["item_id"]) for r in rows] == [("warmup", "warmup"), ("explanation", "E1")]
+    # a second warm-up (after an abort) gets a new request line
+    again = run_bench.Bench(tmp_path, call=lambda p: payloads.append(p) or fake_result("x"),
+                            warmup=run_bench.warmup_item("SYS", facts["facts_text"]))
+    again.call_item("m1", again.warmup, "warmup", 2, False)
+    assert payloads[-1]["messages"][1]["content"].split("\n")[0] != user.split("\n")[0]
+
+
+def test_questions_file_keys():
+    questions = json.loads((Path(sf.__file__).parent / "questions.json").read_text(encoding="utf-8"))
+    assert [q["id"] for q in questions] == [f"Q{i}" for i in range(1, 16)]
+    for q in questions:
+        assert set(q["expected_keys"]) <= set(sf.VALUE_KEYS), q["id"]
+    keys = {q["id"]: q["expected_keys"] for q in questions}
+    assert "service_now" in keys["Q13"] and "service_now" in keys["Q15"]
+    assert "reference" in keys["Q15"] and keys["Q11"] == [] and keys["Q12"] == []
+
+
+def test_blind_expected_text_for_q15_shows_current_and_normal_memory():
+    questions = json.loads((Path(sf.__file__).parent / "questions.json").read_text(encoding="utf-8"))
+    _, lines = sf.render_facts(FIXTURE_VALUES, SNAPSHOT)
+    facts = {"lines": lines, "explanation_incidents": []}
+    rows = [{"model": "m", "item_id": q, "kind": "question", "rep": 1, "status": "ok", "answer": "a"} for q in ("Q13", "Q15")]
+    sheet, _ = make_blind.build_sheet(rows, facts, questions, seed=3)
+    expected = {s["item_id"]: s["expected"] for s in sheet}
+    assert "sample-service now: 20:31, cpu_rate 0.0031, memory 137 MB, latency 1.4 ms" in expected["Q15"]
+    assert "normal reference: cpu_rate 0.0029, memory 135 MB, latency 1.5 ms" in expected["Q15"]
+    assert "sample-service now: 20:31" in expected["Q13"]
