@@ -2,9 +2,8 @@
 import type { AnomalyPoint, Incident } from '@/types'
 import { computed } from 'vue'
 import TierBadge from '@/components/TierBadge.vue'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { fixed } from '@/lib/format'
-import { FLAG_TIERS, toTier } from '@/lib/tier'
+import { fixed, orDash } from '@/lib/format'
+import { FLAG_TIERS, TIER_STYLE, toTier } from '@/lib/tier'
 
 const props = defineProps<{
   points: AnomalyPoint[]
@@ -13,6 +12,7 @@ const props = defineProps<{
 }>()
 
 const latest = computed(() => props.points[props.points.length - 1] ?? null)
+const scored = computed(() => props.points.filter(p => p.score !== null).length)
 const flaggedMinutes = computed(() => props.points.filter(p => p.is_anomaly === 1).length)
 const counts = computed(() =>
   FLAG_TIERS.map(tier => ({
@@ -20,42 +20,50 @@ const counts = computed(() =>
     count: props.incidents.filter(i => toTier(i.tier) === tier).length,
   })),
 )
+
+// How far the latest score is from its threshold, only when both were returned.
+const margin = computed(() => {
+  const p = latest.value
+  if (!p || p.score === null || p.threshold === null) return null
+  const diff = p.score - p.threshold
+  return `${fixed(Math.abs(diff))} ${diff < 0 ? 'below' : 'above'} the threshold`
+})
 </script>
 
 <template>
-  <div class="grid gap-4 sm:grid-cols-3">
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle class="text-sm font-medium text-muted-foreground">Latest score</CardTitle>
-      </CardHeader>
-      <CardContent class="flex items-center justify-between gap-2">
-        <span class="font-mono text-2xl font-semibold">{{ fixed(latest?.score) }}</span>
+  <div class="grid grid-cols-[repeat(auto-fit,minmax(min(200px,100%),1fr))] gap-4">
+    <section aria-label="Latest score" class="rounded-xl border border-border p-4">
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-[13px] text-muted-foreground">Latest score</span>
         <TierBadge v-if="latest" :tier="latest.tier" />
-      </CardContent>
-    </Card>
+      </div>
+      <div class="mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]">{{ fixed(latest?.score) }}</div>
+      <div v-if="margin" class="mt-0.5 text-xs text-muted-foreground">{{ margin }}</div>
+    </section>
 
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle class="text-sm font-medium text-muted-foreground">Flagged minutes</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <span class="font-mono text-2xl font-semibold">{{ flaggedMinutes }}</span>
-      </CardContent>
-    </Card>
+    <section aria-label="Flagged minutes" class="rounded-xl border border-border p-4">
+      <div class="text-[13px] text-muted-foreground">Flagged minutes</div>
+      <div class="mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]">{{ flaggedMinutes }}</div>
+      <div class="mt-0.5 text-xs text-muted-foreground">of {{ scored }} scored minutes</div>
+    </section>
 
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle class="text-sm font-medium text-muted-foreground">Incidents by tier</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p v-if="incidentsFailed" class="text-sm text-muted-foreground">Unavailable</p>
-        <div v-else class="flex flex-wrap gap-3">
-          <span v-for="c in counts" :key="c.tier" class="flex items-center gap-1.5">
-            <TierBadge :tier="c.tier" />
-            <span class="font-mono font-semibold">{{ c.count }}</span>
+    <section aria-label="Incidents by tier" class="rounded-xl border border-border p-4">
+      <div class="text-[13px] text-muted-foreground">Incidents</div>
+      <p v-if="incidentsFailed" class="mt-2.5 text-[13px] text-muted-foreground">Unavailable</p>
+      <template v-else>
+        <div class="mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]">{{ incidents.length }}</div>
+        <div class="mt-1 flex flex-wrap gap-1.5">
+          <span v-for="c in counts" :key="c.tier" class="rounded-md px-1.5 text-[11px] font-semibold" :class="TIER_STYLE[c.tier].badgeClass">
+            {{ c.count }} {{ TIER_STYLE[c.tier].label }}
           </span>
         </div>
-      </CardContent>
-    </Card>
+      </template>
+    </section>
+
+    <section aria-label="Threshold" class="rounded-xl border border-border p-4">
+      <div class="text-[13px] text-muted-foreground">Threshold</div>
+      <div class="mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]">{{ fixed(latest?.threshold) }}</div>
+      <div v-if="latest?.model" class="mt-0.5 text-xs text-muted-foreground">model {{ orDash(latest.model) }}</div>
+    </section>
   </div>
 </template>

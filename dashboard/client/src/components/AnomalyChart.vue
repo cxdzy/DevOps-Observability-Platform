@@ -10,8 +10,9 @@ import {
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { useMediaQuery } from '@vueuse/core'
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import VChart from 'vue-echarts'
+import { useTheme } from '@/composables/useTheme'
 import { clockTime, fixed, localDateTime, shortDate } from '@/lib/format'
 import { FLAG_TIERS, TIER_STYLE, toTier } from '@/lib/tier'
 
@@ -28,6 +29,50 @@ const chart = ref<InstanceType<typeof VChart> | null>(null)
 
 // On phones the legend wraps to two lines, so the plot starts lower.
 const narrow = useMediaQuery('(max-width: 639px)')
+
+// Canvas drawing cannot use CSS variables, so the colours are read from the theme when drawing
+// and read again when the theme changes.
+const { theme } = useTheme()
+
+function cssVar(name: string, fallback: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback
+}
+
+// #RRGGBB with an alpha, for the area fill that fades out.
+function withAlpha(hex: string, alpha: number): string {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex)
+  if (!m) return hex
+  return `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, ${alpha})`
+}
+
+function readPalette() {
+  return {
+    panel: cssVar('--panel', '#FFFFFF'),
+    ink: cssVar('--ink', '#18181B'),
+    muted: cssVar('--muted-foreground', '#52525B'),
+    faint: cssVar('--faint', '#71717A'),
+    line: cssVar('--line', '#E4E4E7'),
+    primary: cssVar('--primary', '#18181B'),
+    chartline: cssVar('--chartline', '#18181B'),
+    thresh: cssVar('--thresh', '#A1A1AA'),
+    grid: cssVar('--grid', '#E4E4E7'),
+    tiers: {
+      low: cssVar(TIER_STYLE.low.markerVar, '#2563EB'),
+      medium: cssVar(TIER_STYLE.medium.markerVar, '#D97706'),
+      high: cssVar(TIER_STYLE.high.markerVar, '#DC2626'),
+    },
+  }
+}
+
+const palette = ref(readPalette())
+watch(theme, () => { palette.value = readPalette() })
+
+// Canvas text does not wait for web fonts, so the chart is drawn again once Geist Mono has loaded.
+const MONO = '"Geist Mono", ui-monospace, monospace'
+const fontReady = ref(0)
+onMounted(() => {
+  document.fonts?.load(`11px ${MONO}`).then(() => { fontReady.value++ }, () => {})
+})
 
 const byTime = computed(() => new Map(props.points.map(p => [p.time, p])))
 
@@ -52,6 +97,10 @@ function tooltip(params: unknown): string {
 const flaggedPoints = computed(() => props.points.filter(p => p.is_anomaly === 1 && p.score !== null))
 
 const option = computed(() => {
+  const c = palette.value
+  // Read so the option is rebuilt, and the canvas redrawn, when the font arrives.
+  void fontReady.value
+  const axisText = { color: c.faint, fontFamily: MONO, fontSize: 11 }
   const score = props.points.map(p => [p.time, p.score])
   const threshold = props.points.map(p => [p.time, p.threshold])
   const flagged = FLAG_TIERS.map(tier => ({
@@ -59,7 +108,7 @@ const option = computed(() => {
     type: 'scatter',
     symbol: TIER_STYLE[tier].symbol,
     symbolSize: 9,
-    itemStyle: { color: TIER_STYLE[tier].color },
+    itemStyle: { color: c.tiers[tier], borderColor: c.panel, borderWidth: 1.5 },
     data: flaggedPoints.value
       .filter(p => toTier(p.tier) === tier)
       .map(p => [p.time, p.score]),
@@ -72,14 +121,33 @@ const option = computed(() => {
     legend: {
       top: 0,
       data: ['Score', 'Threshold', ...FLAG_TIERS.map(t => TIER_STYLE[t].label)],
+      textStyle: { color: c.muted, fontSize: 12 },
+      inactiveColor: c.thresh,
     },
-    tooltip: { trigger: 'axis', formatter: tooltip },
+    tooltip: {
+      trigger: 'axis',
+      formatter: tooltip,
+      backgroundColor: c.panel,
+      borderColor: c.line,
+      borderWidth: 1,
+      textStyle: { color: c.ink, fontSize: 12 },
+      axisPointer: { lineStyle: { color: c.thresh } },
+    },
     dataZoom: [{ type: 'inside', xAxisIndex: 0 }],
     xAxis: {
       type: 'time',
-      axisLabel: { formatter: (v: number) => axisLabel(v), hideOverlap: true },
+      axisLine: { lineStyle: { color: c.grid } },
+      axisTick: { lineStyle: { color: c.grid } },
+      splitLine: { show: false },
+      axisLabel: { ...axisText, formatter: (v: number) => axisLabel(v), hideOverlap: true },
     },
-    yAxis: { type: 'value', scale: true, axisLabel: { formatter: (v: number) => v.toFixed(2) } },
+    yAxis: {
+      type: 'value',
+      scale: true,
+      axisLine: { show: false },
+      splitLine: { lineStyle: { color: c.grid, type: [3, 4] } },
+      axisLabel: { ...axisText, formatter: (v: number) => v.toFixed(2) },
+    },
     series: [
       {
         name: 'Score',
@@ -88,8 +156,23 @@ const option = computed(() => {
         // Thins the drawn line on long ranges while keeping peaks; flagged minutes are separate series.
         sampling: 'lttb',
         showSymbol: false,
-        lineStyle: { width: 1.5, color: '#0f172a' },
-        itemStyle: { color: '#0f172a' },
+        lineStyle: { width: 1.5, color: c.chartline },
+        itemStyle: { color: c.chartline },
+        // Area under the line, fading from 12 percent to nothing.
+        areaStyle: {
+          origin: 'start',
+          color: {
+            type: 'linear',
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 1,
+            colorStops: [
+              { offset: 0, color: withAlpha(c.chartline, 0.12) },
+              { offset: 1, color: withAlpha(c.chartline, 0) },
+            ],
+          },
+        },
       },
       {
         name: 'Threshold',
@@ -97,17 +180,18 @@ const option = computed(() => {
         data: threshold,
         step: 'end',
         showSymbol: false,
-        lineStyle: { width: 1, type: 'dashed', color: '#9ca3af' },
-        itemStyle: { color: '#9ca3af' },
+        lineStyle: { width: 1.5, type: [5, 4], color: c.thresh },
+        itemStyle: { color: c.thresh },
       },
       ...flagged,
       {
-        // Ring around the selected minute; left out of the legend.
+        // Ring around the selected minute; left out of the legend. A plain circle with a clear
+        // fill, because ECharts fills its "empty" symbols with a fixed light colour.
         name: 'Selected',
         type: 'scatter',
-        symbol: 'emptyCircle',
+        symbol: 'circle',
         symbolSize: 16,
-        itemStyle: { color: '#7c3aed', borderWidth: 2 },
+        itemStyle: { color: 'transparent', borderColor: c.primary, borderWidth: 2 },
         tooltip: { show: false },
         data: selectedPoint ? [[selectedPoint.time, selectedPoint.score]] : [],
       },

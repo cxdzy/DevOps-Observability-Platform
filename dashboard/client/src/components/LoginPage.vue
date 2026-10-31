@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Separator } from '@/components/ui/separator'
 import { useAuth } from '@/composables/useAuth'
+import { useTheme } from '@/composables/useTheme'
 
 const { googleEnabled, message, login, rememberTab } = useAuth()
+const { theme, toggle } = useTheme()
+const toggleLabel = computed(() => (theme.value === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'))
 
 const email = ref('')
 const password = ref('')
@@ -26,43 +27,82 @@ async function submit() {
 }
 
 const inputClass =
-  'border-input focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full rounded-lg border bg-transparent px-3 text-sm outline-none focus-visible:ring-3 disabled:opacity-50'
+  'min-h-11 w-full rounded-lg border border-input bg-transparent px-3 font-normal text-foreground placeholder:text-muted-foreground disabled:opacity-50'
 </script>
 
 <template>
-  <div class="flex flex-1 items-center justify-center py-8">
-    <Card class="w-full max-w-sm">
-      <CardHeader>
-        <CardTitle class="text-xl">Observability Dashboard</CardTitle>
-        <CardDescription>Sign in to continue</CardDescription>
-      </CardHeader>
-      <CardContent class="flex flex-col gap-4">
-        <p v-if="error" class="rounded-lg border border-red-200 bg-red-50 p-2 text-sm text-red-800" role="alert">
-          {{ error }}
-        </p>
+  <div class="flex min-h-dvh flex-col px-4 pt-4 pb-10 sm:px-6">
+    <div class="flex justify-end">
+      <button
+        type="button"
+        class="flex size-9 items-center justify-center rounded-lg border border-border bg-card text-foreground hover:bg-chip"
+        :aria-label="toggleLabel"
+        :title="toggleLabel"
+        @click="toggle"
+      >
+        <svg v-if="theme === 'dark'" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
+        <svg v-else class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" /></svg>
+      </button>
+    </div>
 
-        <form class="flex flex-col gap-3" @submit.prevent="submit">
-          <label class="flex flex-col gap-1.5 text-sm">
-            <span>Email</span>
-            <input v-model="email" type="email" name="email" autocomplete="username" required :disabled="submitting" :class="inputClass">
-          </label>
-          <label class="flex flex-col gap-1.5 text-sm">
-            <span>Password</span>
-            <input v-model="password" type="password" name="password" autocomplete="current-password" required :disabled="submitting" :class="inputClass">
-          </label>
-          <Button type="submit" :disabled="submitting">{{ submitting ? 'Signing in...' : 'Sign in' }}</Button>
-        </form>
+    <main class="flex flex-1 items-center justify-center pt-6">
+      <div class="flex w-full max-w-[380px] flex-col gap-5">
+        <div class="flex items-center gap-2.5">
+          <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground" aria-hidden="true">
+            <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4" /></svg>
+          </span>
+          <span class="flex flex-col leading-tight">
+            <span class="text-[15px] font-semibold">Observability</span>
+            <span class="text-xs text-muted-foreground">Predictive monitoring and incident diagnosis</span>
+          </span>
+        </div>
 
-        <template v-if="googleEnabled">
-          <div class="flex items-center gap-3 text-xs text-muted-foreground">
-            <Separator class="flex-1" />
-            <span>or</span>
-            <Separator class="flex-1" />
+        <div class="flex flex-col gap-4 rounded-[14px] bg-card p-6 ring-1 ring-border">
+          <div>
+            <h1 class="text-[22px] font-semibold tracking-[-0.02em]">Sign in</h1>
+            <p class="mt-1 text-[13px] text-muted-foreground">Use an approved account.</p>
           </div>
-          <!-- A plain link: the browser leaves for Google and comes back to /auth/google/callback. -->
-          <Button as="a" href="/auth/google" variant="outline" @click="rememberTab">Continue with Google</Button>
-        </template>
-      </CardContent>
-    </Card>
+
+          <p v-if="error" class="rounded-lg bg-tier-high-bg p-2.5 text-[13px] text-tier-high-fg" role="alert">
+            {{ error }}
+          </p>
+
+          <template v-if="googleEnabled">
+            <!-- A plain link: the browser leaves for Google and comes back to /auth/google/callback. -->
+            <Button
+              as="a"
+              href="/auth/google"
+              variant="outline"
+              class="min-h-11 gap-2.5 border-input bg-transparent text-sm text-foreground dark:border-input dark:bg-transparent"
+              @click="rememberTab"
+            >
+              <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 12h8" /></svg>
+              Continue with Google
+            </Button>
+            <div class="flex items-center gap-3 text-xs text-muted-foreground">
+              <span class="h-px flex-1 bg-border" aria-hidden="true" />
+              or with email
+              <span class="h-px flex-1 bg-border" aria-hidden="true" />
+            </div>
+          </template>
+
+          <form class="flex flex-col gap-4" @submit.prevent="submit">
+            <label class="flex flex-col gap-1.5 text-[13px] font-medium">
+              Email
+              <input v-model="email" type="email" name="email" autocomplete="username" placeholder="you@example.com" required :disabled="submitting" :class="inputClass">
+            </label>
+            <label class="flex flex-col gap-1.5 text-[13px] font-medium">
+              Password
+              <input v-model="password" type="password" name="password" autocomplete="current-password" required :disabled="submitting" :class="inputClass">
+            </label>
+            <Button type="submit" class="min-h-11 text-sm" :disabled="submitting">{{ submitting ? 'Signing in...' : 'Sign in' }}</Button>
+          </form>
+        </div>
+
+        <p class="text-xs text-muted-foreground">
+          No sign-up. Ask the administrator for an account. Sessions end after 8 hours without activity.
+        </p>
+      </div>
+    </main>
   </div>
 </template>

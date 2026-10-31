@@ -4,5 +4,5 @@ import { Skeleton } from '@/components/ui/skeleton'
 
 <template>
   <!-- Same height as the chart container, so swapping one for the other does not move the layout. -->
-  <Skeleton class="h-[260px] w-full md:h-[320px]" />
+  <Skeleton class="h-[260px] w-full rounded-lg bg-chip md:h-[320px]" />
 </template>

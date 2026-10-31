@@ -5,7 +5,6 @@ import { computed, ref } from 'vue'
 import IncidentDetail from '@/components/IncidentDetail.vue'
 import IncidentList from '@/components/IncidentList.vue'
 import RangeSelect from '@/components/RangeSelect.vue'
-import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { FLAG_TIERS, TIER_STYLE, toTier } from '@/lib/tier'
 
@@ -28,50 +27,59 @@ const visible = computed(() =>
   filter.value === 'all' ? props.incidents : props.incidents.filter(i => toTier(i.tier) === filter.value),
 )
 const incident = computed(() => props.incidents.find(i => i.start === selected.value) ?? null)
+
+const rangeText = computed(() =>
+  hours.value > 24 && hours.value % 24 === 0 ? `${hours.value / 24} days` : `${hours.value} hours`,
+)
 </script>
 
 <template>
-  <div class="flex flex-col gap-4">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <h2 class="text-lg font-semibold">Incident timeline</h2>
-      <div class="flex flex-wrap items-center gap-2">
-        <div class="flex gap-1" role="group" aria-label="Filter by tier">
-          <Button
-            v-for="f in FILTERS"
-            :key="f.value"
-            size="sm"
-            :variant="filter === f.value ? 'default' : 'outline'"
-            :aria-pressed="filter === f.value"
-            @click="filter = f.value"
-          >
-            {{ f.label }}
-          </Button>
-        </div>
-        <RangeSelect v-model="hours" />
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <h1 class="text-2xl font-semibold tracking-[-0.02em]">Incidents</h1>
+      <p class="mt-0.5 text-[13px] text-muted-foreground">
+        <template v-if="loaded">{{ incidents.length }} in the last {{ rangeText }}, newest first</template>
+        <template v-else>Last {{ rangeText }}, newest first</template>
+      </p>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      <div role="group" aria-label="Filter by tier" class="flex gap-0.5 rounded-lg bg-chip p-[3px]">
+        <button
+          v-for="f in FILTERS"
+          :key="f.value"
+          type="button"
+          class="min-h-9 rounded-md px-3 text-[13px] md:min-h-8"
+          :class="filter === f.value ? 'bg-card font-medium text-foreground ring-1 ring-border' : 'text-muted-foreground hover:text-foreground'"
+          :aria-pressed="filter === f.value"
+          @click="filter = f.value"
+        >
+          {{ f.label }}
+        </button>
       </div>
+      <RangeSelect v-model="hours" />
     </div>
+  </div>
 
-    <div v-if="loading" class="flex flex-col gap-3">
-      <Skeleton v-for="n in 3" :key="n" class="h-24" />
-    </div>
+  <div v-if="loading" class="flex flex-col gap-3">
+    <Skeleton v-for="n in 3" :key="n" class="h-14 rounded-xl" />
+  </div>
 
-    <p v-else-if="failed && !loaded" class="rounded-lg border border-red-200 bg-red-50 p-3 text-center text-sm text-red-800">
-      Incident data unavailable. Retrying every 30 seconds.
+  <p v-else-if="failed && !loaded" class="rounded-lg bg-tier-high-bg p-3 text-[13px] text-tier-high-fg" role="alert">
+    Incident data unavailable. Retrying every 30 seconds.
+  </p>
+
+  <template v-else>
+    <p v-if="failed" class="rounded-lg bg-tier-medium-bg p-2.5 text-[13px] text-tier-medium-fg" role="status">
+      Incident data could not be refreshed. Showing the last loaded data.
     </p>
 
-    <template v-else>
-      <p v-if="failed" class="rounded-lg border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
-        Incident data could not be refreshed. Showing the last loaded data.
-      </p>
-
-      <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <div class="min-w-0">
-          <p v-if="incidents.length === 0" class="py-16 text-center text-sm text-muted-foreground">No data in this range</p>
-          <p v-else-if="visible.length === 0" class="py-16 text-center text-sm text-muted-foreground">No incidents match this filter</p>
-          <IncidentList v-else :incidents="visible" :selected="selected" @select="selected = $event" />
-        </div>
-        <IncidentDetail :incident="incident" />
+    <div class="flex flex-wrap items-start gap-4">
+      <div class="min-w-0 flex-[3_1_440px]">
+        <p v-if="incidents.length === 0" class="rounded-xl border border-border py-16 text-center text-[13px] text-muted-foreground">No data in this range</p>
+        <p v-else-if="visible.length === 0" class="rounded-xl border border-border py-16 text-center text-[13px] text-muted-foreground">No incidents match this filter</p>
+        <IncidentList v-else :incidents="visible" :selected="selected" @select="selected = $event" />
       </div>
-    </template>
-  </div>
+      <IncidentDetail class="min-w-0 flex-[2_1_320px]" :incident="incident" />
+    </div>
+  </template>
 </template>

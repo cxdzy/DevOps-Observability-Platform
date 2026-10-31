@@ -1,54 +1,61 @@
 <script setup lang="ts">
-import type { Incident } from '@/types'
+import type { Incident, IncidentStatus } from '@/types'
 import TierBadge from '@/components/TierBadge.vue'
-import { Badge } from '@/components/ui/badge'
-import { ScrollArea } from '@/components/ui/scroll-area'
-import { fixed, localDateTime, orDash } from '@/lib/format'
+import { clockTime, fixed, orDash, shortDate } from '@/lib/format'
 import { STATUS_STYLE } from '@/lib/incident'
-import { TIER_STYLE, toTier } from '@/lib/tier'
 
 defineProps<{
   incidents: Incident[]
   selected: number | null
 }>()
 const emit = defineEmits<{ select: [start: number] }>()
+
+// Theme colours for the status text; an open incident stands out.
+const STATUS_CLASS: Record<IncidentStatus, string> = {
+  open: 'rounded-md bg-primary px-1.5 py-px text-xs font-semibold text-primary-foreground',
+  closed: 'text-muted-foreground',
+  awaiting_explanation: 'text-muted-foreground',
+}
+
+const columns = 'grid grid-cols-[84px_96px_minmax(0,1fr)_64px_minmax(72px,auto)] items-center gap-3 px-4'
 </script>
 
 <template>
-  <ScrollArea class="h-[min(32rem,70vh)]">
-    <ol class="relative ml-2 flex flex-col gap-3 border-l border-border py-1 pr-3 pl-5">
-      <li v-for="incident in incidents" :key="`${incident.start}-${incident.status}`" class="relative">
-        <span
-          class="absolute top-4 -left-[1.6rem] size-3 rounded-full ring-2 ring-background"
-          :style="{ backgroundColor: TIER_STYLE[toTier(incident.tier)].color }"
-          aria-hidden="true"
-        />
-        <button
-          type="button"
-          class="w-full rounded-lg border p-3 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-          :class="[
-            incident.status === 'open' ? 'border-violet-500 ring-2 ring-violet-200' : 'border-border',
-            selected === incident.start ? 'bg-muted' : '',
-          ]"
-          :aria-pressed="selected === incident.start"
-          @click="emit('select', incident.start)"
-        >
-          <div class="flex flex-wrap items-center gap-2">
-            <span class="font-medium">{{ localDateTime(incident.start) }}</span>
-            <span class="text-muted-foreground">{{ incident.minutes }} min</span>
-          </div>
-          <div class="mt-2 flex flex-wrap items-center gap-1.5">
-            <TierBadge :tier="incident.tier" />
-            <Badge :class="STATUS_STYLE[incident.status].badgeClass">{{ STATUS_STYLE[incident.status].label }}</Badge>
-            <Badge v-if="incident.deployment" variant="outline">deployment</Badge>
-          </div>
-          <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
-            <span>signal: {{ orDash(incident.signal) }}</span>
-            <span>action: {{ orDash(incident.action) }}</span>
-            <span>peak: <span class="font-mono">{{ fixed(incident.peakScore) }}</span></span>
-          </div>
-        </button>
-      </li>
-    </ol>
-  </ScrollArea>
+  <section aria-label="Incident list" class="overflow-hidden rounded-xl border border-border">
+    <div class="max-h-[min(36rem,70vh)] overflow-auto">
+      <div class="min-w-[560px]">
+        <!-- Column titles for sighted users; each row button reads out its own values. -->
+        <div :class="columns" class="sticky top-0 z-10 bg-chip py-2 text-xs font-medium text-muted-foreground" aria-hidden="true">
+          <span>Start</span><span>Tier</span><span>Signal and action</span><span>Peak</span><span>Status</span>
+        </div>
+        <ul>
+          <li v-for="incident in incidents" :key="`${incident.start}-${incident.status}`" class="border-t border-border">
+            <button
+              type="button"
+              :class="[
+                columns,
+                selected === incident.start
+                  ? 'bg-chip shadow-[inset_3px_0_0_var(--primary)] dark:bg-navon'
+                  : 'hover:bg-chip/60',
+              ]"
+              class="w-full py-3 text-left [--focus-offset:-2px]"
+              :aria-pressed="selected === incident.start"
+              @click="emit('select', incident.start)"
+            >
+              <span class="flex flex-col leading-tight">
+                <span class="font-mono font-medium">{{ clockTime(incident.start) }}</span>
+                <span class="text-xs text-muted-foreground">{{ shortDate(incident.start) }}</span>
+              </span>
+              <span><TierBadge :tier="incident.tier" /></span>
+              <span class="truncate text-muted-foreground">
+                {{ orDash(incident.signal) }}, {{ orDash(incident.action) }}, {{ incident.minutes }} min<template v-if="incident.deployment">, after a deployment</template>
+              </span>
+              <span class="font-mono text-[13px]"><span class="sr-only">Peak </span>{{ fixed(incident.peakScore) }}</span>
+              <span class="text-[13px]"><span :class="STATUS_CLASS[incident.status]">{{ STATUS_STYLE[incident.status].label }}</span></span>
+            </button>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </section>
 </template>

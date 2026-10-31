@@ -6,11 +6,10 @@ import ChartSkeleton from '@/components/ChartSkeleton.vue'
 import PointDetail from '@/components/PointDetail.vue'
 import RangeSelect from '@/components/RangeSelect.vue'
 import SummaryCards from '@/components/SummaryCards.vue'
-import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { incidentAt } from '@/lib/incident'
 
-// ECharts is most of the bundle, so the chart is downloaded only when this tab first shows it.
+// ECharts is most of the bundle, so the chart is downloaded only when this view first shows it.
 const AnomalyChart = defineAsyncComponent({
   loader: () => import('@/components/AnomalyChart.vue'),
   loadingComponent: ChartSkeleton,
@@ -35,46 +34,51 @@ const point = computed(() =>
   selected.value === null ? null : props.points.find(p => p.time === selected.value) ?? null,
 )
 const incident = computed(() => (point.value ? incidentAt(props.incidents, point.value.time) : null))
+
+const warning = 'rounded-lg bg-tier-medium-bg p-2.5 text-[13px] text-tier-medium-fg'
 </script>
 
 <template>
-  <div class="flex flex-col gap-4">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <h2 class="text-lg font-semibold">Anomaly scores</h2>
-      <RangeSelect v-model="hours" />
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <h1 class="text-2xl font-semibold tracking-[-0.02em]">Anomaly scores</h1>
+      <p class="mt-0.5 text-[13px] text-muted-foreground">One score per minute, local time</p>
     </div>
+    <RangeSelect v-model="hours" />
+  </div>
 
-    <div v-if="loading" class="flex flex-col gap-4">
-      <div class="grid gap-4 sm:grid-cols-3">
-        <Skeleton v-for="n in 3" :key="n" class="h-24" />
-      </div>
-      <ChartSkeleton />
+  <template v-if="loading">
+    <div class="grid grid-cols-[repeat(auto-fit,minmax(min(200px,100%),1fr))] gap-4">
+      <Skeleton v-for="n in 4" :key="n" class="h-[116px] rounded-xl" />
     </div>
+    <ChartSkeleton />
+  </template>
 
-    <p v-else-if="pointsFailed && !pointsLoaded" class="rounded-lg border border-red-200 bg-red-50 p-3 text-center text-sm text-red-800">
-      Anomaly data unavailable. Retrying every 30 seconds.
+  <p v-else-if="pointsFailed && !pointsLoaded" class="rounded-lg bg-tier-high-bg p-3 text-[13px] text-tier-high-fg" role="alert">
+    Anomaly data unavailable. Retrying every 30 seconds.
+  </p>
+
+  <template v-else>
+    <p v-if="pointsFailed" :class="warning" role="status">
+      Anomaly data could not be refreshed. Showing the last loaded data.
     </p>
 
-    <template v-else>
-      <p v-if="pointsFailed" class="rounded-lg border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
-        Anomaly data could not be refreshed. Showing the last loaded data.
-      </p>
+    <SummaryCards :points="points" :incidents="incidents" :incidents-failed="incidentsFailed && !incidentsLoaded" />
 
-      <SummaryCards :points="points" :incidents="incidents" :incidents-failed="incidentsFailed && !incidentsLoaded" />
+    <p v-if="incidentsFailed" :class="warning" role="status">
+      {{ incidentsLoaded ? 'Incident details could not be refreshed. Showing the last loaded data.' : 'Incident details unavailable' }}
+    </p>
 
-      <p v-if="incidentsFailed" class="rounded-lg border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
-        {{ incidentsLoaded ? 'Incident details could not be refreshed. Showing the last loaded data.' : 'Incident details unavailable' }}
-      </p>
-
-      <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <Card class="min-w-0">
-          <CardContent>
-            <p v-if="points.length === 0" class="py-16 text-center text-sm text-muted-foreground">No data in this range</p>
-            <AnomalyChart v-else :points="points" :hours="hours" :selected="selected" @select="selected = $event" />
-          </CardContent>
-        </Card>
-        <PointDetail :point="point" :incident="incident" />
-      </div>
-    </template>
-  </div>
+    <div class="flex flex-wrap items-stretch gap-4">
+      <section aria-label="Anomaly score chart" class="min-w-0 flex-[2_1_520px] rounded-xl border border-border px-[18px] py-4">
+        <div class="mb-2">
+          <h2 class="text-[15px] font-semibold">Score over time</h2>
+          <p class="text-xs text-muted-foreground">Click a minute to see its details</p>
+        </div>
+        <p v-if="points.length === 0" class="py-16 text-center text-[13px] text-muted-foreground">No data in this range</p>
+        <AnomalyChart v-else :points="points" :hours="hours" :selected="selected" @select="selected = $event" />
+      </section>
+      <PointDetail class="min-w-0 flex-[1_1_280px]" :point="point" :incident="incident" />
+    </div>
+  </template>
 </template>
