@@ -171,7 +171,7 @@ const noData = 'text-muted-foreground'
         </div>
         <dl class="grid grid-cols-[repeat(auto-fit,minmax(140px,1fr))] overflow-hidden rounded-[10px] border border-border">
           <div class="-mr-px border-r border-border px-3 py-2.5">
-            <dt class="text-xs text-muted-foreground">Test F1</dt>
+            <dt class="text-xs text-muted-foreground">Test F1 at promotion</dt>
             <dd class="mt-0.5 text-base" :class="champion?.testF1 == null ? noData : 'font-mono'">{{ champion?.testF1 == null ? 'No data' : fixed(champion.testF1, 4) }}</dd>
           </div>
           <div class="-mr-px border-r border-border px-3 py-2.5">
@@ -194,6 +194,9 @@ const noData = 'text-muted-foreground'
           <h2 id="retrain-title" class="text-[15px] font-semibold">Last retraining</h2>
           <span v-if="retrainResult" :class="chip" class="bg-chip text-chipfg">{{ retrainResult }}</span>
         </div>
+        <!-- Both models are scored on the newest test set here, so the champion's F1 can differ from
+             its F1 at promotion on the Champion card. -->
+        <p class="-mt-2.5 text-xs text-muted-foreground">F1 on the latest test set</p>
         <template v-if="retrain">
           <div class="font-mono text-[13px] text-muted-foreground">{{ rnum('time') !== null ? localDateTime(rnum('time')) : 'No data' }}</div>
           <div class="flex flex-col gap-2.5">

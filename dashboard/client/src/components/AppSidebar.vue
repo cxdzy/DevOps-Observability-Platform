@@ -84,14 +84,16 @@ async function signOut() {
     <!-- On phones the groups merge into one row (display: contents) and their labels hide. The row
          scrolls sideways by touch, and focusing a link with the keyboard scrolls it into view; the
          scrollbar itself is hidden. -->
-    <nav aria-label="Views" class="flex gap-1 overflow-x-auto [scrollbar-width:none] md:flex-col md:gap-3.5 md:overflow-visible [&::-webkit-scrollbar]:hidden">
+    <!-- relative on the row and on each link keeps their absolutely positioned sr-only text inside
+         the scrolling row; without it that text is placed against the page and widens it on phones. -->
+    <nav aria-label="Views" class="relative flex gap-1 overflow-x-auto [scrollbar-width:none] md:flex-col md:gap-3.5 md:overflow-visible [&::-webkit-scrollbar]:hidden">
       <div v-for="group in NAV" :key="group.label" class="max-md:contents md:flex md:flex-col md:gap-0.5">
         <span class="hidden px-2.5 pb-1 text-xs font-medium text-muted-foreground md:block">{{ group.label }}</span>
         <a
           v-for="item in group.items"
           :key="item.id"
           :href="`#${item.id}`"
-          class="flex min-h-11 shrink-0 items-center gap-2.5 rounded-lg px-2.5 py-2 no-underline max-md:[--focus-offset:-2px] md:min-h-0"
+          class="relative flex min-h-11 shrink-0 items-center gap-2.5 rounded-lg px-2.5 py-2 no-underline max-md:[--focus-offset:-2px] md:min-h-0"
           :class="current === item.id
             ? 'bg-navon font-medium text-navonfg ring-1 ring-navring'
             : 'text-muted-foreground hover:bg-card hover:text-foreground'"
