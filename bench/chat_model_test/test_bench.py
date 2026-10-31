@@ -5,6 +5,7 @@
 """
 import csv
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from fractions import Fraction
@@ -33,6 +34,7 @@ FIXTURE_VALUES = {
     "service_up": True,
     "anomaly_latest": {"time_ms": ms("2026-11-01T12:31:00Z"), "score": 0.3391, "threshold": 0.6024,
                        "flagged": False, "tier": "none"},
+    "service_now": {"time_ms": ms("2026-11-01T12:31:00Z"), "cpu_rate": 0.00312, "memory_max_mb": 137.4, "latency_ms": 1.43},
     "model": {"champion": "v10", "threshold": 0.6024,
               "last_retrain": {"time_ms": ms("2026-10-30T19:01:20Z"), "promoted": False, "new_version": ""}},
     "reference": {"cpu_rate": 0.00291, "memory_max_mb": 135.2, "latency_ms": 1.46},
@@ -52,6 +54,7 @@ FIXTURE_VALUES = {
 EXPECTED_FACTS = """FACTS (snapshot 2026-11-01T12:31:00Z, times in MYT, UTC+8)
 service sample-service: up yes
 anomaly latest: 20:31, score 0.339, threshold 0.602, flagged no, tier none
+sample-service now: 20:31, cpu_rate 0.0031, memory 137 MB, latency 1.4 ms
 model: champion v10, threshold 0.602, last retraining 03:01 31 Oct, result kept champion
 normal reference: cpu_rate 0.0029, memory 135 MB, latency 1.5 ms
 incidents last 6 h: 3 (low 2, medium 1, high 0)
@@ -77,6 +80,7 @@ def test_facts_rendering_without_data():
     text, _ = sf.render_facts(values, SNAPSHOT)
     assert "service sample-service: up no data" in text
     assert "anomaly latest: no data" in text
+    assert "sample-service now: no data" in text
     assert "incidents last 6 h: no data" in text
     assert "last CI deployment: none recorded" in text
     assert "node staging: monitored no" in text
@@ -214,8 +218,27 @@ def test_failed_warmup_marks_load_failure(tmp_path):
 
 
 def test_chat_message_composition():
-    msgs = run_bench.chat_messages("SYS", "FACTS (x)", "Is it up?")
-    assert msgs == [{"role": "system", "content": "SYS"}, {"role": "user", "content": "FACTS (x)\n\nQUESTION: Is it up?"}]
+    msgs = run_bench.chat_messages("SYS", "FACTS (x)", "Is it up?", "0a1b2c3d")
+    assert msgs == [{"role": "system", "content": "SYS"},
+                    {"role": "user", "content": "Request 0a1b2c3d\nFACTS (x)\n\nQUESTION: Is it up?"}]
+
+
+def test_every_chat_call_gets_a_new_request_line(tmp_path):
+    facts = {"facts_text": "FACTS (snapshot)\nservice sample-service: up yes", "explanation_incidents": []}
+    questions = [{"id": "Q1", "text": "Up?"}, {"id": "Q2", "text": "Score?"}]
+    its = run_bench.load_items(facts, questions, "SYS", None)
+    payloads = []
+    bench = run_bench.Bench(tmp_path, call=lambda p: payloads.append(p) or fake_result())
+    assert bench.run_model("m1", its, 3, {}) == "done"
+    users = [p["messages"][1]["content"] for p in payloads]
+    assert len(users) == 1 + 2 * 3                               # warm-up plus 2 questions x 3 reps
+    first_lines = [u.split("\n", 1)[0] for u in users]
+    assert all(re.fullmatch(r"Request [0-9a-f]{8}", line) for line in first_lines)
+    assert len(set(first_lines)) == len(first_lines)             # unique per call
+    assert all(u.split("\n", 1)[1].startswith("FACTS (snapshot)\n") for u in users)
+    assert all(p["messages"][0] == {"role": "system", "content": "SYS"} for p in payloads)
+    rows = [r for r in raw_rows(tmp_path) if r.get("kind") in ("question", "warmup")]
+    assert [f"Request {r['request_id']}" for r in rows] == first_lines
 
 
 # ------------------------------------------------------------------ explanation round trip
@@ -473,3 +496,22 @@ def test_blind_failure_marker_does_not_reveal_the_model():
              "error": "RuntimeError: HTTP 404: model 'secret:3b' not found"}]
     sheet, _ = make_blind.build_sheet(rows, facts, [{"id": "Q1", "text": "Up?", "expected_keys": ["service_up"]}], 1)
     assert sheet[0]["answer"] == "[no answer: call failed: RuntimeError]"
+
+
+def test_explanations_run_once_whatever_reps_is(tmp_path):
+    ex = sf.load_explainer()
+    stored = stored_incident()
+    stored["facts_text"] = ex.facts_text(ex.build_facts(sf.incident_from_stored(stored)))
+    facts = {"facts_text": "FACTS", "explanation_incidents": [stored]}
+    its = run_bench.load_items(facts, [{"id": "Q1", "text": "Up?"}], "SYS", None, ex)
+    payloads = []
+    bench = run_bench.Bench(tmp_path, call=lambda p: payloads.append(p) or fake_result("What happened: x"))
+    assert bench.run_model("m1", its, 3, {}) == "done"
+    rows = [r for r in raw_rows(tmp_path) if r.get("kind") in ("question", "explanation")]
+    assert sorted((r["item_id"], r["rep"]) for r in rows) == [("E1", 1), ("Q1", 1), ("Q1", 2), ("Q1", 3)]
+    e = [r for r in rows if r["kind"] == "explanation"][0]
+    assert e["request_id"] is None and "validator_pass" in e
+    expl = [p for p in payloads if "seed" not in p["options"]]
+    assert len(expl) == 1 and not expl[0]["messages"][-1]["content"].startswith("Request ")
+    # resume: nothing is left, explanation reps 2 and 3 are never wanted
+    assert run_bench.Bench(tmp_path, call=lambda p: fake_result()).run_model("m1", its, 3, {}) == "skipped"

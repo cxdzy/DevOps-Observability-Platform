@@ -17,12 +17,15 @@ dropping and choosing models are fixed in `summarize.py` before the run.
 ## How a call is made
 
 - Chat questions go to `/api/chat` with stream true. The system message is
-  `dashboard/server/chat/system_prompt.txt`. The user message is the FACTS block, a blank line,
-  then `QUESTION: <text>`. The options are temperature 0, seed 42, num_predict 200 and num_ctx 2048.
+  `dashboard/server/chat/system_prompt.txt`. The user message is `Request <8 random hex>`, a
+  newline, the FACTS block, a blank line, then `QUESTION: <text>`. The request line is new on every
+  call, so Ollama can reuse only the cached system prompt, as in production where FACTS change
+  between questions. Its value is kept as `request_id` in `raw.jsonl`. The options are temperature 0, seed 42, num_predict 200 and num_ctx 2048.
   The chat route must build its messages the same way.
 - Explanations use the explainer's own `build_facts`, `build_messages(facts, [], None)` and call
   options, with only the model swapped. They are checked with `check_explanation` on the first
-  attempt. `similar=[]` means no Chroma context, which is a limitation to state.
+  attempt. Each incident runs once, whatever `--reps` is. `similar=[]` means no Chroma context,
+  which is a limitation to state.
 - `think` false is sent only to models whose `/api/show` capabilities include thinking.
 - Each model gets one warm-up call. Its load time is recorded as the cold load and it is not scored.
   The repetitions are the outer loop.
@@ -70,9 +73,9 @@ off runs again.
 The explainer image runs as root, so the files it writes in `results/RUN/` are owned by root. Run
 `sudo chown -R $USER bench/chat_model_test/results` before editing `scores_blind.csv`.
 
-Limitation: all questions share the system prompt and the FACTS prefix, so Ollama reuses the cached
-prompt and warm reply times are lower than a chat call with a fresh FACTS block. `prompt_tokens`
-and `prompt_tok_s` are recorded per call for this reason.
+The FACTS line `sample-service now` is the same scored minute as `anomaly latest`. Its memory value
+is `memory_max_mb`, the field the normal reference uses, so the two can be compared (Q15).
+`prompt_tokens` and `prompt_tok_s` are recorded per call so any prompt cache effect stays visible.
 
 Keep these files under `results/RUN/` for both stages: `facts.json`, `models.txt`,
 `pull_errors.txt` (if any), `raw.jsonl`, `ram.csv`, the scored `scores_blind.csv`, `key.csv`,

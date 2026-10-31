@@ -6,7 +6,10 @@ its HTTP API (PROM_URL, default http://prometheus:9090). Nothing is written anyw
 output file.
 
 facts.json holds:
-  values      the structured values behind each FACTS line
+  values      the structured values behind each FACTS line. service_now is the scored minute of
+              "anomaly latest" (cpu_rate, memory_max_mb, latency_ms on that anomaly_score point);
+              memory_max_mb is the field the normal reference uses (reference_level
+              memory_max_mb_median and base_memory_max_mb), so the two are comparable
   lines       the rendered FACTS lines for each value key (questions.json expected_keys point here)
   facts_text  the full FACTS block in the format of the chat plan, section 10 (times in MYT)
   explanation_incidents  5 past incidents for the explanation test, newest first, each with the
@@ -32,7 +35,7 @@ SERVICE_UP_JOB = "sample-service"
 INCIDENT_HOURS = 6
 RESTART_DAYS = 30
 MATCH_WINDOW_MS = 120 * 1000          # same as dashboard/server/incidents.js
-VALUE_KEYS = ["service_up", "anomaly_latest", "model", "reference", "incidents_6h",
+VALUE_KEYS = ["service_up", "anomaly_latest", "service_now", "model", "reference", "incidents_6h",
               "last_restart", "last_ci_deployment", "node_fyp_main", "node_staging"]
 FOOTER = "Only the facts above are available. Logs, commit messages and metrics not listed are not available."
 
@@ -133,6 +136,11 @@ def render_lines(values, snapshot):
     lines["anomaly_latest"] = ["anomaly latest: no data" if not a else
                                f"anomaly latest: {fmt_time(a['time_ms'], snapshot)}, score {_num(a['score'], 3)}, "
                                f"threshold {_num(a['threshold'], 3)}, flagged {yes_no(a['flagged'])}, tier {a['tier'] or 'no data'}"]
+
+    now = values.get("service_now")
+    lines["service_now"] = ["sample-service now: no data" if not now else
+                            f"sample-service now: {fmt_time(now['time_ms'], snapshot)}, cpu_rate {_num(now['cpu_rate'], 4)}, "
+                            f"memory {_num(now['memory_max_mb'], 0)} MB, latency {_num(now['latency_ms'], 1)} ms"]
 
     m = values.get("model")
     if not m or not m.get("champion"):
@@ -300,6 +308,10 @@ def collect_values(influx, prom):
     values["anomaly_latest"] = None if not p else {
         "time_ms": int(p["time"]), "score": _float(p.get("score")), "threshold": _float(p.get("threshold")),
         "flagged": _flag(p.get("is_anomaly")), "tier": p.get("tier")}
+
+    # Same minute as "anomaly latest". memory_max_mb is the field the normal reference is built from.
+    values["service_now"] = None if not p else {
+        "time_ms": int(p["time"]), **{c: _float(p.get(c)) for c in ("cpu_rate", "memory_max_mb", "latency_ms")}}
 
     retrains = influx('SELECT "promoted","new_version","champion_version" FROM "model_retrain" ORDER BY time DESC LIMIT 1')
     r = retrains[0] if retrains else None

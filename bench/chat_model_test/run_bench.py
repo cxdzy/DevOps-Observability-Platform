@@ -1,11 +1,13 @@
 """Runs the chat model test (Phase 6, 6B-2) against the separate ollama-bench container.
 
 For each model: one warm-up call (its load_duration is the cold load; the call is not scored),
-then every selected item --reps times. Repetitions are the outer loop, so the same prompt is
-never sent twice in a row. Settings are section 5 of the chat plan:
+then every chat question --reps times and every explanation once. Repetitions are the outer
+loop. Settings are section 5 of the chat plan:
   chat questions: /api/chat, stream true, system_prompt.txt as the system message and
-                  "FACTS block, blank line, QUESTION: <text>" as the user message,
-                  temperature 0, seed 42, num_predict 200, num_ctx 2048
+                  "Request <8 random hex>", a newline, the FACTS block, a blank line and
+                  "QUESTION: <text>" as the user message. The request line is new on every call,
+                  so Ollama can reuse only the cached system prompt, as in production where FACTS
+                  change between questions. temperature 0, seed 42, num_predict 200, num_ctx 2048
   explanations:   the explainer's own build_messages(facts, similar=[]) and call options
                   (LLM_TEMPERATURE, LLM_MAX_TOKENS, num_ctx 2048), stream true, and
                   check_explanation on the answer (first attempt only, no retry)
@@ -22,6 +24,7 @@ because of the abort is not recorded, so it runs again on resume. Remove ABORT t
 import argparse
 import json
 import os
+import secrets
 import sys
 import time
 from datetime import datetime, timezone
@@ -139,9 +142,13 @@ def ollama_version(url=OLLAMA_URL):
 
 # ------------------------------------------------------------------ items
 
-def chat_messages(system_prompt, facts_text, question):
+def request_id():
+    return secrets.token_hex(4)
+
+
+def chat_messages(system_prompt, facts_text, question, request):
     return [{"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"{facts_text}\n\nQUESTION: {question}"}]
+            {"role": "user", "content": f"Request {request}\n{facts_text}\n\nQUESTION: {question}"}]
 
 
 def load_items(facts, questions, system_prompt, wanted=None, explainer=None):
@@ -150,7 +157,8 @@ def load_items(facts, questions, system_prompt, wanted=None, explainer=None):
     for q in questions:
         if wanted is None or q["id"] in wanted:
             items.append({"id": q["id"], "kind": "question", "options": dict(CHAT_OPTIONS),
-                          "messages": chat_messages(system_prompt, facts["facts_text"], q["text"])})
+                          "make_messages": (lambda request, text=q["text"]:
+                                            chat_messages(system_prompt, facts["facts_text"], text, request))})
     stored = [e for e in facts.get("explanation_incidents", []) if wanted is None or e["id"] in wanted]
     if stored:
         ex = explainer or load_explainer()
@@ -200,11 +208,17 @@ class Bench:
 
     def call_item(self, model, item, kind, rep, think):
         """Runs one call and appends its row. Returns the row, or None if the run was aborted."""
-        payload = {"model": model, "messages": item["messages"], "stream": True, "options": item["options"]}
+        request = None
+        if "make_messages" in item:                     # chat question: new request line every call
+            request = request_id()
+            messages = item["make_messages"](request)
+        else:
+            messages = item["messages"]
+        payload = {"model": model, "messages": messages, "stream": True, "options": item["options"]}
         if think:
             payload["think"] = False
         row = {"run": self.run, "model": model, "item_id": item["id"], "kind": kind, "rep": rep,
-               "t_start": self.clock(), "think_false_sent": bool(think)}
+               "t_start": self.clock(), "think_false_sent": bool(think), "request_id": request}
         try:
             row.update(self.call(payload), status="ok", error="")
         except Exception as e:
@@ -223,8 +237,9 @@ class Bench:
 
     def run_model(self, model, items, reps, info):
         """Returns done, skipped, aborted or load_failed."""
+        # Explanations run once per incident (plan section 5, amended 1 Nov), questions --reps times.
         todo = [(rep, it) for rep in range(1, reps + 1) for it in items
-                if (model, it["id"], it["kind"], rep) not in self.done]
+                if (it["kind"] != "explanation" or rep == 1) and (model, it["id"], it["kind"], rep) not in self.done]
         if not todo:
             return "skipped"
         if self.aborted():
