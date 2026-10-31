@@ -6,6 +6,7 @@ const { createAuth } = require("./auth");
 const { createGoogle } = require("./google");
 const { createOverview, loadIncidents } = require("./overview");
 const { loadRemediation } = require("./remediation");
+const { createModel } = require("./model");
 
 // Returns the validated hours value, or null after sending a 400. Values are clamped to 1..max.
 function hoursParam(req, res, fallback = 24, max = 168) {
@@ -44,8 +45,9 @@ function securityHeaders(https) {
 // Trusts no proxy; used when no trusted set is passed.
 const TRUST_NOBODY = { has: () => false };
 
-// deps: { db, query, influxUrl, config, trusted, now, log, oidc, prometheus }
+// deps: { db, query, influxUrl, config, trusted, now, log, oidc, prometheus, mlflow }
 // prometheus: a client from prometheus.js; tests pass a stub. Defaults to PROMETHEUS_URL.
+// mlflow: a client from mlflow.js. Defaults to MLFLOW_URL.
 // config: { appOrigin, cookieSecure, sessionMaxAgeMs, googleClientId, googleClientSecret, clientDist, bcryptCost }
 // trusted: the resolved trusted proxy addresses (security.createTrustedProxies).
 function createApp(deps) {
@@ -128,6 +130,16 @@ function createApp(deps) {
       res.json(await loadRemediation(query, hours));
     } catch (err) {
       res.status(502).json({ error: "influxdb unreachable" });
+    }
+  });
+
+  // Registry and retraining data. Partial data is returned when only one source fails.
+  const model = createModel({ query, mlflow: deps.mlflow });
+  app.get("/api/model", async (req, res) => {
+    try {
+      res.json(await model.load());
+    } catch (err) {
+      res.status(502).json({ error: "mlflow and influxdb unreachable" });
     }
   });
 

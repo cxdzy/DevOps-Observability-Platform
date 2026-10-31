@@ -8,6 +8,8 @@ const props = defineProps<{
   // Incidents in the selected range, or null until they have been loaded.
   incidentCount: number | null
   hours: number
+  // Champion model version (for example "10"), or null until the Model view has loaded it.
+  championVersion: string | null
 }>()
 
 const { me, logout } = useAuth()
@@ -26,6 +28,12 @@ const NAV = [
     label: 'Actions',
     items: [
       { id: 'remediation', label: 'Remediation', icon: 'M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7' },
+    ],
+  },
+  {
+    label: 'System',
+    items: [
+      { id: 'model', label: 'Model', icon: 'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1' },
     ],
   },
 ]
@@ -73,8 +81,10 @@ async function signOut() {
     </div>
 
     <!-- On phones the links scroll sideways; the scroll box clips, so their focus ring sits inside. -->
-    <!-- On phones the groups merge into one row (display: contents) and their labels hide. -->
-    <nav aria-label="Views" class="flex gap-1 overflow-x-auto md:flex-col md:gap-3.5 md:overflow-visible">
+    <!-- On phones the groups merge into one row (display: contents) and their labels hide. The row
+         scrolls sideways by touch, and focusing a link with the keyboard scrolls it into view; the
+         scrollbar itself is hidden. -->
+    <nav aria-label="Views" class="flex gap-1 overflow-x-auto [scrollbar-width:none] md:flex-col md:gap-3.5 md:overflow-visible [&::-webkit-scrollbar]:hidden">
       <div v-for="group in NAV" :key="group.label" class="max-md:contents md:flex md:flex-col md:gap-0.5">
         <span class="hidden px-2.5 pb-1 text-xs font-medium text-muted-foreground md:block">{{ group.label }}</span>
         <a
@@ -95,6 +105,13 @@ async function signOut() {
             :title="`${incidentCount} in the last ${rangeLabel}`"
           >
             {{ incidentCount }}<span class="sr-only"> in the last {{ rangeLabel }}</span>
+          </span>
+          <span
+            v-if="item.id === 'model' && championVersion"
+            class="ml-auto font-mono text-[11px]"
+            :title="`Champion is version ${championVersion}`"
+          >
+            v{{ championVersion }}<span class="sr-only">, champion version</span>
           </span>
         </a>
       </div>

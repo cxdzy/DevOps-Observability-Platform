@@ -95,3 +95,35 @@ export interface RemediationRow {
   // The open incident the restart most likely answered, or null.
   incident: { start: number, tier: string | null, peak_score: number | null } | null
 }
+
+// One model registry version from GET /api/model. testF1 is the test_f1 tag the worker sets on
+// promotion; versions registered by the training script do not have it.
+export interface ModelVersionInfo {
+  version: string
+  createdAt: number | null
+  testF1: number | null
+  runId: string | null
+  aliases: string[]
+}
+
+// GET /api/model. Registry fields are null when MLflow did not answer; thresholds and lastRetrain
+// are null when InfluxDB did not answer.
+export interface ModelInfo {
+  champion: ModelVersionInfo | null
+  previous: ModelVersionInfo | null
+  versions: ModelVersionInfo[] | null
+  // The last decision threshold seen in anomaly_score for each model tag (v10 is version "10").
+  thresholds: { model: string, version: string, threshold: number | null, lastSeen: number | null }[] | null
+  // The newest model_retrain row with every field it has (see worker/worker.py retrain()).
+  lastRetrain: Record<string, string | number | null> | null
+  rules: {
+    promoteMargin: number
+    minTestAnomalies: number
+    minTestInjections: number
+    minInjectionDetection: number
+    minRecall: number
+    retrainHourUtc: number
+  }
+  mlflowOk: boolean
+  influxOk: boolean
+}

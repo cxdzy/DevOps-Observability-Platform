@@ -4,15 +4,16 @@ import AnomalyView from '@/components/AnomalyView.vue'
 import AppHeader from '@/components/AppHeader.vue'
 import AppSidebar from '@/components/AppSidebar.vue'
 import IncidentsView from '@/components/IncidentsView.vue'
+import ModelView from '@/components/ModelView.vue'
 import OverviewView from '@/components/OverviewView.vue'
 import RemediationView from '@/components/RemediationView.vue'
 import { useRangeData } from '@/composables/useRangeData'
 
-const TABS = ['overview', 'anomaly', 'incidents', 'remediation'] as const
+const TABS = ['overview', 'anomaly', 'incidents', 'remediation', 'model'] as const
 type Tab = typeof TABS[number]
-const TITLES: Record<Tab, string> = { overview: 'Overview', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation' }
+const TITLES: Record<Tab, string> = { overview: 'Overview', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', model: 'Model' }
 // Breadcrumb group, the same grouping as the sidebar.
-const GROUPS: Record<Tab, string> = { overview: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions' }
+const GROUPS: Record<Tab, string> = { overview: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', model: 'System' }
 
 function tabFromHash(): Tab {
   const name = window.location.hash.slice(1)
@@ -59,7 +60,10 @@ watch([points, incidents], () => {
   }
 })
 watch([pointsFailed, incidentsFailed], ([p, i]) => { live.value = !p && !i })
-// Overview and Remediation poll on their own and report each load here.
+// The champion version for the sidebar, known once the Model view has loaded.
+const championVersion = ref<string | null>(null)
+
+// Overview, Remediation and Model poll on their own and report each load here.
 function onViewRefreshed(ok: boolean) {
   live.value = ok
   if (ok) refreshedAt.value = Date.now()
@@ -68,7 +72,7 @@ function onViewRefreshed(ok: boolean) {
 
 <template>
   <div class="flex min-h-dvh flex-col gap-2 p-2 md:flex-row">
-    <AppSidebar :current="tab" :incident-count="incidentCount" :hours="hours" />
+    <AppSidebar :current="tab" :incident-count="incidentCount" :hours="hours" :champion-version="championVersion" />
 
     <main class="flex min-w-0 flex-1 flex-col rounded-[14px] bg-card ring-1 ring-border">
       <AppHeader :group="GROUPS[tab]" :page="TITLES[tab]" :refreshed-at="refreshedAt" :live="live" />
@@ -89,6 +93,7 @@ function onViewRefreshed(ok: boolean) {
           :incidents-loaded="incidentsLoaded"
         />
         <RemediationView v-else-if="tab === 'remediation'" @refreshed="onViewRefreshed" />
+        <ModelView v-else-if="tab === 'model'" @refreshed="onViewRefreshed" @champion="championVersion = $event" />
         <IncidentsView
           v-else
           v-model:hours="hours"
