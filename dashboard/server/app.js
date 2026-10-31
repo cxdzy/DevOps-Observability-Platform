@@ -4,7 +4,7 @@ const express = require("express");
 const helmet = require("helmet");
 const { createAuth } = require("./auth");
 const { createGoogle } = require("./google");
-const { mergeIncidents } = require("./incidents");
+const { createOverview, loadIncidents } = require("./overview");
 
 // Returns the validated hours value, or null after sending a 400.
 function hoursParam(req, res) {
@@ -51,7 +51,8 @@ function securityHeaders(https) {
 // Trusts no proxy; used when no trusted set is passed.
 const TRUST_NOBODY = { has: () => false };
 
-// deps: { db, query, influxUrl, config, trusted, now, log, oidc }
+// deps: { db, query, influxUrl, config, trusted, now, log, oidc, prometheus }
+// prometheus: a client from prometheus.js; tests pass a stub. Defaults to PROMETHEUS_URL.
 // config: { appOrigin, cookieSecure, sessionMaxAgeMs, googleClientId, googleClientSecret, clientDist, bcryptCost }
 // trusted: the resolved trusted proxy addresses (security.createTrustedProxies).
 function createApp(deps) {
@@ -130,17 +131,34 @@ function createApp(deps) {
     const hours = hoursParam(req, res);
     if (hours === null) return;
     try {
-      const [expl, open] = await Promise.all([
-        query(
-          'SELECT "tier","action","signal","peak_score","minutes","source","deployment","explanation" ' +
-            `FROM "incident_explanation" WHERE time > now() - ${hours}h ORDER BY time ASC`
-        ),
-        query(
-          'SELECT "tier","tier_level","action","signal","peak_score","minutes","deployment" ' +
-            `FROM "incident_open" WHERE time > now() - ${hours}h ORDER BY time ASC`
-        ),
-      ]);
-      res.json(mergeIncidents(expl, open, now()));
+      res.json(await loadIncidents(query, hours, now()));
+    } catch (err) {
+      res.status(502).json({ error: "influxdb unreachable" });
+    }
+  });
+
+  // Overview data. Each route fails on its own, so one unreachable source does not hide the others.
+  const overview = createOverview({ query, prometheus: deps.prometheus });
+
+  app.get("/api/nodes", async (req, res) => {
+    try {
+      res.json(await overview.nodes());
+    } catch (err) {
+      res.status(502).json({ error: "prometheus unreachable" });
+    }
+  });
+
+  app.get("/api/services", async (req, res) => {
+    try {
+      res.json(await overview.services());
+    } catch (err) {
+      res.status(502).json({ error: "prometheus unreachable" });
+    }
+  });
+
+  app.get("/api/activity", async (req, res) => {
+    try {
+      res.json(await overview.activity(now()));
     } catch (err) {
       res.status(502).json({ error: "influxdb unreachable" });
     }

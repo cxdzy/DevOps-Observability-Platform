@@ -1,9 +1,9 @@
 import type { Incident, IncidentStatus } from '@/types'
 
-export const STATUS_STYLE: Record<IncidentStatus, { label: string, badgeClass: string }> = {
-  open: { label: 'Open', badgeClass: 'bg-violet-100 text-violet-800' },
-  closed: { label: 'Closed', badgeClass: 'bg-gray-100 text-gray-700' },
-  awaiting_explanation: { label: 'Awaiting explanation', badgeClass: 'bg-yellow-100 text-yellow-800' },
+export const STATUS_STYLE: Record<IncidentStatus, { label: string }> = {
+  open: { label: 'Open' },
+  closed: { label: 'Closed' },
+  awaiting_explanation: { label: 'Awaiting explanation' },
 }
 
 // The incident that covers a minute: from its start up to one minute after its end.

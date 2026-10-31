@@ -70,6 +70,10 @@ watch(theme, () => { palette.value = readPalette() })
 // Canvas text does not wait for web fonts, so the chart is drawn again once Geist Mono has loaded.
 const MONO = '"Geist Mono", ui-monospace, monospace'
 const fontReady = ref(0)
+
+// Legend icons drawn as filled paths: a solid bar and a dashed bar, 24 by 2.
+const LINE_ICON = 'path://M0 0h24v2H0z'
+const DASHED_ICON = 'path://M0 0h5v2H0zM9 0h5v2H9zM18 0h6v2h-6z'
 onMounted(() => {
   document.fonts?.load(`11px ${MONO}`).then(() => { fontReady.value++ }, () => {})
 })
@@ -120,7 +124,13 @@ const option = computed(() => {
     grid: { left: 48, right: 16, top: narrow.value ? 64 : 40, bottom: 40 },
     legend: {
       top: 0,
-      data: ['Score', 'Threshold', ...FLAG_TIERS.map(t => TIER_STYLE[t].label)],
+      // Plain line icons for the two lines. The default line icon draws a symbol on top, which
+      // ECharts fills with a fixed light colour (a white dot in dark mode).
+      data: [
+        { name: 'Score', icon: LINE_ICON, itemStyle: { color: c.chartline } },
+        { name: 'Threshold', icon: DASHED_ICON, itemStyle: { color: c.thresh } },
+        ...FLAG_TIERS.map(t => TIER_STYLE[t].label),
+      ],
       textStyle: { color: c.muted, fontSize: 12 },
       inactiveColor: c.thresh,
     },

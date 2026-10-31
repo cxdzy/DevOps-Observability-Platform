@@ -19,3 +19,17 @@ export function fixed(value: number | null | undefined, digits = 3): string {
 export function orDash(value: string | null | undefined): string {
   return value ? value : '-'
 }
+
+// Bytes in binary gigabytes (1024 to the power 3), shown as GB with one decimal.
+export function gigabytes(bytes: number | null | undefined): string {
+  return bytes === null || bytes === undefined ? '-' : (bytes / 1024 ** 3).toFixed(1)
+}
+
+export function megabytes(bytes: number | null | undefined): string {
+  return bytes === null || bytes === undefined ? '-' : `${(bytes / 1024 ** 2).toFixed(1)} MB`
+}
+
+// Share of a total in whole percent, or null when either value is missing.
+export function percentUsed(used: number | null, total: number | null): number | null {
+  return used === null || total === null || total <= 0 ? null : Math.round((used / total) * 100)
+}
