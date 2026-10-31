@@ -30,6 +30,7 @@ const columns = 'grid grid-cols-[84px_96px_minmax(0,1fr)_64px_minmax(72px,auto)]
         </div>
         <ul>
           <li v-for="incident in incidents" :key="`${incident.start}-${incident.status}`" class="border-t border-border">
+            <!-- relative keeps the sr-only "Peak" text inside the scrolling list instead of the page. -->
             <button
               type="button"
               :class="[
@@ -38,7 +39,7 @@ const columns = 'grid grid-cols-[84px_96px_minmax(0,1fr)_64px_minmax(72px,auto)]
                   ? 'bg-chip shadow-[inset_3px_0_0_var(--primary)] dark:bg-navon'
                   : 'hover:bg-chip/60',
               ]"
-              class="w-full py-3 text-left [--focus-offset:-2px]"
+              class="relative w-full py-3 text-left [--focus-offset:-2px]"
               :aria-pressed="selected === incident.start"
               @click="emit('select', incident.start)"
             >
