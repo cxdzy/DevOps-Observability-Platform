@@ -238,7 +238,7 @@ test("security headers: CSP allows only self, no X-Powered-By", async (t) => {
   assert.match(csp, /connect-src 'self'(;|$)/);
   assert.match(csp, /img-src 'self'(;|$)/);
   assert.doesNotMatch(csp, /https:|unsafe-eval|unsafe-inline|\*/);
-  assert.match(csp, /style-src 'self' 'sha256-[^']+' 'sha256-[^']+'(;|$)/);
+  assert.match(csp, /style-src 'self'(;|$)/);
   assert.equal(res.headers.get("x-powered-by"), null);
   assert.equal(res.headers.get("x-content-type-options"), "nosniff");
 });

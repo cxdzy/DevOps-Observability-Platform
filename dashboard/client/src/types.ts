@@ -82,3 +82,16 @@ export type ActivityItem =
   | { type: 'incident', time: number, tier: string | null, signal: string | null, action: string | null, minutes: number, peakScore: number | null }
   | { type: 'deployment', time: number, commit: string | null, runId: string | null, branch: string | null }
   | { type: 'retrain', time: number, promoted: boolean, newVersion: string | null, championVersion: string | null, championF1: number | null, challengerF1: number | null }
+
+// One restart from GET /api/remediation, newest first. The n8n workflow records only restarts
+// that ran; mode is "auto" or "approved". service_up is 1 when monitoring showed the service up
+// 60 seconds after the restart.
+export interface RemediationRow {
+  time: number
+  mode: string | null
+  signal: string | null
+  minutes: number | null
+  service_up: number | null
+  // The open incident the restart most likely answered, or null.
+  incident: { start: number, tier: string | null, peak_score: number | null } | null
+}

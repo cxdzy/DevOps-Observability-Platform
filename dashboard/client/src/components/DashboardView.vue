@@ -5,11 +5,14 @@ import AppHeader from '@/components/AppHeader.vue'
 import AppSidebar from '@/components/AppSidebar.vue'
 import IncidentsView from '@/components/IncidentsView.vue'
 import OverviewView from '@/components/OverviewView.vue'
+import RemediationView from '@/components/RemediationView.vue'
 import { useRangeData } from '@/composables/useRangeData'
 
-const TABS = ['overview', 'anomaly', 'incidents'] as const
+const TABS = ['overview', 'anomaly', 'incidents', 'remediation'] as const
 type Tab = typeof TABS[number]
-const TITLES: Record<Tab, string> = { overview: 'Overview', anomaly: 'Anomaly', incidents: 'Incidents' }
+const TITLES: Record<Tab, string> = { overview: 'Overview', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation' }
+// Breadcrumb group, the same grouping as the sidebar.
+const GROUPS: Record<Tab, string> = { overview: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions' }
 
 function tabFromHash(): Tab {
   const name = window.location.hash.slice(1)
@@ -56,7 +59,8 @@ watch([points, incidents], () => {
   }
 })
 watch([pointsFailed, incidentsFailed], ([p, i]) => { live.value = !p && !i })
-function onOverviewRefreshed(ok: boolean) {
+// Overview and Remediation poll on their own and report each load here.
+function onViewRefreshed(ok: boolean) {
   live.value = ok
   if (ok) refreshedAt.value = Date.now()
 }
@@ -67,11 +71,11 @@ function onOverviewRefreshed(ok: boolean) {
     <AppSidebar :current="tab" :incident-count="incidentCount" :hours="hours" />
 
     <main class="flex min-w-0 flex-1 flex-col rounded-[14px] bg-card ring-1 ring-border">
-      <AppHeader group="Monitoring" :page="TITLES[tab]" :refreshed-at="refreshedAt" :live="live" />
+      <AppHeader :group="GROUPS[tab]" :page="TITLES[tab]" :refreshed-at="refreshedAt" :live="live" />
 
       <div class="flex flex-col gap-5 p-4 md:p-6">
         <!-- v-if, so a hidden view stops polling and the chart is not drawn in a hidden box. -->
-        <OverviewView v-if="tab === 'overview'" @refreshed="onOverviewRefreshed" />
+        <OverviewView v-if="tab === 'overview'" @refreshed="onViewRefreshed" />
         <AnomalyView
           v-else-if="tab === 'anomaly'"
           v-model:hours="hours"
@@ -84,6 +88,7 @@ function onOverviewRefreshed(ok: boolean) {
           :points-loaded="pointsLoaded"
           :incidents-loaded="incidentsLoaded"
         />
+        <RemediationView v-else-if="tab === 'remediation'" @refreshed="onViewRefreshed" />
         <IncidentsView
           v-else
           v-model:hours="hours"

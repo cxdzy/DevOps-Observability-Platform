@@ -5,25 +5,18 @@ const helmet = require("helmet");
 const { createAuth } = require("./auth");
 const { createGoogle } = require("./google");
 const { createOverview, loadIncidents } = require("./overview");
+const { loadRemediation } = require("./remediation");
 
-// Returns the validated hours value, or null after sending a 400.
-function hoursParam(req, res) {
+// Returns the validated hours value, or null after sending a 400. Values are clamped to 1..max.
+function hoursParam(req, res, fallback = 24, max = 168) {
   const raw = req.query.hours;
-  if (raw === undefined) return 24;
+  if (raw === undefined) return fallback;
   if (typeof raw !== "string" || !/^-?\d+$/.test(raw.trim())) {
     res.status(400).json({ error: "hours must be an integer" });
     return null;
   }
-  return Math.min(168, Math.max(1, parseInt(raw, 10)));
+  return Math.min(max, Math.max(1, parseInt(raw, 10)));
 }
-
-// reka-ui 2.11 renders one small <style> block each in ScrollArea and Select to hide native
-// scrollbars. They are allowed by hash instead of 'unsafe-inline'. After a reka-ui upgrade
-// the browser console names the new hash; without it only the native scrollbar shows.
-const REKA_STYLE_HASHES = [
-  "'sha256-6kJHBrMeYPjuL963zk84BmND3Z4cszEoZMFiRK2nkPY='", // ScrollAreaViewport
-  "'sha256-60LHlRjW/B3CtzIoE/Lf1/NEDvko9efWMFaGVhHu/cs='", // SelectViewport
-];
 
 // HSTS and upgrade-insecure-requests only when the site itself is served over HTTPS; on a plain
 // http origin they would send the browser to an https address that does not exist.
@@ -32,7 +25,7 @@ function securityHeaders(https) {
     "default-src": ["'self'"],
     "script-src": ["'self'"],
     "script-src-attr": ["'none'"],
-    "style-src": ["'self'", ...REKA_STYLE_HASHES],
+    "style-src": ["'self'"],
     "img-src": ["'self'"],
     "font-src": ["'self'"],
     "connect-src": ["'self'"],
@@ -122,6 +115,17 @@ function createApp(deps) {
           `FROM "anomaly_score" WHERE time > now() - ${hours}h ORDER BY time ASC`
       );
       res.json(rows);
+    } catch (err) {
+      res.status(502).json({ error: "influxdb unreachable" });
+    }
+  });
+
+  // Restarts run by the n8n workflow, last 7 days by default, up to 30 days.
+  app.get("/api/remediation", async (req, res) => {
+    const hours = hoursParam(req, res, 168, 720);
+    if (hours === null) return;
+    try {
+      res.json(await loadRemediation(query, hours));
     } catch (err) {
       res.status(502).json({ error: "influxdb unreachable" });
     }

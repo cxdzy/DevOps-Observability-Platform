@@ -12,11 +12,22 @@ const props = defineProps<{
 
 const { me, logout } = useAuth()
 
-// Only the views that exist today. Icons are 24 by 24 stroke paths.
+// Only the views that exist today, in their sidebar groups. Icons are 24 by 24 stroke paths.
 const NAV = [
-  { id: 'overview', label: 'Overview', icon: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z' },
-  { id: 'anomaly', label: 'Anomaly', icon: 'M3 12h4l3-8 4 16 3-8h4' },
-  { id: 'incidents', label: 'Incidents', icon: 'M12 3 2.5 20h19zM12 10v4M12 17h.01' },
+  {
+    label: 'Monitoring',
+    items: [
+      { id: 'overview', label: 'Overview', icon: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z' },
+      { id: 'anomaly', label: 'Anomaly', icon: 'M3 12h4l3-8 4 16 3-8h4' },
+      { id: 'incidents', label: 'Incidents', icon: 'M12 3 2.5 20h19zM12 10v4M12 17h.01' },
+    ],
+  },
+  {
+    label: 'Actions',
+    items: [
+      { id: 'remediation', label: 'Remediation', icon: 'M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7' },
+    ],
+  },
 ]
 
 const roleLabel = computed(() => (me.value?.role === 'admin' ? 'Admin' : 'Viewer'))
@@ -62,11 +73,12 @@ async function signOut() {
     </div>
 
     <!-- On phones the links scroll sideways; the scroll box clips, so their focus ring sits inside. -->
-    <nav aria-label="Views" class="flex flex-col gap-0.5">
-      <span class="hidden px-2.5 pb-1 text-xs font-medium text-muted-foreground md:block">Monitoring</span>
-      <div class="flex gap-1 overflow-x-auto md:flex-col md:gap-0.5 md:overflow-visible">
+    <!-- On phones the groups merge into one row (display: contents) and their labels hide. -->
+    <nav aria-label="Views" class="flex gap-1 overflow-x-auto md:flex-col md:gap-3.5 md:overflow-visible">
+      <div v-for="group in NAV" :key="group.label" class="max-md:contents md:flex md:flex-col md:gap-0.5">
+        <span class="hidden px-2.5 pb-1 text-xs font-medium text-muted-foreground md:block">{{ group.label }}</span>
         <a
-          v-for="item in NAV"
+          v-for="item in group.items"
           :key="item.id"
           :href="`#${item.id}`"
           class="flex min-h-11 shrink-0 items-center gap-2.5 rounded-lg px-2.5 py-2 no-underline max-md:[--focus-offset:-2px] md:min-h-0"
