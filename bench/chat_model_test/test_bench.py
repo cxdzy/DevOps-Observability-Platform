@@ -5,7 +5,10 @@
 """
 import csv
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from fractions import Fraction
@@ -18,6 +21,7 @@ import make_blind  # noqa: E402
 import run_bench  # noqa: E402
 import snapshot_facts as sf  # noqa: E402
 import summarize  # noqa: E402
+import swap_test  # noqa: E402
 
 GIB = 2 ** 30
 
@@ -692,3 +696,129 @@ def test_warmup_tokens_printed_once_right_after_the_warmup(tmp_path, capsys):
     bench.run_model("m2", items("Q1"), 1, {})
     out = capsys.readouterr().out
     assert out.count("warm-up prompt_tokens") == 1 and "m1: warm-up prompt_tokens 10, prompt_eval_s 0.1" in out
+
+
+# ------------------------------------------------------------------ swap test (6B-3)
+
+def swap_rows(chat, explainer, baseline=(4.0, 4.2, 3.9), failed=0):
+    rows = [{"phase": "baseline", "round": i + 1, "role": "explainer", "total_s": t, "status": "ok"}
+            for i, t in enumerate(baseline)]
+    for i, (e, c) in enumerate(zip(explainer, chat)):
+        rows += [{"phase": "round", "round": i + 1, "role": "explainer", "total_s": e, "status": "ok"},
+                 {"phase": "round", "round": i + 1, "role": "chat", "total_s": c, "status": "ok"}]
+    for _ in range(failed):
+        rows.append({"phase": "round", "round": 99, "role": "chat", "total_s": None, "status": "failed"})
+    return rows
+
+
+def test_swap_plan_is_three_baseline_calls_then_explainer_chat_rounds():
+    assert swap_test.plan(2) == [("baseline", 1, "explainer"), ("baseline", 2, "explainer"), ("baseline", 3, "explainer"),
+                                 ("round", 1, "explainer"), ("round", 1, "chat"), ("round", 2, "explainer"), ("round", 2, "chat")]
+
+
+def test_swap_pass_rule_on_a_fixture():
+    ok = swap_test.evaluate(swap_rows(chat=[14, 15, 16, 18, 20, 22, 15, 14, 17, 19], explainer=[5.0] * 10))
+    assert ok["passed"] and ok["reasons"] == [] and ok["baseline_explainer"]["median_s"] == 4.0
+    assert ok["chat"]["median_s"] == 16.5
+    # Exactly at the limits still passes: 25 s chat median and p95 within 35 s, 1.5 x the 4.0 s baseline.
+    edge = swap_test.evaluate(swap_rows(chat=[25.0] * 10, explainer=[6.0] * 10))
+    assert edge["passed"]
+    slow = swap_test.evaluate(swap_rows(chat=[26.0] * 10, explainer=[5.0] * 10))
+    assert not slow["passed"] and slow["reasons"] == ["chat median 26.00 s above 25 s"]
+    tail = swap_test.evaluate(swap_rows(chat=[15.0] * 9 + [80.0], explainer=[5.0] * 10))
+    assert not tail["passed"] and tail["reasons"][0].startswith("chat p95 ")
+    expl = swap_test.evaluate(swap_rows(chat=[15.0] * 10, explainer=[6.1] * 10))
+    assert not expl["passed"] and expl["reasons"] == ["explainer median 6.10 s above 6.00 s (1.5 x baseline)"]
+    failed = swap_test.evaluate(swap_rows(chat=[15.0] * 10, explainer=[5.0] * 10, failed=1))
+    assert not failed["passed"] and failed["reasons"] == ["1 failed call(s)"]
+
+
+def fake_swap_call(payload):
+    return {"total_s": 2.0, "load_s": 1.0, "prompt_tokens": 100, "eval_tokens": 20, "tok_s": 10.0, "answer": "x"}
+
+
+def test_swap_run_records_every_call_in_order(tmp_path):
+    chats = []
+    t = swap_test.SwapTest(tmp_path, {"model": "expl"}, lambda: chats.append(1) or {"model": "chat"},
+                           call=fake_swap_call, sleep=lambda s: None, unload_fn=lambda m: None)
+    rows = t.run(2)
+    assert [(r["phase"], r["role"], r["model"]) for r in rows][2:5] == [
+        ("baseline", "explainer", "expl"), ("round", "explainer", "expl"), ("round", "chat", "chat")]
+    assert len(chats) == 2 and all("answer" not in r for r in rows)
+    lines = (tmp_path / "swap.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 7 and json.loads(lines[-1])["tok_s"] == 10.0
+
+
+def test_swap_abort_unloads_the_chat_model_and_exits_non_zero(tmp_path, capsys):
+    unloaded, count = [], {"n": 0}
+
+    def call(payload):
+        count["n"] += 1
+        if count["n"] == 4:                        # monitor_ram.sh writes ABORT during a call
+            (tmp_path / "ABORT").write_text("low memory")
+            raise RuntimeError("connection reset")
+        return fake_swap_call(payload)
+
+    t = swap_test.SwapTest(tmp_path, {"model": "qwen2.5:1.5b"}, lambda: {"model": "qwen2.5:3b"},
+                           call=call, sleep=lambda s: None, unload_fn=unloaded.append)
+    with pytest.raises(SystemExit) as exit_info:
+        t.run_or_abort(10, "qwen2.5:3b")
+    assert exit_info.value.code == 2
+    assert unloaded == ["qwen2.5:3b"]
+    assert "ABORT: chat model unloaded, explainer unaffected" in capsys.readouterr().out
+    # The call cut off by the abort is not recorded.
+    assert len((tmp_path / "swap.jsonl").read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_swap_unload_sends_keep_alive_zero(monkeypatch):
+    import requests
+    sent = []
+    monkeypatch.setattr(requests, "post", lambda url, json, timeout: sent.append((url, json)))
+    swap_test.unload("qwen2.5:3b", url="http://ollama:11434")
+    assert sent == [("http://ollama:11434/api/generate", {"model": "qwen2.5:3b", "keep_alive": 0})]
+
+
+# ------------------------------------------------------------------ monitor_ram.sh
+
+BASH = os.environ.get("BASH_FOR_TESTS") or shutil.which("bash")
+
+
+def run_monitor(tmp_path, container_arg):
+    """Runs monitor_ram.sh with a fake docker and MemAvailable at 500 MiB, so its first sample aborts."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text('#!/usr/bin/env bash\necho "$*" >> "$DOCKER_LOG"\n'
+                      '[ "$1" = stats ] && echo "1.5GiB / 3.711GiB"\nexit 0\n', newline="\n")
+    docker.chmod(0o755)
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal: 8000000 kB\nMemAvailable: 512000 kB\n", newline="\n")
+    script = tmp_path / "monitor_ram.sh"     # LF copy, in case the checkout has CRLF line ends
+    script.write_text((Path(__file__).parent / "monitor_ram.sh").read_text(encoding="utf-8").replace("\r\n", "\n"),
+                      newline="\n")
+    run_dir = tmp_path / "run"
+    env = dict(os.environ, MEMINFO_FILE=str(meminfo), DOCKER_LOG=str(tmp_path / "docker.log"), INTERVAL_S="0",
+               PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    env.pop("BENCH_CONTAINER", None)
+    args = [BASH, str(script), str(run_dir)] + ([container_arg] if container_arg else [])
+    done = subprocess.run(args, env=env, capture_output=True, text=True, timeout=60)
+    log = (tmp_path / "docker.log").read_text() if (tmp_path / "docker.log").exists() else ""
+    return done, run_dir, log
+
+
+@pytest.mark.skipif(BASH is None, reason="bash is not available")
+def test_monitor_ram_stops_ollama_bench_on_abort(tmp_path):
+    done, run_dir, log = run_monitor(tmp_path, None)
+    assert done.returncode == 1
+    assert "stopping ollama-bench" in (run_dir / "ABORT").read_text()
+    assert "stop ollama-bench" in log
+    assert (run_dir / "ram.csv").read_text().splitlines()[1].split(",")[1:3] == ["1536", "500"]
+
+
+@pytest.mark.skipif(BASH is None, reason="bash is not available")
+def test_monitor_ram_never_stops_another_container(tmp_path):
+    done, run_dir, log = run_monitor(tmp_path, "ollama")
+    assert done.returncode == 1
+    assert "ollama left running" in (run_dir / "ABORT").read_text()
+    assert "stats --no-stream --format {{.MemUsage}} ollama" in log
+    assert not any(line.startswith("stop") for line in log.splitlines())

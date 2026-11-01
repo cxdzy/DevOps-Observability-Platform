@@ -8,6 +8,8 @@ const props = defineProps<{
   // Time of the last successful data load, and whether the latest load worked.
   refreshedAt: number | null
   live: boolean
+  // Replaces the live text when set (the Chat view shows the assistant's state here).
+  statusText?: string | null
 }>()
 
 const refreshed = computed(() =>
@@ -16,6 +18,7 @@ const refreshed = computed(() =>
     : new Date(props.refreshedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
 )
 const liveText = computed(() => {
+  if (props.statusText) return props.statusText
   if (props.refreshedAt === null) return props.live ? 'Connecting' : 'Not connected, retrying'
   return props.live ? `Live, ${refreshed.value}` : `Retrying, last update ${refreshed.value}`
 })

@@ -94,8 +94,10 @@ services:
       - OLLAMA_KEEP_ALIVE=30m
     # Hard cap: if a model is too big, only this container is OOM-killed.
     # memswap_limit equal to mem_limit disables swap for this container.
-    mem_limit: 1600m
-    memswap_limit: 1600m
+    # Raised from 1600m for swap mode (chat plan section 12): one model resident at a time, up to
+    # qwen2.5:3b for chat; OLLAMA_MAX_LOADED_MODELS=1 unloads one model to load the other.
+    mem_limit: 3800m
+    memswap_limit: 3800m
     volumes:
       - ollama-models:/root/.ollama
     networks:
@@ -279,6 +281,13 @@ services:
       # socket address (through the localhost port that is the Docker gateway address).
       - TRUSTED_PROXY_HOSTS=${TRUSTED_PROXY_HOSTS:-cloudflared}
       - SESSION_MAX_AGE_HOURS=${SESSION_MAX_AGE_HOURS:-24}
+      # Chat assistant (6B-3). The chat log goes to the langfuse tables in LANGFUSE_DB_NAME with the
+      # dashboard role (dashboard/db/dashboard_chat_grant.sql); empty turns the log off.
+      - OLLAMA_URL=http://ollama:11434
+      - CHAT_MODEL=${CHAT_MODEL:-qwen2.5:1.5b}
+      - CHAT_KEEP_ALIVE=5m
+      - CHAT_RATE_PER_HOUR=20
+      - LANGFUSE_DB_NAME=${LANGFUSE_DB_NAME:-}
     ports:
       - "127.0.0.1:3100:3000"
     mem_limit: 256m

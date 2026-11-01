@@ -7,6 +7,7 @@ const { createGoogle } = require("./google");
 const { createOverview, loadIncidents } = require("./overview");
 const { loadRemediation } = require("./remediation");
 const { createModel } = require("./model");
+const { createChatRouter } = require("./routes/chat");
 
 // Returns the validated hours value, or null after sending a 400. Values are clamped to 1..max.
 function hoursParam(req, res, fallback = 24, max = 168) {
@@ -142,6 +143,9 @@ function createApp(deps) {
       res.status(502).json({ error: "mlflow and influxdb unreachable" });
     }
   });
+
+  // Chat assistant (6B-3). config.chat lets tests pass fake clients.
+  app.use("/api/chat", createChatRouter({ query, now, appOrigin: config.appOrigin, ...config.chat }));
 
   app.get("/api/incidents", async (req, res) => {
     const hours = hoursParam(req, res);

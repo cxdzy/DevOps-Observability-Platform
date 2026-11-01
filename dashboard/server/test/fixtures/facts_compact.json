@@ -1,0 +1,416 @@
+{
+  "source": "bench/chat_model_test/snapshot_facts.py render_facts, run on the fixed values below",
+  "cases": [
+    {
+      "name": "more_than_8",
+      "snapshot_utc": "2026-11-01T05:50:30Z",
+      "values": {
+        "service_up": true,
+        "anomaly_latest": {
+          "time_ms": 1793512080000,
+          "score": 0.3465,
+          "threshold": 0.6024,
+          "flagged": false,
+          "tier": "none"
+        },
+        "service_now": {
+          "time_ms": 1793512080000,
+          "cpu_rate": 0.00285,
+          "memory_max_mb": 124.5,
+          "latency_ms": 1.45
+        },
+        "model": {
+          "champion": "v10",
+          "threshold": 0.6024,
+          "last_retrain": {
+            "time_ms": 1793473280000,
+            "promoted": false,
+            "new_version": ""
+          }
+        },
+        "reference": {
+          "cpu_rate": 0.0028,
+          "memory_max_mb": 123.5,
+          "latency_ms": 1.25
+        },
+        "incidents_6h": {
+          "count": 11,
+          "by_tier": {
+            "low": 8,
+            "medium": 2,
+            "high": 1
+          },
+          "items": [
+            {
+              "start_ms": 1793508480000,
+              "tier": "medium",
+              "signal": "memory",
+              "minutes": 2,
+              "peak_score": 0.661,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793507280000,
+              "tier": "low",
+              "signal": "cpu",
+              "minutes": 1,
+              "peak_score": 0.703,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793506200000,
+              "tier": "low",
+              "signal": "cpu",
+              "minutes": 3,
+              "peak_score": 0.751,
+              "deployment": true,
+              "status": "open",
+              "what_happened": null
+            },
+            {
+              "start_ms": 1793504400000,
+              "tier": "high",
+              "signal": "latency",
+              "minutes": 4,
+              "peak_score": 0.751,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793502720000,
+              "tier": "low",
+              "signal": "cpu",
+              "minutes": 1,
+              "peak_score": 0.6125,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793501700000,
+              "tier": "low",
+              "signal": "none",
+              "minutes": 1,
+              "peak_score": 0.62,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793499600000,
+              "tier": "medium",
+              "signal": "memory",
+              "minutes": 2,
+              "peak_score": 0.7,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793496600000,
+              "tier": "low",
+              "signal": "cpu",
+              "minutes": 1,
+              "peak_score": 0.64,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793493000000,
+              "tier": "low",
+              "signal": "disk",
+              "minutes": 1,
+              "peak_score": null,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793490840000,
+              "tier": "low",
+              "signal": "cpu",
+              "minutes": 2,
+              "peak_score": 0.633,
+              "deployment": true,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793490660000,
+              "tier": "low",
+              "signal": "latency",
+              "minutes": 1,
+              "peak_score": 0.651,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            }
+          ]
+        },
+        "last_restart": {
+          "time_ms": 1793354520000,
+          "mode": "approved",
+          "signal": "memory",
+          "service_up": true
+        },
+        "last_ci_deployment": {
+          "time_ms": 1792757940000
+        },
+        "node_fyp_main": {
+          "up": true,
+          "mem_used_gib": 2.65,
+          "mem_total_gib": 7.5,
+          "disk_pct": 36.5,
+          "containers": 16.0
+        },
+        "node_staging": {
+          "up": true,
+          "mem_used_gib": 1.25,
+          "mem_total_gib": 3.7,
+          "disk_pct": 55.0,
+          "containers": 10.0
+        }
+      },
+      "facts_text": "FACTS (snapshot 2026-11-01T05:50:30Z, times in MYT, UTC+8)\nservice sample-service: up yes\nanomaly latest: 13:48, score 0.346, threshold 0.602, flagged no, tier none\nsample-service now: 13:48, cpu_rate 0.0029, memory 124 MB, latency 1.4 ms\nmodel: champion v10, threshold 0.602, last retraining 03:01, result kept champion\nnormal reference: cpu_rate 0.0028, memory 124 MB, latency 1.2 ms\nincidents last 6 h: 11 (low 8, medium 2, high 1)\nby signal: cpu 5, memory 2, latency 2, unclear 2\nhighest peak: 0.751 at 12:10 (tier low, signal cpu)\nlinked to deployment: 2 (12:10, 07:54)\n- 12:48, tier medium, signal memory, 2 min, peak 0.661, deployment no, closed. What happened: Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes.\n- 12:28, tier low, signal cpu, 1 min, peak 0.703, deployment no, closed.\n- 12:10, tier low, signal cpu, 3 min, peak 0.751, deployment yes, open.\n- 11:40, tier high, signal latency, 4 min, peak 0.751, deployment no, closed.\n- 11:12, tier low, signal cpu, 1 min, peak 0.613, deployment no, closed.\n- 10:55, tier low, signal none, 1 min, peak 0.620, deployment no, closed.\n- 10:20, tier medium, signal memory, 2 min, peak 0.700, deployment no, closed.\n- 09:30, tier low, signal cpu, 1 min, peak 0.640, deployment no, closed.\n- (3 older incidents not listed)\nlast restart: 18:02 30 Oct, mode approved, signal memory, service up after yes\nlast CI deployment: 20:19 23 Oct\nnode fyp-main: memory 2.6 of 7.5 GiB, disk 36 %, containers 16\nnode staging: monitored yes, memory 1.2 of 3.7 GiB, disk 55 %, containers 10\nOnly the facts above are available. Logs, commit messages and metrics not listed are not available."
+    },
+    {
+      "name": "exactly_8",
+      "snapshot_utc": "2026-11-01T05:50:30Z",
+      "values": {
+        "service_up": true,
+        "anomaly_latest": {
+          "time_ms": 1793512080000,
+          "score": 0.3465,
+          "threshold": 0.6024,
+          "flagged": false,
+          "tier": "none"
+        },
+        "service_now": {
+          "time_ms": 1793512080000,
+          "cpu_rate": 0.00285,
+          "memory_max_mb": 124.5,
+          "latency_ms": 1.45
+        },
+        "model": {
+          "champion": "v11",
+          "threshold": 0.59,
+          "last_retrain": {
+            "time_ms": 1793502060000,
+            "promoted": true,
+            "new_version": "11"
+          }
+        },
+        "reference": {
+          "cpu_rate": 0.0028,
+          "memory_max_mb": 123.5,
+          "latency_ms": 1.25
+        },
+        "incidents_6h": {
+          "count": 8,
+          "by_tier": {
+            "low": 5,
+            "medium": 2,
+            "high": 1
+          },
+          "items": [
+            {
+              "start_ms": 1793508480000,
+              "tier": "medium",
+              "signal": "memory",
+              "minutes": 2,
+              "peak_score": 0.661,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793507280000,
+              "tier": "low",
+              "signal": "cpu",
+              "minutes": 1,
+              "peak_score": 0.703,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793506200000,
+              "tier": "low",
+              "signal": "cpu",
+              "minutes": 3,
+              "peak_score": 0.751,
+              "deployment": true,
+              "status": "open",
+              "what_happened": null
+            },
+            {
+              "start_ms": 1793504400000,
+              "tier": "high",
+              "signal": "latency",
+              "minutes": 4,
+              "peak_score": 0.751,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793502720000,
+              "tier": "low",
+              "signal": "cpu",
+              "minutes": 1,
+              "peak_score": 0.6125,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793501700000,
+              "tier": "low",
+              "signal": "none",
+              "minutes": 1,
+              "peak_score": 0.62,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793499600000,
+              "tier": "medium",
+              "signal": "memory",
+              "minutes": 2,
+              "peak_score": 0.7,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            },
+            {
+              "start_ms": 1793496600000,
+              "tier": "low",
+              "signal": "cpu",
+              "minutes": 1,
+              "peak_score": 0.64,
+              "deployment": false,
+              "status": "closed",
+              "what_happened": "Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes."
+            }
+          ]
+        },
+        "last_restart": {
+          "time_ms": 1793494800000,
+          "mode": null,
+          "signal": "cpu",
+          "service_up": null
+        },
+        "last_ci_deployment": {
+          "time_ms": 1792757940000
+        },
+        "node_fyp_main": {
+          "up": true,
+          "mem_used_gib": 2.65,
+          "mem_total_gib": 7.5,
+          "disk_pct": 36.5,
+          "containers": 16.0
+        },
+        "node_staging": {
+          "up": true,
+          "mem_used_gib": 1.25,
+          "mem_total_gib": 3.7,
+          "disk_pct": 55.0,
+          "containers": 10.0
+        }
+      },
+      "facts_text": "FACTS (snapshot 2026-11-01T05:50:30Z, times in MYT, UTC+8)\nservice sample-service: up yes\nanomaly latest: 13:48, score 0.346, threshold 0.602, flagged no, tier none\nsample-service now: 13:48, cpu_rate 0.0029, memory 124 MB, latency 1.4 ms\nmodel: champion v11, threshold 0.590, last retraining 11:01, result promoted v11\nnormal reference: cpu_rate 0.0028, memory 124 MB, latency 1.2 ms\nincidents last 6 h: 8 (low 5, medium 2, high 1)\nby signal: cpu 4, memory 2, latency 1, unclear 1\nhighest peak: 0.751 at 12:10 (tier low, signal cpu)\nlinked to deployment: 1 (12:10)\n- 12:48, tier medium, signal memory, 2 min, peak 0.661, deployment no, closed. What happened: Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes.\n- 12:28, tier low, signal cpu, 1 min, peak 0.703, deployment no, closed.\n- 12:10, tier low, signal cpu, 3 min, peak 0.751, deployment yes, open.\n- 11:40, tier high, signal latency, 4 min, peak 0.751, deployment no, closed.\n- 11:12, tier low, signal cpu, 1 min, peak 0.613, deployment no, closed.\n- 10:55, tier low, signal none, 1 min, peak 0.620, deployment no, closed.\n- 10:20, tier medium, signal memory, 2 min, peak 0.700, deployment no, closed.\n- 09:30, tier low, signal cpu, 1 min, peak 0.640, deployment no, closed.\nlast restart: 09:00, mode no data, signal cpu, service up after no data\nlast CI deployment: 20:19 23 Oct\nnode fyp-main: memory 2.6 of 7.5 GiB, disk 36 %, containers 16\nnode staging: monitored yes, memory 1.2 of 3.7 GiB, disk 55 %, containers 10\nOnly the facts above are available. Logs, commit messages and metrics not listed are not available."
+    },
+    {
+      "name": "no_incidents",
+      "snapshot_utc": "2026-11-01T16:30:59Z",
+      "values": {
+        "service_up": true,
+        "anomaly_latest": {
+          "time_ms": 1793512080000,
+          "score": 0.3465,
+          "threshold": 0.6024,
+          "flagged": false,
+          "tier": "none"
+        },
+        "service_now": {
+          "time_ms": 1793512080000,
+          "cpu_rate": 0.00285,
+          "memory_max_mb": 124.5,
+          "latency_ms": 1.45
+        },
+        "model": {
+          "champion": "v10",
+          "threshold": 0.6024,
+          "last_retrain": null
+        },
+        "reference": {
+          "cpu_rate": 0.0028,
+          "memory_max_mb": 123.5,
+          "latency_ms": 1.25
+        },
+        "incidents_6h": {
+          "count": 0,
+          "by_tier": {
+            "low": 0,
+            "medium": 0,
+            "high": 0
+          },
+          "items": []
+        },
+        "last_restart": null,
+        "last_ci_deployment": null,
+        "node_fyp_main": {
+          "up": true,
+          "mem_used_gib": 2.65,
+          "mem_total_gib": 7.5,
+          "disk_pct": 36.5,
+          "containers": 16.0
+        },
+        "node_staging": {
+          "up": false,
+          "mem_used_gib": null,
+          "mem_total_gib": null,
+          "disk_pct": null,
+          "containers": null
+        }
+      },
+      "facts_text": "FACTS (snapshot 2026-11-01T16:30:59Z, times in MYT, UTC+8)\nservice sample-service: up yes\nanomaly latest: 13:48 1 Nov, score 0.346, threshold 0.602, flagged no, tier none\nsample-service now: 13:48 1 Nov, cpu_rate 0.0029, memory 124 MB, latency 1.4 ms\nmodel: champion v10, threshold 0.602, last retraining none recorded\nnormal reference: cpu_rate 0.0028, memory 124 MB, latency 1.2 ms\nincidents last 6 h: 0 (low 0, medium 0, high 0)\nby signal: cpu 0, memory 0, latency 0, unclear 0\nhighest peak: none\nlinked to deployment: none\nlast restart: none in the last 30 days\nlast CI deployment: none recorded\nnode fyp-main: memory 2.6 of 7.5 GiB, disk 36 %, containers 16\nnode staging: monitored no\nOnly the facts above are available. Logs, commit messages and metrics not listed are not available."
+    },
+    {
+      "name": "missing",
+      "snapshot_utc": "2026-11-01T05:50:30Z",
+      "values": {
+        "service_up": null,
+        "anomaly_latest": null,
+        "service_now": null,
+        "model": null,
+        "reference": null,
+        "incidents_6h": null,
+        "last_restart": null,
+        "last_ci_deployment": null,
+        "node_fyp_main": {
+          "up": null,
+          "mem_used_gib": null,
+          "mem_total_gib": null,
+          "disk_pct": null,
+          "containers": null
+        },
+        "node_staging": {
+          "up": null,
+          "mem_used_gib": null,
+          "mem_total_gib": null,
+          "disk_pct": null,
+          "containers": null
+        }
+      },
+      "facts_text": "FACTS (snapshot 2026-11-01T05:50:30Z, times in MYT, UTC+8)\nservice sample-service: up no data\nanomaly latest: no data\nsample-service now: no data\nmodel: no data\nnormal reference: no data\nincidents last 6 h: no data\nlast restart: none in the last 30 days\nlast CI deployment: none recorded\nnode fyp-main: memory no data of no data GiB, disk no data %, containers no data\nnode staging: monitored no data\nOnly the facts above are available. Logs, commit messages and metrics not listed are not available."
+    }
+  ]
+}

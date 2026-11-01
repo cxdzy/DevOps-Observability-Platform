@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
-# RAM monitor for the chat model test (Phase 6, 6B-2). Runs on the host, next to run_bench.py.
+# RAM monitor for the chat model test (Phase 6, 6B-2) and the swap test (6B-3). Runs on the host,
+# next to run_bench.py or swap_test.py.
 # Every 5 s (start to start) it appends one line to RUN/ram.csv:
-#   utc, ollama-bench memory in MiB (docker stats), host MemAvailable in MiB, vmstat si, vmstat so
-# If MemAvailable falls below 1024 MiB it writes RUN/ABORT, stops ollama-bench and exits.
-# run_bench.py sees the ABORT file and stops cleanly.
+#   utc, container memory in MiB (docker stats; the column keeps its old name bench_mib),
+#   host MemAvailable in MiB, vmstat si, vmstat so
+# If MemAvailable falls below 1024 MiB it writes RUN/ABORT and exits. Only ollama-bench is also
+# stopped; any other container (for example the production ollama in the swap test) keeps running,
+# and swap_test.py unloads the chat model itself when it sees the ABORT file. run_bench.py sees the
+# ABORT file and stops cleanly.
 #
-#   bash bench/chat_model_test/monitor_ram.sh bench/chat_model_test/results/RUN &
+#   bash bench/chat_model_test/monitor_ram.sh bench/chat_model_test/results/RUN [CONTAINER] &
+# CONTAINER defaults to BENCH_CONTAINER, then ollama-bench.
 set -u
 
-RUN_DIR="${1:?usage: monitor_ram.sh RUN_DIR}"
-CONTAINER="${BENCH_CONTAINER:-ollama-bench}"
+RUN_DIR="${1:?usage: monitor_ram.sh RUN_DIR [CONTAINER]}"
+CONTAINER="${2:-${BENCH_CONTAINER:-ollama-bench}}"
 LIMIT_MIB="${ABORT_BELOW_MIB:-1024}"
 INTERVAL="${INTERVAL_S:-5}"
+# Only the tests point this at a fake file.
+MEMINFO="${MEMINFO_FILE:-/proc/meminfo}"
 OUT="$RUN_DIR/ram.csv"
 
 mkdir -p "$RUN_DIR"
@@ -29,14 +36,18 @@ bench_mib() {
 while true; do
   started=$(date +%s)
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  avail=$(awk '/^MemAvailable:/ { printf "%.0f", $2 / 1024 }' /proc/meminfo)
+  avail=$(awk '/^MemAvailable:/ { printf "%.0f", $2 / 1024 }' "$MEMINFO")
   # The first vmstat line is the average since boot, so take the second sample.
   si=""; so=""
   read -r si so < <(vmstat 1 2 2>/dev/null | tail -1 | awk '{ print $7, $8 }') || true
   echo "$now,$(bench_mib),$avail,$si,$so" >> "$OUT"
   if [ -n "$avail" ] && [ "$avail" -lt "$LIMIT_MIB" ]; then
-    echo "$now MemAvailable ${avail} MiB below ${LIMIT_MIB} MiB: stopping $CONTAINER" | tee "$RUN_DIR/ABORT"
-    docker stop "$CONTAINER" >/dev/null 2>&1
+    if [ "$CONTAINER" = "ollama-bench" ]; then
+      echo "$now MemAvailable ${avail} MiB below ${LIMIT_MIB} MiB: stopping $CONTAINER" | tee "$RUN_DIR/ABORT"
+      docker stop "$CONTAINER" >/dev/null 2>&1
+    else
+      echo "$now MemAvailable ${avail} MiB below ${LIMIT_MIB} MiB: ABORT written, $CONTAINER left running" | tee "$RUN_DIR/ABORT"
+    fi
     exit 1
   fi
   # docker stats and vmstat take about 3 s, so sleep only for the rest of the interval.

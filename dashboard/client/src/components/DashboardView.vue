@@ -3,17 +3,18 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import AnomalyView from '@/components/AnomalyView.vue'
 import AppHeader from '@/components/AppHeader.vue'
 import AppSidebar from '@/components/AppSidebar.vue'
+import ChatView from '@/components/ChatView.vue'
 import IncidentsView from '@/components/IncidentsView.vue'
 import ModelView from '@/components/ModelView.vue'
 import OverviewView from '@/components/OverviewView.vue'
 import RemediationView from '@/components/RemediationView.vue'
 import { useRangeData } from '@/composables/useRangeData'
 
-const TABS = ['overview', 'anomaly', 'incidents', 'remediation', 'model'] as const
+const TABS = ['overview', 'anomaly', 'incidents', 'remediation', 'chat', 'model'] as const
 type Tab = typeof TABS[number]
-const TITLES: Record<Tab, string> = { overview: 'Overview', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', model: 'Model' }
+const TITLES: Record<Tab, string> = { overview: 'Overview', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', model: 'Model' }
 // Breadcrumb group, the same grouping as the sidebar.
-const GROUPS: Record<Tab, string> = { overview: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', model: 'System' }
+const GROUPS: Record<Tab, string> = { overview: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', model: 'System' }
 
 function tabFromHash(): Tab {
   const name = window.location.hash.slice(1)
@@ -68,6 +69,24 @@ function onViewRefreshed(ok: boolean) {
   live.value = ok
   if (ok) refreshedAt.value = Date.now()
 }
+
+// The Chat view shows the assistant's state in the top bar instead of the live time. null until
+// the first stats call has answered.
+const assistantReady = ref<boolean | null>(null)
+const headerStatus = computed(() => {
+  if (tab.value !== 'chat') return null
+  if (assistantReady.value === null) return 'Checking the assistant'
+  return assistantReady.value ? 'Assistant ready' : 'Assistant unavailable'
+})
+// The header's dot: a hollow ring while checking (no refresh time yet), green when ready, red when not.
+const headerRefreshedAt = computed(() => (tab.value === 'chat' ? (assistantReady.value === null ? null : 0) : refreshedAt.value))
+const headerLive = computed(() => (tab.value === 'chat' ? assistantReady.value !== false : live.value))
+
+// An incident chip in a chat reply opens the Incidents view with that incident selected.
+function openIncident(start: number) {
+  selectedIncident.value = start
+  tab.value = 'incidents'
+}
 </script>
 
 <template>
@@ -75,7 +94,13 @@ function onViewRefreshed(ok: boolean) {
     <AppSidebar :current="tab" :incident-count="incidentCount" :hours="hours" :champion-version="championVersion" />
 
     <main class="flex min-w-0 flex-1 flex-col rounded-[14px] bg-card ring-1 ring-border">
-      <AppHeader :group="GROUPS[tab]" :page="TITLES[tab]" :refreshed-at="refreshedAt" :live="live" />
+      <AppHeader
+        :group="GROUPS[tab]"
+        :page="TITLES[tab]"
+        :refreshed-at="headerRefreshedAt"
+        :live="headerLive"
+        :status-text="headerStatus"
+      />
 
       <div class="flex flex-col gap-5 p-4 md:p-6">
         <!-- v-if, so a hidden view stops polling and the chart is not drawn in a hidden box. -->
@@ -93,6 +118,7 @@ function onViewRefreshed(ok: boolean) {
           :incidents-loaded="incidentsLoaded"
         />
         <RemediationView v-else-if="tab === 'remediation'" @refreshed="onViewRefreshed" />
+        <ChatView v-else-if="tab === 'chat'" @status="assistantReady = $event" @open-incident="openIncident" />
         <ModelView v-else-if="tab === 'model'" @refreshed="onViewRefreshed" @champion="championVersion = $event" />
         <IncidentsView
           v-else

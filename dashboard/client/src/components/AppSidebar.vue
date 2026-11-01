@@ -28,6 +28,7 @@ const NAV = [
     label: 'Actions',
     items: [
       { id: 'remediation', label: 'Remediation', icon: 'M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7' },
+      { id: 'chat', label: 'Chat', icon: 'M4 5h16v11H9l-5 4V5z' },
     ],
   },
   {

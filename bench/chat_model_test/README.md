@@ -12,6 +12,7 @@ dropping and choosing models are fixed in `summarize.py` before the run.
 | `monitor_ram.sh` | Host RAM every 5 s into `ram.csv`; below 1024 MiB available it writes `ABORT` and stops `ollama-bench` |
 | `make_blind.py` | `scores_blind.csv` (shuffled, no model names) and `key.csv` |
 | `summarize.py` | `summary.csv` and `summary.md`: the Chapter 4 table and the stage 1 or stage 2 rules step by step |
+| `swap_test.py` | Swap test on the production Ollama (6B-3): explainer and chat calls in turn, fixed pass rule |
 | `test_bench.py` | pytest, no network |
 
 ## How a call is made
@@ -107,6 +108,49 @@ Always use a new run folder. In the old folder `raw.jsonl` would make every item
 facts.json files lack the new line keys, so `make_blind.py` with the current questions.json works
 only on re-rendered or new snapshots. `run_bench.py` prints the warm-up `prompt_tokens` of the
 first model, which is the real prompt size (system prompt, FACTS and the warm-up question).
+
+## Swap test (6B-3)
+
+Production Ollama keeps one model resident (`OLLAMA_MAX_LOADED_MODELS=1`, memory cap 3800m), so
+an explanation after a chat question, or the other way round, unloads one model and loads the
+other. `swap_test.py` measures that cost against the production `ollama` container before
+`CHAT_MODEL=qwen2.5:3b` is set. It needs a `facts.json` from an earlier run.
+
+1. Three explainer calls in a row to the explainer model, with no switch, as the baseline.
+2. `--rounds` rounds (default 10) of one explainer call (the explainer's own `build_messages`
+   for the first stored explanation incident, with its options), then one chat call to the chat
+   model (system prompt, request line, FACTS and Q13 "Should I be worried right now?", chat
+   options, keep_alive 5m). Both use stream false, as in production. There is a 5 s wait between
+   calls.
+
+Every call goes into `swap.jsonl` (model, total_s, load_s, prompt_tokens, eval_tokens, tok_s),
+and the medians, p95 and result into `swap_summary.json`. The pass rule is fixed:
+
+- the chat total median is at most 25 s and its p95 is at most 35 s, including the switch
+- the explainer total median in the rounds is at most 1.5 times the baseline median
+- no call failed
+
+The exit code is 0 for pass and 1 for fail.
+
+RAM is checked separately. Run `monitor_ram.sh` with the container name as its second argument:
+
+```
+OUT=bench/chat_model_test/results/$(date -u +%Y%m%d-%H%M)-swap; mkdir -p $OUT
+bash bench/chat_model_test/monitor_ram.sh $OUT ollama &
+B="docker compose run --rm --no-deps --entrypoint python -v $PWD/bench/chat_model_test:/bench \
+   -v $PWD/dashboard/server/chat:/chatprompt:ro explainer"
+$B /bench/swap_test.py --facts /bench/results/<RUN>/facts.json --out /bench/results/$(basename $OUT)
+kill %1
+```
+
+Accept swap mode only if the test passes and the lowest `mem_available_mib` in `ram.csv` is at
+least 1536 MiB. Otherwise keep `CHAT_MODEL` unset (qwen2.5:1.5b with the no-data guard).
+
+`monitor_ram.sh` stops a container on ABORT only when it is `ollama-bench`. For any other name
+(here the production `ollama`) it writes `ABORT` and exits, and the container keeps running.
+`swap_test.py` sees the file, unloads the chat model (`/api/generate` with keep_alive 0), prints
+"ABORT: chat model unloaded, explainer unaffected" and exits with code 2. The explainer model is
+left loaded.
 
 ## Tests
 
