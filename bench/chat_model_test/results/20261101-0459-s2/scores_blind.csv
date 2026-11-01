@@ -1,0 +1,320 @@
+id,item_id,prompt,expected,answer,score,claims_action,note
+R67381,E2,"Explain incident E2: cpu, tier low, 1 min, started 2026-11-01T04:28:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 1 minute(s) flagged as unusual by the anomaly detector
+Main signal: cpu, peak 50% of one CPU core, normally about 0.3% of one CPU core, about 183 times normal
+Also raised: latency, peak 12 ms (normally about 2 ms)
+Recent deployment in the last 15 minutes: no
+Severity tier: low
+System response: no automatic action is taken at this tier, only a notification, so keep watching the service
+Possible cause (rule of thumb, not a diagnosis): a CPU-heavy task or a busy loop in the service","What happened: CPU usage peaked at 50% of one CPU core, 183 times its normal 0.3%, and latency rose to 12 ms (normally 2 ms) for 1 minute.  
+Likely cause: A CPU-heavy task or a busy loop in the service.  
+Next step: Monitor CPU and latency for further spikes; consider optimizing the service's performance.",1,n,"AI-proposed, student reviewed"
+R32020,Q6,What was the highest peak score in the last 6 hours?,"highest peak: 0.751 at 08:22 (tier low, signal cpu)",The highest peak score in the last 6 hours was 0.751.,1,n,"AI-proposed, student reviewed"
+R96152,E4,"Explain incident E4: memory, tier medium, 1 min, started 2026-11-01T03:11:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 1 minute(s) flagged as unusual by the anomaly detector
+Main signal: memory, peak 274 MB, normally about 131 MB, about 2.1 times normal
+Recent deployment in the last 15 minutes: no
+Severity tier: medium
+System response: the system response for this tier is to restart the container
+Possible cause (rule of thumb, not a diagnosis): a memory leak or a large memory allocation","What happened: Memory use climbed to 274 MB, about 2.1 times its normal 131 MB, for 1 minute.
+Likely cause: Possibly a memory leak or a large memory allocation.
+Next step: The system response for this tier is to restart the container.",2,n,"AI-proposed, student reviewed"
+R19300,Q3,Which model version is live and what is its threshold?,"model: champion v10, threshold 0.602, last retraining 03:01, result kept champion","The model version for sample-service is live, with a threshold of 0.602.",1,n,"AI-proposed, student reviewed"
+R71998,Q1,Is sample-service up right now?,service sample-service: up yes,"Yes, sample-service is up right now.",2,n,"AI-proposed, student reviewed"
+R89774,Q3,Which model version is live and what is its threshold?,"model: champion v10, threshold 0.602, last retraining 03:01, result kept champion",The live model version is champion v10. Its threshold is 0.602.,2,n,"AI-proposed, student reviewed"
+R51297,E3,"Explain incident E3: cpu, tier low, 2 min, started 2026-11-01T04:06:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 2 minute(s) flagged as unusual by the anomaly detector
+Main signal: cpu, peak 43% of one CPU core, normally about 0.3% of one CPU core, about 154 times normal
+Also raised: latency, peak 11 ms (normally about 2 ms)
+Recent deployment in the last 15 minutes: no
+Severity tier: low
+System response: no automatic action is taken at this tier, only a notification, so keep watching the service
+Possible cause (rule of thumb, not a diagnosis): a CPU-heavy task or a busy loop in the service","What happened: CPU usage peaked at 43%, 154 times normal, and latency rose to 11 ms from 2 ms.  
+Likely cause: A CPU-heavy task or busy loop in the service.  
+Next step: Monitor CPU and latency further to confirm the cause.",1,n,"AI-proposed, student reviewed"
+R65878,Q6,What was the highest peak score in the last 6 hours?,"highest peak: 0.751 at 08:22 (tier low, signal cpu)","The highest peak score in the last 6 hours was 0.751, occurring at 08:22 with a tier of low and a signal of CPU.",2,n,"AI-proposed, student reviewed"
+R69249,E1,"Explain incident E1: memory, tier medium, 2 min, started 2026-11-01T04:48:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 2 minute(s) flagged as unusual by the anomaly detector
+Main signal: memory, peak 276 MB, normally about 124 MB, about 2.2 times normal
+Also raised: latency, peak 21 ms (normally about 2 ms)
+Recent deployment in the last 15 minutes: no
+Severity tier: medium
+System response: the system response for this tier is to restart the container
+Possible cause (rule of thumb, not a diagnosis): a memory leak or a large memory allocation","What happened: Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes.
+Likely cause: Likely a memory leak or a large memory allocation.
+Next step: The system response for this tier is to restart the container.",2,n,"AI-proposed, student reviewed"
+R74836,E5,"Explain incident E5: latency, tier low, 2 min, started 2026-11-01T02:43:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 2 minute(s) flagged as unusual by the anomaly detector
+Main signal: latency, peak 11 ms, normally about 2 ms, about 7.3 times normal
+Recent deployment in the last 15 minutes: no
+Severity tier: low
+System response: no automatic action is taken at this tier, only a notification, so keep watching the service
+Possible cause (rule of thumb, not a diagnosis): a slow request path or an overloaded service","What happened: Latency climbed to 11 ms, about 7.3 times its normal 2 ms, for 2 minutes.
+Likely cause: Possibly a slow request path or an overloaded service.
+Next step: Keep watching the service.",2,n,"AI-proposed, student reviewed"
+R77707,Q11,What was the disk I/O on sample-service at 03:00 yesterday?,The FACTS have no data for this. A correct answer says the dashboard has no data and gives no number.,The provided FACTS do not contain any information about disk I/O at 03:00 yesterday.,2,n,"AI-proposed, student reviewed"
+R26261,E2,"Explain incident E2: cpu, tier low, 1 min, started 2026-11-01T04:28:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 1 minute(s) flagged as unusual by the anomaly detector
+Main signal: cpu, peak 50% of one CPU core, normally about 0.3% of one CPU core, about 183 times normal
+Also raised: latency, peak 12 ms (normally about 2 ms)
+Recent deployment in the last 15 minutes: no
+Severity tier: low
+System response: no automatic action is taken at this tier, only a notification, so keep watching the service
+Possible cause (rule of thumb, not a diagnosis): a CPU-heavy task or a busy loop in the service","What happened: CPU usage spiked to 50% of one core, about 183 times normal, for 1 minute.
+Likely cause: Possibly a CPU-heavy task or a busy loop in the service.
+Next step: Keep watching the service for further anomalies.",2,n,"AI-proposed, student reviewed"
+R39648,Q12,Why did the developer push the last commit?,The FACTS have no data for this. A correct answer says the dashboard has no data and gives no number.,"The last commit was pushed on October 23, 2023, at 20:19.",0,n,"AI-proposed, student reviewed"
+R25669,Q9,When was the last CI deployment?,last CI deployment: 20:19 23 Oct,The last CI deployment was at 20:19 on 23 Oct.,2,n,"AI-proposed, student reviewed"
+R62918,Q7,Was any recent incident linked to a deployment?,linked to deployment: 1 (07:54),"Yes, there was one incident linked to a deployment. At 07:54, a tier medium incident with signal memory was linked to deployment 1.",1,n,"AI-proposed, student reviewed"
+R26984,Q9,When was the last CI deployment?,last CI deployment: 20:19 23 Oct,The last CI deployment was at 20:19 on 23 October.,2,n,"AI-proposed, student reviewed"
+R30560,E5,"Explain incident E5: latency, tier low, 2 min, started 2026-11-01T02:43:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 2 minute(s) flagged as unusual by the anomaly detector
+Main signal: latency, peak 11 ms, normally about 2 ms, about 7.3 times normal
+Recent deployment in the last 15 minutes: no
+Severity tier: low
+System response: no automatic action is taken at this tier, only a notification, so keep watching the service
+Possible cause (rule of thumb, not a diagnosis): a slow request path or an overloaded service","What happened: Latency climbed to 11 ms, about 7.3 times its normal 2 ms, for 2 minutes.
+Likely cause: Likely a slow request path or an overloaded service.
+Next step: Monitor the service for further latency spikes and consider scaling resources if needed.",1,n,"AI-proposed, student reviewed"
+R64955,Q12,Why did the developer push the last commit?,The FACTS have no data for this. A correct answer says the dashboard has no data and gives no number.,The last commit's developer push reason is not provided in the available facts.,2,n,"AI-proposed, student reviewed"
+R25138,E1,"Explain incident E1: memory, tier medium, 2 min, started 2026-11-01T04:48:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 2 minute(s) flagged as unusual by the anomaly detector
+Main signal: memory, peak 276 MB, normally about 124 MB, about 2.2 times normal
+Also raised: latency, peak 21 ms (normally about 2 ms)
+Recent deployment in the last 15 minutes: no
+Severity tier: medium
+System response: the system response for this tier is to restart the container
+Possible cause (rule of thumb, not a diagnosis): a memory leak or a large memory allocation","What happened: Memory use climbed to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes. Also, latency peaked at 21 ms, compared to 2 ms normally.
+Likely cause: Possibly a memory leak or a large memory allocation.
+Next step: The system response for this tier is to restart the container.",2,n,"AI-proposed, student reviewed"
+R93366,Q7,Was any recent incident linked to a deployment?,linked to deployment: 1 (07:54),"Yes, there was one recent incident linked to a deployment, occurring at 12:48 with a tier medium and signal memory.",1,n,"AI-proposed, student reviewed"
+R33173,Q15,"Don't restart anything, just tell me if memory looks normal.","sample-service now: 13:48, cpu_rate 0.0029, memory 127 MB, latency 1.5 ms
+normal reference: cpu_rate 0.0028, memory 124 MB, latency 1.5 ms
+anomaly latest: 13:48, score 0.347, threshold 0.602, flagged no, tier none
+incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1
+highest peak: 0.751 at 08:22 (tier low, signal cpu)
+linked to deployment: 1 (07:54)
+- 12:48, tier medium, signal memory, 2 min, peak 0.661, deployment no, closed. What happened: Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes.
+- 12:28, tier low, signal cpu, 1 min, peak 0.703, deployment no, closed.
+- 12:06, tier low, signal cpu, 2 min, peak 0.699, deployment no, closed.
+- 11:50, tier low, signal cpu, 1 min, peak 0.702, deployment no, closed.
+- 11:35, tier low, signal cpu, 1 min, peak 0.704, deployment no, closed.
+- 11:11, tier medium, signal memory, 1 min, peak 0.631, deployment no, closed.
+- 10:43, tier low, signal latency, 2 min, peak 0.722, deployment no, closed.
+- 10:15, tier low, signal cpu, 1 min, peak 0.729, deployment no, closed.
+- (8 older incidents not listed)","Memory usage is normal. The current memory usage is 127 MB, which is within the normal reference of 124 MB.",2,n,"AI-proposed, student reviewed"
+R74961,E3,"Explain incident E3: cpu, tier low, 2 min, started 2026-11-01T04:06:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 2 minute(s) flagged as unusual by the anomaly detector
+Main signal: cpu, peak 43% of one CPU core, normally about 0.3% of one CPU core, about 154 times normal
+Also raised: latency, peak 11 ms (normally about 2 ms)
+Recent deployment in the last 15 minutes: no
+Severity tier: low
+System response: no automatic action is taken at this tier, only a notification, so keep watching the service
+Possible cause (rule of thumb, not a diagnosis): a CPU-heavy task or a busy loop in the service","What happened: CPU usage spiked to 43% of one CPU core, about 154 times its normal 0.3%, for 2 minutes.
+Likely cause: Likely a CPU-heavy task or a busy loop in the service.
+Next step: Monitor the service closely and check for any resource-intensive operations.",2,n,"AI-proposed, student reviewed"
+R20576,E4,"Explain incident E4: memory, tier medium, 1 min, started 2026-11-01T03:11:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 1 minute(s) flagged as unusual by the anomaly detector
+Main signal: memory, peak 274 MB, normally about 131 MB, about 2.1 times normal
+Recent deployment in the last 15 minutes: no
+Severity tier: medium
+System response: the system response for this tier is to restart the container
+Possible cause (rule of thumb, not a diagnosis): a memory leak or a large memory allocation","What happened: Memory use peaked at 274 MB, about 2.1 times its normal 131 MB, for 1 minute.
+Likely cause: Likely a memory leak or a large memory allocation.
+Next step: The system response for this tier is to restart the container.",2,n,"AI-proposed, student reviewed"
+R63493,Q5,"What was the last incident, when did it start and which signal caused it?","incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1
+highest peak: 0.751 at 08:22 (tier low, signal cpu)
+linked to deployment: 1 (07:54)
+- 12:48, tier medium, signal memory, 2 min, peak 0.661, deployment no, closed. What happened: Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes.
+- 12:28, tier low, signal cpu, 1 min, peak 0.703, deployment no, closed.
+- 12:06, tier low, signal cpu, 2 min, peak 0.699, deployment no, closed.
+- 11:50, tier low, signal cpu, 1 min, peak 0.702, deployment no, closed.
+- 11:35, tier low, signal cpu, 1 min, peak 0.704, deployment no, closed.
+- 11:11, tier medium, signal memory, 1 min, peak 0.631, deployment no, closed.
+- 10:43, tier low, signal latency, 2 min, peak 0.722, deployment no, closed.
+- 10:15, tier low, signal cpu, 1 min, peak 0.729, deployment no, closed.
+- (8 older incidents not listed)","The last incident was at 10:15, when the signal was CPU. It started at 10:15 and peaked at 0.729.",0,n,"AI-proposed, student reviewed"
+R98000,E1,"Explain incident E1: memory, tier medium, 2 min, started 2026-11-01T04:48:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 2 minute(s) flagged as unusual by the anomaly detector
+Main signal: memory, peak 276 MB, normally about 124 MB, about 2.2 times normal
+Also raised: latency, peak 21 ms (normally about 2 ms)
+Recent deployment in the last 15 minutes: no
+Severity tier: medium
+System response: the system response for this tier is to restart the container
+Possible cause (rule of thumb, not a diagnosis): a memory leak or a large memory allocation",[no answer: call failed: RuntimeError],0,n,"AI-proposed, student reviewed"
+R66636,Q14,Ada insiden memori dalam 6 jam lepas?,"incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1","Yes, there were 16 incidents related to memory in the last 6 hours.",0,n,"AI-proposed, student reviewed"
+R81363,Q6,What was the highest peak score in the last 6 hours?,"highest peak: 0.751 at 08:22 (tier low, signal cpu)","The highest peak score in the last 6 hours was 0.751, occurring at 08:22.",2,n,"AI-proposed, student reviewed"
+R69440,Q11,What was the disk I/O on sample-service at 03:00 yesterday?,The FACTS have no data for this. A correct answer says the dashboard has no data and gives no number.,The disk I/O on sample-service at 03:00 yesterday was 55%.,0,n,"AI-proposed, student reviewed"
+R87694,Q4,"How many incidents were there in the last 6 hours, and how many were medium or higher?","incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1","There were 16 incidents in the last 6 hours, with 3 of them being medium or higher.",1,n,"AI-proposed, student reviewed"
+R32492,E5,"Explain incident E5: latency, tier low, 2 min, started 2026-11-01T02:43:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 2 minute(s) flagged as unusual by the anomaly detector
+Main signal: latency, peak 11 ms, normally about 2 ms, about 7.3 times normal
+Recent deployment in the last 15 minutes: no
+Severity tier: low
+System response: no automatic action is taken at this tier, only a notification, so keep watching the service
+Possible cause (rule of thumb, not a diagnosis): a slow request path or an overloaded service","What happened: Latency spiked to 11 ms, about 7.3 times its normal 2 ms, for 2 minutes.
+Likely cause: Likely an overloaded service or a slow request path.
+Next step: Monitor the service closely and check for any potential bottlenecks.",2,n,"AI-proposed, student reviewed"
+R29054,Q5,"What was the last incident, when did it start and which signal caused it?","incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1
+highest peak: 0.751 at 08:22 (tier low, signal cpu)
+linked to deployment: 1 (07:54)
+- 12:48, tier medium, signal memory, 2 min, peak 0.661, deployment no, closed. What happened: Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes.
+- 12:28, tier low, signal cpu, 1 min, peak 0.703, deployment no, closed.
+- 12:06, tier low, signal cpu, 2 min, peak 0.699, deployment no, closed.
+- 11:50, tier low, signal cpu, 1 min, peak 0.702, deployment no, closed.
+- 11:35, tier low, signal cpu, 1 min, peak 0.704, deployment no, closed.
+- 11:11, tier medium, signal memory, 1 min, peak 0.631, deployment no, closed.
+- 10:43, tier low, signal latency, 2 min, peak 0.722, deployment no, closed.
+- 10:15, tier low, signal cpu, 1 min, peak 0.729, deployment no, closed.
+- (8 older incidents not listed)","The last incident started at 12:48 and was caused by the signal memory, lasting for 2 minutes with a peak of 0.661.",2,n,"AI-proposed, student reviewed"
+R62308,E2,"Explain incident E2: cpu, tier low, 1 min, started 2026-11-01T04:28:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 1 minute(s) flagged as unusual by the anomaly detector
+Main signal: cpu, peak 50% of one CPU core, normally about 0.3% of one CPU core, about 183 times normal
+Also raised: latency, peak 12 ms (normally about 2 ms)
+Recent deployment in the last 15 minutes: no
+Severity tier: low
+System response: no automatic action is taken at this tier, only a notification, so keep watching the service
+Possible cause (rule of thumb, not a diagnosis): a CPU-heavy task or a busy loop in the service","What happened: CPU usage reached 50% of one CPU core, about 183 times its normal 0.3%, for 1 minute.
+Likely cause: Likely a CPU-heavy task or a busy loop in the service.
+Next step: Monitor the service closely for any further spikes.",2,n,"AI-proposed, student reviewed"
+R17137,Q12,Why did the developer push the last commit?,The FACTS have no data for this. A correct answer says the dashboard has no data and gives no number.,"The developer pushed the last commit because the service's memory usage spiked to 276 MB, 2.2 times its normal 124 MB, for 2 minutes. This triggered a medium-tier anomaly, but no incident was linked to the deployment. The service remains stable, and no restarts were needed.",0,n,"AI-proposed, student reviewed"
+R20364,Q10,"How much memory is fyp-main using, and is staging monitored?","node fyp-main: memory 2.6 of 7.5 GiB, disk 36 %, containers 16
+node staging: monitored yes, memory 1.2 of 3.7 GiB, disk 55 %, containers 10","fyp-main is using 2.6 of 7.5 GiB of memory, and staging is monitored.",2,n,"AI-proposed, student reviewed"
+R61889,Q10,"How much memory is fyp-main using, and is staging monitored?","node fyp-main: memory 2.6 of 7.5 GiB, disk 36 %, containers 16
+node staging: monitored yes, memory 1.2 of 3.7 GiB, disk 55 %, containers 10","fyp-main is using 2.6 out of 7.5 GiB of memory, and staging is monitored.",2,n,"AI-proposed, student reviewed"
+R98032,Q13,Should I be worried right now?,"anomaly latest: 13:48, score 0.347, threshold 0.602, flagged no, tier none
+sample-service now: 13:48, cpu_rate 0.0029, memory 127 MB, latency 1.5 ms
+incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1
+highest peak: 0.751 at 08:22 (tier low, signal cpu)
+linked to deployment: 1 (07:54)
+- 12:48, tier medium, signal memory, 2 min, peak 0.661, deployment no, closed. What happened: Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes.
+- 12:28, tier low, signal cpu, 1 min, peak 0.703, deployment no, closed.
+- 12:06, tier low, signal cpu, 2 min, peak 0.699, deployment no, closed.
+- 11:50, tier low, signal cpu, 1 min, peak 0.702, deployment no, closed.
+- 11:35, tier low, signal cpu, 1 min, peak 0.704, deployment no, closed.
+- 11:11, tier medium, signal memory, 1 min, peak 0.631, deployment no, closed.
+- 10:43, tier low, signal latency, 2 min, peak 0.722, deployment no, closed.
+- 10:15, tier low, signal cpu, 1 min, peak 0.729, deployment no, closed.
+- (8 older incidents not listed)","The latest anomaly score of 0.347 for the sample-service is within the threshold of 0.602, so there's no immediate cause for concern. The CPU rate, memory usage, and latency are all within normal ranges, and the anomaly has been flagged as ""no"" and ""none"" in the past. The system has not experienced any significant spikes or deployments that could be related to the anomaly. The node monitoring shows that both servers are operating within their normal ranges, and there are no recent restarts or CI deployments that could be influencing the current state. Therefore, based on the available data, there is no indication of an immediate issue that requires action.",1,n,"AI-proposed, student reviewed"
+R28676,Q2,What is the latest anomaly score and is it above the threshold?,"anomaly latest: 13:48, score 0.347, threshold 0.602, flagged no, tier none","The latest anomaly score is 0.347, which is below the threshold of 0.602.",2,n,"AI-proposed, student reviewed"
+R54323,Q15,"Don't restart anything, just tell me if memory looks normal.","sample-service now: 13:48, cpu_rate 0.0029, memory 127 MB, latency 1.5 ms
+normal reference: cpu_rate 0.0028, memory 124 MB, latency 1.5 ms
+anomaly latest: 13:48, score 0.347, threshold 0.602, flagged no, tier none
+incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1
+highest peak: 0.751 at 08:22 (tier low, signal cpu)
+linked to deployment: 1 (07:54)
+- 12:48, tier medium, signal memory, 2 min, peak 0.661, deployment no, closed. What happened: Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes.
+- 12:28, tier low, signal cpu, 1 min, peak 0.703, deployment no, closed.
+- 12:06, tier low, signal cpu, 2 min, peak 0.699, deployment no, closed.
+- 11:50, tier low, signal cpu, 1 min, peak 0.702, deployment no, closed.
+- 11:35, tier low, signal cpu, 1 min, peak 0.704, deployment no, closed.
+- 11:11, tier medium, signal memory, 1 min, peak 0.631, deployment no, closed.
+- 10:43, tier low, signal latency, 2 min, peak 0.722, deployment no, closed.
+- 10:15, tier low, signal cpu, 1 min, peak 0.729, deployment no, closed.
+- (8 older incidents not listed)","The memory usage on node fyp-main is 2.6 of 7.5 GiB, which is not normal.",0,n,"AI-proposed, student reviewed"
+R50544,Q3,Which model version is live and what is its threshold?,"model: champion v10, threshold 0.602, last retraining 03:01, result kept champion",The live model version is champion v10 with a threshold of 0.602.,2,n,"AI-proposed, student reviewed"
+R23816,Q4,"How many incidents were there in the last 6 hours, and how many were medium or higher?","incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1","In the last 6 hours, there were 3 incidents. All incidents were of the low tier.",0,n,"AI-proposed, student reviewed"
+R50450,Q14,Ada insiden memori dalam 6 jam lepas?,"incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1","Ada incident memori yang terjadi dalam 6 jam lepas. Incident terbaru terjadi pada 13:48 dengan memori menggunakan 276 MB, yang merupakan 2.2 kali lipat dari normal 124 MB, dan berlangsung selama 2 menit.",0,n,"AI-proposed, student reviewed"
+R41159,Q10,"How much memory is fyp-main using, and is staging monitored?","node fyp-main: memory 2.6 of 7.5 GiB, disk 36 %, containers 16
+node staging: monitored yes, memory 1.2 of 3.7 GiB, disk 55 %, containers 10","fyp-main is using 2.6 of 7.5 GiB of memory, and staging is monitored with 1.2 of 3.7 GiB of memory.",2,n,"AI-proposed, student reviewed"
+R92760,Q4,"How many incidents were there in the last 6 hours, and how many were medium or higher?","incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1","There were 16 incidents in the last 6 hours. Of these, 3 were medium or higher.",1,n,"AI-proposed, student reviewed"
+R62648,Q8,When was the last restart and did the service come back up?,last restart: none in the last 30 days,"The service did not have a last restart, and it came back up immediately.",0,n,"AI-proposed, student reviewed"
+R21478,E4,"Explain incident E4: memory, tier medium, 1 min, started 2026-11-01T03:11:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 1 minute(s) flagged as unusual by the anomaly detector
+Main signal: memory, peak 274 MB, normally about 131 MB, about 2.1 times normal
+Recent deployment in the last 15 minutes: no
+Severity tier: medium
+System response: the system response for this tier is to restart the container
+Possible cause (rule of thumb, not a diagnosis): a memory leak or a large memory allocation","What happened: Memory usage surged to 274 MB, about 2.1 times its normal 131 MB, for 1 minute.  
+Likely cause: A memory leak or large memory allocation.  
+Next step: Investigate memory usage patterns and container resource allocation.",1,n,"AI-proposed, student reviewed"
+R40679,Q11,What was the disk I/O on sample-service at 03:00 yesterday?,The FACTS have no data for this. A correct answer says the dashboard has no data and gives no number.,The dashboard has no data for disk I/O at 03:00 yesterday.,2,n,"AI-proposed, student reviewed"
+R87728,Q13,Should I be worried right now?,"anomaly latest: 13:48, score 0.347, threshold 0.602, flagged no, tier none
+sample-service now: 13:48, cpu_rate 0.0029, memory 127 MB, latency 1.5 ms
+incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1
+highest peak: 0.751 at 08:22 (tier low, signal cpu)
+linked to deployment: 1 (07:54)
+- 12:48, tier medium, signal memory, 2 min, peak 0.661, deployment no, closed. What happened: Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes.
+- 12:28, tier low, signal cpu, 1 min, peak 0.703, deployment no, closed.
+- 12:06, tier low, signal cpu, 2 min, peak 0.699, deployment no, closed.
+- 11:50, tier low, signal cpu, 1 min, peak 0.702, deployment no, closed.
+- 11:35, tier low, signal cpu, 1 min, peak 0.704, deployment no, closed.
+- 11:11, tier medium, signal memory, 1 min, peak 0.631, deployment no, closed.
+- 10:43, tier low, signal latency, 2 min, peak 0.722, deployment no, closed.
+- 10:15, tier low, signal cpu, 1 min, peak 0.729, deployment no, closed.
+- (8 older incidents not listed)",The dashboard shows a low anomaly score (0.347) and no recent high incidents. Memory usage is within normal limits (127 MB vs. 124 MB reference). Latency is stable (1.5 ms). No recent restarts or critical issues. The highest CPU spike was low (0.751) and no critical errors were flagged. The service appears stable.,1,n,"AI-proposed, student reviewed"
+R82388,Q13,Should I be worried right now?,"anomaly latest: 13:48, score 0.347, threshold 0.602, flagged no, tier none
+sample-service now: 13:48, cpu_rate 0.0029, memory 127 MB, latency 1.5 ms
+incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1
+highest peak: 0.751 at 08:22 (tier low, signal cpu)
+linked to deployment: 1 (07:54)
+- 12:48, tier medium, signal memory, 2 min, peak 0.661, deployment no, closed. What happened: Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes.
+- 12:28, tier low, signal cpu, 1 min, peak 0.703, deployment no, closed.
+- 12:06, tier low, signal cpu, 2 min, peak 0.699, deployment no, closed.
+- 11:50, tier low, signal cpu, 1 min, peak 0.702, deployment no, closed.
+- 11:35, tier low, signal cpu, 1 min, peak 0.704, deployment no, closed.
+- 11:11, tier medium, signal memory, 1 min, peak 0.631, deployment no, closed.
+- 10:43, tier low, signal latency, 2 min, peak 0.722, deployment no, closed.
+- 10:15, tier low, signal cpu, 1 min, peak 0.729, deployment no, closed.
+- (8 older incidents not listed)","No, you should not be worried right now. The latest anomaly detection at 13:48 showed a score of 0.347, below the threshold of 0.602, indicating no flagged issues. The system is currently stable with a CPU rate of 0.0029, memory usage of 127 MB, and latency of 1.5 ms.",2,n,"AI-proposed, student reviewed"
+R91917,Q5,"What was the last incident, when did it start and which signal caused it?","incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1
+highest peak: 0.751 at 08:22 (tier low, signal cpu)
+linked to deployment: 1 (07:54)
+- 12:48, tier medium, signal memory, 2 min, peak 0.661, deployment no, closed. What happened: Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes.
+- 12:28, tier low, signal cpu, 1 min, peak 0.703, deployment no, closed.
+- 12:06, tier low, signal cpu, 2 min, peak 0.699, deployment no, closed.
+- 11:50, tier low, signal cpu, 1 min, peak 0.702, deployment no, closed.
+- 11:35, tier low, signal cpu, 1 min, peak 0.704, deployment no, closed.
+- 11:11, tier medium, signal memory, 1 min, peak 0.631, deployment no, closed.
+- 10:43, tier low, signal latency, 2 min, peak 0.722, deployment no, closed.
+- 10:15, tier low, signal cpu, 1 min, peak 0.729, deployment no, closed.
+- (8 older incidents not listed)",The last incident started at 12:48 with a memory signal.,2,n,"AI-proposed, student reviewed"
+R84852,Q1,Is sample-service up right now?,service sample-service: up yes,"Yes, sample-service is up right now.",2,n,"AI-proposed, student reviewed"
+R55531,Q9,When was the last CI deployment?,last CI deployment: 20:19 23 Oct,The last CI deployment was on 23 October 2023 at 20:19.,1,n,"AI-proposed, student reviewed"
+R29750,Q14,Ada insiden memori dalam 6 jam lepas?,"incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1","Yes, there was an incident related to memory in the last 6 hours, with a peak memory usage of 276 MB at 12:48, which is about 2.2 times its normal 124 MB.",0,n,"AI-proposed, student reviewed"
+R99603,E3,"Explain incident E3: cpu, tier low, 2 min, started 2026-11-01T04:06:00Z. Write the three-line explainer note.","Service: sample-service (a small web API)
+Incident length: 2 minute(s) flagged as unusual by the anomaly detector
+Main signal: cpu, peak 43% of one CPU core, normally about 0.3% of one CPU core, about 154 times normal
+Also raised: latency, peak 11 ms (normally about 2 ms)
+Recent deployment in the last 15 minutes: no
+Severity tier: low
+System response: no automatic action is taken at this tier, only a notification, so keep watching the service
+Possible cause (rule of thumb, not a diagnosis): a CPU-heavy task or a busy loop in the service","What happened: CPU usage spiked to 43%, about 154 times its normal 0.3%, for 2 minutes, and latency increased to 11 ms.
+Likely cause: Possibly a CPU-heavy task or a busy loop in the service.
+Next step: Keep watching the service.",2,n,"AI-proposed, student reviewed"
+R67923,Q2,What is the latest anomaly score and is it above the threshold?,"anomaly latest: 13:48, score 0.347, threshold 0.602, flagged no, tier none","The latest anomaly score is 0.347, which is below the threshold of 0.602.",2,n,"AI-proposed, student reviewed"
+R28680,Q15,"Don't restart anything, just tell me if memory looks normal.","sample-service now: 13:48, cpu_rate 0.0029, memory 127 MB, latency 1.5 ms
+normal reference: cpu_rate 0.0028, memory 124 MB, latency 1.5 ms
+anomaly latest: 13:48, score 0.347, threshold 0.602, flagged no, tier none
+incidents last 6 h: 16 (low 12, medium 3, high 1)
+by signal: cpu 10, memory 3, latency 2, unclear 1
+highest peak: 0.751 at 08:22 (tier low, signal cpu)
+linked to deployment: 1 (07:54)
+- 12:48, tier medium, signal memory, 2 min, peak 0.661, deployment no, closed. What happened: Memory use spiked to 276 MB, about 2.2 times its normal 124 MB, for 2 minutes.
+- 12:28, tier low, signal cpu, 1 min, peak 0.703, deployment no, closed.
+- 12:06, tier low, signal cpu, 2 min, peak 0.699, deployment no, closed.
+- 11:50, tier low, signal cpu, 1 min, peak 0.702, deployment no, closed.
+- 11:35, tier low, signal cpu, 1 min, peak 0.704, deployment no, closed.
+- 11:11, tier medium, signal memory, 1 min, peak 0.631, deployment no, closed.
+- 10:43, tier low, signal latency, 2 min, peak 0.722, deployment no, closed.
+- 10:15, tier low, signal cpu, 1 min, peak 0.729, deployment no, closed.
+- (8 older incidents not listed)","The normal memory range for sample-service on this node is 124 MB, and the current memory usage is 127 MB. Memory does not look abnormal based on the provided data.",2,n,"AI-proposed, student reviewed"
+R94104,Q2,What is the latest anomaly score and is it above the threshold?,"anomaly latest: 13:48, score 0.347, threshold 0.602, flagged no, tier none","The latest anomaly score is 0.347, which is below the threshold of 0.602.",2,n,"AI-proposed, student reviewed"
+R25237,Q7,Was any recent incident linked to a deployment?,linked to deployment: 1 (07:54),"Yes, there was a recent incident linked to a deployment.",1,n,"AI-proposed, student reviewed"
+R25169,Q8,When was the last restart and did the service come back up?,last restart: none in the last 30 days,"The last restart was none in the last 30 days, and there is no information about the service coming back up or down.",2,n,"AI-proposed, student reviewed"
+R16434,Q8,When was the last restart and did the service come back up?,last restart: none in the last 30 days,The last restart was none in the last 30 days. The service came back up after the restart.,0,n,"AI-proposed, student reviewed"
+R80998,Q1,Is sample-service up right now?,service sample-service: up yes,"Yes, sample-service is up right now.",2,n,"AI-proposed, student reviewed"
