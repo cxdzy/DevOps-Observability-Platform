@@ -11,3 +11,5 @@ scripts/injector.log
 .env.bak.*
 *.bak.*
 *.env.bak*
+
+bench/chat_model_test/results/
