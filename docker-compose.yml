@@ -94,10 +94,8 @@ services:
       - OLLAMA_KEEP_ALIVE=30m
     # Hard cap: if a model is too big, only this container is OOM-killed.
     # memswap_limit equal to mem_limit disables swap for this container.
-    # Raised from 1600m for swap mode (chat plan section 12): one model resident at a time, up to
-    # qwen2.5:3b for chat; OLLAMA_MAX_LOADED_MODELS=1 unloads one model to load the other.
-    mem_limit: 3800m
-    memswap_limit: 3800m
+    mem_limit: 1600m
+    memswap_limit: 1600m
     volumes:
       - ollama-models:/root/.ollama
     networks:
@@ -285,7 +283,8 @@ services:
       # dashboard role (dashboard/db/dashboard_chat_grant.sql); empty turns the log off.
       - OLLAMA_URL=http://ollama:11434
       - CHAT_MODEL=${CHAT_MODEL:-qwen2.5:1.5b}
-      - CHAT_KEEP_ALIVE=5m
+      # Same as OLLAMA_KEEP_ALIVE: chat uses the explainer's model, so a shorter value would cut its keep-alive.
+      - CHAT_KEEP_ALIVE=30m
       - CHAT_RATE_PER_HOUR=20
       - LANGFUSE_DB_NAME=${LANGFUSE_DB_NAME:-}
     ports:
