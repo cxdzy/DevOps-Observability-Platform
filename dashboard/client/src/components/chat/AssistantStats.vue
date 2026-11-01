@@ -54,7 +54,7 @@ const rows = computed(() => {
       <dl class="m-0 flex flex-col text-[13px]">
         <div v-for="(row, i) in rows" :key="row.label" class="flex justify-between gap-2.5 border-t border-border py-2" :class="i === rows.length - 1 ? 'border-b' : ''">
           <dt class="text-muted-foreground">{{ row.label }}</dt>
-          <dd class="m-0 min-w-0 text-right font-mono break-all">{{ row.value }}</dd>
+          <dd class="m-0 min-w-0 text-right font-mono">{{ row.value }}</dd>
         </div>
       </dl>
       <p v-if="stats.replies === 0" class="text-xs text-muted-foreground">No model replies in the last 24 hours yet.</p>

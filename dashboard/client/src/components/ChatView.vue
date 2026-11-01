@@ -143,7 +143,7 @@ onUnmounted(() => window.clearInterval(waitTimer))
             <Skeleton class="h-4 w-[min(420px,100%)]" />
             <Skeleton class="h-4 w-[min(300px,80%)]" />
             <span class="text-xs text-faint" role="status">
-              Waiting for the assistant, <span class="font-mono">{{ waitedS }}</span> s<template v-if="waitedS >= SLOW_AFTER_S">. Loading the chat model, this can take up to 30 s</template>
+              Waiting for the assistant, <span class="font-mono">{{ waitedS }}</span> s<template v-if="waitedS >= SLOW_AFTER_S">. Still working. The local model runs on CPU and can take up to 30 s</template>
             </span>
           </div>
         </div>
