@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { parse, NO_DATA_TOPICS, NO_DATA_REPLY } = require("../chat/parser");
+const { parse, countQuestion, NO_DATA_TOPICS, NO_DATA_REPLY } = require("../chat/parser");
 
 // [message, intent, language]
 const CASES = [
@@ -23,7 +23,7 @@ const CASES = [
   ["Without a restart, is memory normal?", "llm", "en"],
   ["Jangan restart, adakah memori normal?", "llm", "ms"],
   ["Tak payah hentikan, apa status sekarang?", "llm", "ms"],
-  ["dont restart it, how many incidents today?", "llm", "en"],
+  ["dont restart it, how many incidents today?", "incident_count", "en"],
   // Questions about past actions are not requests.
   ["When was the last restart and did the service come back up?", "llm", "en"],
   ["Was there a restart today?", "llm", "en"],
@@ -48,6 +48,11 @@ const CASES = [
   ["Is memory high, and what about the network?", "llm", "en"],
   ["Did a deployment cause the latency spike?", "llm", "en"],
   ["What is my login status?", "llm", "en"],
+  // Incident counts, answered from FACTS by a template.
+  ["how many high incidents in 24hours", "incident_count", "en"],
+  ["How many incidents were there in the last 6 hours?", "incident_count", "en"],
+  ["Berapa insiden memori hari ini?", "incident_count", "ms"],
+  ["number of cpu incidents this week", "incident_count", "en"],
   // Fixed templates (the command chips).
   ["System status", "status", "en"],
   ["system status?", "status", "en"],
@@ -81,6 +86,17 @@ test("disk alone is not blocked, disk I/O is", () => {
   assert.equal(parse("What is the disk percent on fyp-main?").intent, "llm");
   assert.equal(parse("disk I/O").intent, "no_data");
   assert.equal(parse("disk read and disk write rates").intent, "no_data");
+});
+
+test("incident count questions: tier, signal and a period longer than 6 hours", () => {
+  assert.deepEqual(countQuestion("how many high incidents in 24hours"), { tier: "high", signal: null, longer: true });
+  assert.deepEqual(countQuestion("How many memory incidents in the last 6 hours?"), { tier: null, signal: "memory", longer: false });
+  assert.deepEqual(countQuestion("Berapa insiden latensi minggu ini?"), { tier: null, signal: "latency", longer: true });
+  assert.deepEqual(countQuestion("How many medium incidents yesterday?"), { tier: "medium", signal: null, longer: true });
+  assert.deepEqual(countQuestion("how many incidents in 3 hours"), { tier: null, signal: null, longer: false });
+  assert.equal(countQuestion("What was the last incident?"), null);
+  // The no-data guard still comes first.
+  assert.equal(parse("How many users logged in today?").intent, "no_data");
 });
 
 test("log does not match login, and the reply texts are fixed", () => {

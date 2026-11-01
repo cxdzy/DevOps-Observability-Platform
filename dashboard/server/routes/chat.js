@@ -7,7 +7,7 @@ const crypto = require("crypto");
 const express = require("express");
 const { originAllowed } = require("../security");
 const { parse, ACTION_REPLY, NO_DATA_REPLY } = require("../chat/parser");
-const { createFacts, fmtTime, pyFixed, INCIDENTS_LISTED } = require("../chat/facts");
+const { createFacts, renderLines, fmtTime, pyFixed, INCIDENTS_LISTED } = require("../chat/facts");
 const { checkAnswer } = require("../chat/check");
 const { createOllama, OllamaError } = require("../chat/ollama");
 const { createLimits } = require("../chat/limits");
@@ -30,6 +30,7 @@ const BUSY_MESSAGE = "The assistant is busy. Try again in a minute.";
 const SOURCES = {
   status: ["anomaly scores", "incident records", "Prometheus"],
   last_incident: ["incident records"],
+  incident_count: ["incident records"],
   health_check: ["Prometheus", "anomaly scores", "the remediation log", "deployment records"],
   llm: ["anomaly scores", "incident records", "the remediation log", "deployment records", "Prometheus"],
 };
@@ -104,7 +105,44 @@ function healthText(values, snap) {
   return parts.join(" ");
 }
 
-const TEMPLATES = { status: statusText, last_incident: lastIncidentText, health_check: healthText };
+// Incident counts always state the 6 hour window, because FACTS has no older incidents.
+const COUNT_TEXT = {
+  en: { head: "In the last 6 hours (the dashboard keeps no older incident data here)", incidents: "incidents",
+    signal: "By signal", older: "Older incidents are on the Incidents page.", none: "There is no incident data right now." },
+  ms: { head: "Dalam 6 jam lepas (dashboard tidak menyimpan data insiden yang lebih lama di sini)", incidents: "insiden",
+    signal: "Mengikut isyarat", older: "Insiden yang lebih lama ada di halaman Incidents.", none: "Tiada data insiden sekarang." },
+};
+
+// parsed: the parser result; signal adds the by-signal counts, longer the pointer to the Incidents page.
+function incidentCountText(values, snap, parsed = {}) {
+  const t = COUNT_TEXT[parsed.lang] || COUNT_TEXT.en;
+  const inc = values.incidents_6h;
+  if (!inc) return t.none;
+  const b = inc.by_tier;
+  let text = `${t.head}: ${inc.count} ${t.incidents}, high ${b.high}, medium ${b.medium}, low ${b.low}.`;
+  if (parsed.signal) {
+    const by = { cpu: 0, memory: 0, latency: 0, unclear: 0 };
+    for (const i of inc.items) by[i.signal in by ? i.signal : "unclear"] += 1;
+    text += ` ${t.signal}: cpu ${by.cpu}, memory ${by.memory}, latency ${by.latency}, unclear ${by.unclear}.`;
+  }
+  if (parsed.longer) text += ` ${t.older}`;
+  return text;
+}
+
+// The reply when the model's answers failed the check: the incident summary lines of FACTS.
+const FALLBACK_TEXT = {
+  en: ["I could not answer that reliably from the data. The dashboard covers the last 6 hours: ",
+    ". Ask about a specific incident, the score or a node."],
+  ms: ["Saya tidak dapat menjawab soalan itu dengan tepat daripada data. Dashboard meliputi 6 jam lepas: ",
+    ". Tanya tentang insiden tertentu, skor atau nod."],
+};
+
+function fallbackText(values, snap, lang = "en") {
+  const [before, after] = FALLBACK_TEXT[lang] || FALLBACK_TEXT.en;
+  return before + renderLines(values, snap).incidents_counts.join("; ") + after;
+}
+
+const TEMPLATES = { status: statusText, last_incident: lastIncidentText, health_check: healthText, incident_count: incidentCountText };
 
 // Incident chips: the incidents a reply is about.
 function chipsFor(kind, values, snap, answer) {
@@ -160,7 +198,8 @@ function createChatRouter(deps) {
 
       const user = req.user;
       const role = user.role === "admin" ? "admin" : "viewer";
-      const { intent, lang } = parse(message);
+      const parsed = parse(message);
+      const { intent, lang } = parsed;
       const reply = (body) => res.json({ incidents: [], sources: [], model: null, ...body, elapsed_s: elapsed() });
 
       if (intent === "action") return reply({ kind: "action_unavailable", answer: ACTION_REPLY[role] });
@@ -169,7 +208,7 @@ function createChatRouter(deps) {
         const f = await facts.gather();
         return reply({
           kind: "template",
-          answer: TEMPLATES[intent](f.values, f.snapshotMs),
+          answer: TEMPLATES[intent](f.values, f.snapshotMs, parsed),
           incidents: chipsFor(intent, f.values, f.snapshotMs, ""),
           sources: SOURCES[intent],
         });
@@ -210,7 +249,7 @@ function createChatRouter(deps) {
           }
           // Counted once the model has answered, so a question that got a 503 is not used up.
           if (attempt === 1) limits.consume(user.id);
-          const problems = checkAnswer(result.text, f.text);
+          const problems = checkAnswer(result.text, f.text, message);
           calls.push({ ...result, prompt: messages[1].content, answer: result.text, attempt, checkPassed: problems.length === 0 });
           if (problems.length === 0) {
             kind = "llm";
@@ -224,7 +263,7 @@ function createChatRouter(deps) {
 
       if (!kind) {
         kind = "fallback";
-        answer = statusText(f.values, f.snapshotMs);
+        answer = fallbackText(f.values, f.snapshotMs, lang);
       }
       const body = {
         kind,
@@ -263,4 +302,7 @@ function createChatRouter(deps) {
   return router;
 }
 
-module.exports = { createChatRouter, cleanMessage, buildMessages, statusText, lastIncidentText, healthText, SYSTEM_PROMPT, RETRY_LINE };
+module.exports = {
+  createChatRouter, cleanMessage, buildMessages, statusText, lastIncidentText, healthText, incidentCountText, fallbackText,
+  SYSTEM_PROMPT, RETRY_LINE,
+};

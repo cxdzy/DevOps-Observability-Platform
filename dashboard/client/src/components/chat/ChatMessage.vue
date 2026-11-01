@@ -23,15 +23,16 @@ import { clockTime } from '@/lib/format'
 const props = defineProps<{ entry: ChatEntry }>()
 const emit = defineEmits<{ openIncident: [start: number] }>()
 
-// "From incident records and the remediation log, 11.8 s", plus "template answer" for replies
-// that did not come from the model.
+// "From incident records and the remediation log, 11.8 s", plus "template answer" for fixed
+// replies and "fallback answer" when the model's answers failed the check.
 const meta = computed(() => {
   const e = props.entry
   const parts: string[] = []
   const s = e.sources ?? []
   if (s.length) parts.push(`From ${s.length === 1 ? s[0] : `${s.slice(0, -1).join(', ')} and ${s[s.length - 1]}`}`)
   if (e.elapsedS !== undefined) parts.push(`${e.elapsedS.toFixed(1)} s`)
-  if (e.kind && e.kind !== 'llm') parts.push('template answer')
+  if (e.kind === 'fallback') parts.push('fallback answer')
+  else if (e.kind && e.kind !== 'llm') parts.push('template answer')
   const text = parts.join(', ')
   return text ? text[0].toUpperCase() + text.slice(1) : ''
 })

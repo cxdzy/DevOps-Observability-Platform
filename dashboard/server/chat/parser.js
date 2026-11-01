@@ -1,6 +1,6 @@
 // Rule intents for a chat message, checked before any model call (chat plan section 13, step 2):
-// action requests, the no-data guard, the three fixed-template questions, else a question for the
-// model. Pure functions, no I/O.
+// action requests, the no-data guard, incident counts, the three fixed-template questions, else a
+// question for the model. Pure functions, no I/O.
 
 // Words that ask for an action. Matched as whole words, so "restarted" or "stopped" in a question
 // about the past is not a request.
@@ -118,6 +118,31 @@ function isNoData(message) {
   return !AVAILABLE_FACTS.some((f) => wordPattern(f).test(rest));
 }
 
+const TIERS = ["low", "medium", "high"];
+const SIGNAL_WORDS = { cpu: ["cpu"], memory: ["memory", "memori"], latency: ["latency", "latensi"] };
+// A question for the incident count: "how many (high) incidents", "number of incidents", or in
+// Malay "berapa" with "insiden".
+const COUNT_PATTERNS = [
+  /\bhow\s+many\b[^?.!]*\bincidents?\b/,
+  /\b(number|count|total)\s+of\b[^?.!]*\bincidents?\b/,
+  /\bberapa\b[^?.!]*\binsiden\b/,
+  /\binsiden\b[^?.!]*\bberapa\b/,
+];
+// A period longer than the 6 hours FACTS covers.
+const LONGER_PERIOD = /(?<![\p{L}\p{N}])(today|yesterday|week|weeks|month|months|day|days|minggu|hari|semalam|bulan)(?![\p{L}\p{N}])/u;
+const HOURS = /(?<![\p{L}\p{N}.])(\d+)\s*(hours?|hrs?|h|jam)(?![\p{L}])/gu;
+
+// Returns { tier, signal, longer } for an incident count question, else null.
+function countQuestion(message) {
+  const text = normalise(message);
+  if (!COUNT_PATTERNS.some((p) => p.test(text))) return null;
+  const list = words(text);
+  const tier = TIERS.find((t) => list.includes(t)) || null;
+  const signal = Object.keys(SIGNAL_WORDS).find((s) => SIGNAL_WORDS[s].some((w) => list.includes(w))) || null;
+  const longer = LONGER_PERIOD.test(text) || [...text.matchAll(HOURS)].some((m) => Number(m[1]) > 6);
+  return { tier, signal, longer };
+}
+
 function templateIntent(message) {
   const text = normalise(message).replace(/[?.!]+$/, "").trim();
   for (const [intent, phrases] of Object.entries(TEMPLATE_INTENTS)) {
@@ -126,17 +151,20 @@ function templateIntent(message) {
   return null;
 }
 
-// Returns { intent, lang } with intent one of action, no_data, status, last_incident, health_check, llm.
+// Returns { intent, lang } with intent one of action, no_data, incident_count, status, last_incident,
+// health_check, llm. incident_count also has tier, signal and longer (a period over 6 hours named).
 function parse(message) {
   const lang = isMalay(message) ? "ms" : "en";
   if (isActionRequest(message)) return { intent: "action", lang };
   if (isNoData(message)) return { intent: "no_data", lang };
+  const count = countQuestion(message);
+  if (count) return { intent: "incident_count", lang, ...count };
   const template = templateIntent(message);
   if (template) return { intent: template, lang };
   return { intent: "llm", lang };
 }
 
 module.exports = {
-  parse, isActionRequest, isNoData, isMalay, templateIntent,
+  parse, isActionRequest, isNoData, isMalay, templateIntent, countQuestion,
   NO_DATA_TOPICS, ACTION_WORDS, NEGATIONS, ACTION_REPLY, NO_DATA_REPLY,
 };

@@ -131,10 +131,44 @@ test("an answer with a number not in FACTS is retried once, then replaced by the
   assert.equal(ollama.calls.length, 2);
   assert.ok(ollama.calls[1].messages[1].content.endsWith(`\n${RETRY_LINE}`));
   assert.equal(body.kind, "fallback");
-  assert.match(body.answer, /^There is no data on whether sample-service is up\. The latest anomaly score is 0\.347 at 15:58/);
+  assert.equal(body.answer, "I could not answer that reliably from the data. The dashboard covers the last 6 hours: " +
+    "incidents last 6 h: 2 (low 1, medium 1, high 0); by signal: cpu 1, memory 1, latency 0, unclear 0. " +
+    "Ask about a specific incident, the score or a node.");
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(chatLog.records[0].calls.map((c) => [c.attempt, c.checkPassed]), [[1, false], [2, false]]);
   assert.equal(chatLog.records[0].reply.kind, "fallback");
+});
+
+test("the fallback is in Malay for a Malay question", async (t) => {
+  const ollama = fakeOllama(["Skor ialah 0.99.", "Skor ialah 0.98."]);
+  const { ask } = await setup(t, { ollama });
+  const body = await (await ask("Apa skor sekarang?")).json();
+  assert.equal(body.kind, "fallback");
+  assert.match(body.answer, /^Saya tidak dapat menjawab soalan itu dengan tepat daripada data\. Dashboard meliputi 6 jam lepas: incidents last 6 h: 2 /);
+  assert.match(body.answer, /\. Tanya tentang insiden tertentu, skor atau nod\.$/);
+});
+
+test("a number from the question passes the check", async (t) => {
+  const ollama = fakeOllama(["The dashboard has no data for the last 48 hours of scores."]);
+  const { ask } = await setup(t, { ollama });
+  const body = await (await ask("What were the scores over 48 hours?")).json();
+  assert.equal(body.kind, "llm");
+  assert.equal(ollama.calls.length, 1);
+});
+
+test("incident counts are template answers that state the 6 hour window", async (t) => {
+  const { ask, ollama } = await setup(t, { env: { CHAT_RATE_PER_HOUR: "1" } });
+  const head = "In the last 6 hours (the dashboard keeps no older incident data here): 2 incidents, high 0, medium 1, low 1.";
+  const high = await (await ask("how many high incidents in 24hours")).json();
+  assert.equal(high.kind, "template");
+  assert.equal(high.answer, `${head} Older incidents are on the Incidents page.`);
+  assert.deepEqual(high.sources, ["incident records"]);
+  const sig = await (await ask("How many cpu incidents in the last 6 hours?")).json();
+  assert.equal(sig.answer, `${head} By signal: cpu 1, memory 1, latency 0, unclear 0.`);
+  const malay = await (await ask("Berapa insiden memori minggu ini?")).json();
+  assert.equal(malay.answer, "Dalam 6 jam lepas (dashboard tidak menyimpan data insiden yang lebih lama di sini): 2 insiden, " +
+    "high 0, medium 1, low 1. Mengikut isyarat: cpu 1, memory 1, latency 0, unclear 0. Insiden yang lebih lama ada di halaman Incidents.");
+  assert.equal(ollama.calls.length, 0);
 });
 
 test("a retry that passes is a normal model answer", async (t) => {
