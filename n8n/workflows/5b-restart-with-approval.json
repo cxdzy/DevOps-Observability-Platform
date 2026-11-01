@@ -8,7 +8,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1632,
+        1584,
         -16
       ],
       "id": "1af8786f-a68c-4128-a477-787c9eea4e67",
@@ -178,13 +178,13 @@
     {
       "parameters": {
         "chatId": "763653428",
-        "text": "=",
+        "text": "=   {{ $('Build Result').item.json.text }}",
         "additionalFields": {}
       },
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        1840,
+        1968,
         -16
       ],
       "id": "95ca09d3-9243-48e5-ac92-273bfc9c1f60",
@@ -280,8 +280,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
       "position": [
-        1840,
-        192
+        1808,
+        176
       ],
       "id": "5dcc687e-7b6a-484a-abf2-14fcc62c8707",
       "name": "Log action"
@@ -293,12 +293,12 @@
       "main": [
         [
           {
-            "node": "Send result",
+            "node": "Log action",
             "type": "main",
             "index": 0
           },
           {
-            "node": "Log action",
+            "node": "Send result",
             "type": "main",
             "index": 0
           }
@@ -414,13 +414,12 @@
     },
     "Log action": {
       "main": [
-        [
-          {
-            "node": "Send result",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
+      ]
+    },
+    "Send result": {
+      "main": [
+        []
       ]
     }
   },
@@ -429,7 +428,7 @@
     "executionOrder": "v1",
     "binaryMode": "separate"
   },
-  "versionId": "f424d4df-2c23-402e-96ee-004b5c3ca58c",
+  "versionId": "0f95b229-d428-4fa1-9fe8-db58d921902a",
   "meta": {
     "templateCredsSetupCompleted": true
   },
