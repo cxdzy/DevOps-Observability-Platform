@@ -58,9 +58,12 @@ sample-service now: 20:31, cpu_rate 0.0031, memory 137 MB, latency 1.4 ms
 model: champion v10, threshold 0.602, last retraining 03:01 31 Oct, result kept champion
 normal reference: cpu_rate 0.0029, memory 135 MB, latency 1.5 ms
 incidents last 6 h: 3 (low 2, medium 1, high 0)
+by signal: cpu 2, memory 1, latency 0, unclear 0
+highest peak: 0.688 at 18:37 (tier medium, signal memory)
+linked to deployment: 1 (20:20)
 - 20:20, tier low, signal cpu, 3 min, peak 0.650, deployment yes, open.
-- 18:37, tier medium, signal memory, 2 min, peak 0.688, deployment no, closed. What happened: Memory use climbed to 170 MB.
-- 16:05, tier low, signal cpu, 1 min, peak 0.631, deployment no, closed. What happened: CPU use rose to 85% of one CPU core.
+- 18:37, tier medium, signal memory, 2 min, peak 0.688, deployment no, closed.
+- 16:05, tier low, signal cpu, 1 min, peak 0.631, deployment no, closed.
 last restart: none in the last 30 days
 last CI deployment: 21:41 30 Oct
 node fyp-main: memory 3.1 of 7.5 GiB, disk 19 %, containers 15
@@ -71,7 +74,91 @@ Only the facts above are available. Logs, commit messages and metrics not listed
 def test_facts_rendering_matches_section_10_format():
     text, lines = sf.render_facts(FIXTURE_VALUES, SNAPSHOT)
     assert text == EXPECTED_FACTS
-    assert set(lines) == set(sf.VALUE_KEYS)
+    assert set(lines) == set(sf.LINE_KEYS)
+
+
+def incidents_fixture(n, signals=("cpu", "memory", "latency", "none"), deploy_every=0):
+    """n closed incidents, 10 minutes apart, newest at 20:00 MYT, each with a What happened text."""
+    rows = []
+    for k in range(n):
+        rows.append({"time": ms("2026-11-01T12:00:00Z") - k * 600_000, "tier": "low" if k % 2 else "medium",
+                     "signal": signals[k % len(signals)], "minutes": 1, "peak_score": 0.61 + 0.01 * (k % 3),
+                     "deployment": 1 if deploy_every and k % deploy_every == 0 else 0,
+                     "explanation": f"What happened: event {k}.\nLikely cause: x\nNext step: y"})
+    return sf.merge_incidents(rows, [])
+
+
+def test_compact_incidents_more_than_8():
+    block = sf.render_incidents(incidents_fixture(11), SNAPSHOT)
+    lines = block["incidents_6h"]
+    assert lines[0] == "incidents last 6 h: 11 (low 5, medium 6, high 0)"
+    assert lines[1] == "by signal: cpu 3, memory 3, latency 3, unclear 2"     # "none" counts as unclear
+    listed = [line for line in lines if line.startswith("- ") and "older" not in line]
+    assert len(listed) == 8
+    assert listed[0].startswith("- 20:00,") and listed[0].endswith("What happened: event 0.")
+    assert all("What happened" not in line for line in listed[1:])
+    assert listed[-1].startswith("- 18:50,")
+    assert lines[-1] == "- (3 older incidents not listed)"
+    # the summary lines cover all 11, not only the 8 listed: peak 0.630 at k=2, 5, 8 -> newest is k=2
+    assert lines[2] == "highest peak: 0.630 at 19:40 (tier medium, signal latency)"
+
+
+def test_compact_incidents_exactly_8():
+    lines = sf.render_incidents(incidents_fixture(8), SNAPSHOT)["incidents_6h"]
+    assert len([line for line in lines if line.startswith("- ")]) == 8
+    assert not any("older incidents" in line for line in lines)
+
+
+def test_compact_incidents_none():
+    lines = sf.render_incidents(sf.merge_incidents([], []), SNAPSHOT)
+    assert lines["incidents_6h"] == ["incidents last 6 h: 0 (low 0, medium 0, high 0)",
+                                     "by signal: cpu 0, memory 0, latency 0, unclear 0",
+                                     "highest peak: none", "linked to deployment: none"]
+    assert lines["incidents_counts"] == lines["incidents_6h"][:2]
+    assert lines["incidents_peak"] == ["highest peak: none"]
+    assert lines["incidents_deployment"] == ["linked to deployment: none"]
+
+
+def test_by_signal_and_deployment_lines():
+    lines = sf.render_incidents(incidents_fixture(12, signals=("memory", "cpu"), deploy_every=5), SNAPSHOT)
+    assert lines["incidents_counts"][1] == "by signal: cpu 6, memory 6, latency 0, unclear 0"
+    # k = 0, 5, 10 have a deployment; k = 10 is not in the list but is still counted
+    assert lines["incidents_deployment"] == ["linked to deployment: 3 (20:00, 19:10, 18:20)"]
+    assert lines["incidents_deployment"][0] in lines["incidents_6h"]
+
+
+def test_rerender_keeps_structured_values_and_source(tmp_path, monkeypatch):
+    def no_queries(*a, **k):
+        raise AssertionError("rerender must not query anything")
+    monkeypatch.setattr(sf, "make_influx_query", no_queries)
+    monkeypatch.setattr(sf, "make_prom_query", no_queries)
+    monkeypatch.setattr(sf, "load_explainer", no_queries)
+    values = dict(FIXTURE_VALUES, incidents_6h=incidents_fixture(16))
+    old = {"snapshot_utc": "2026-11-01T12:31:00Z", "values": values, "lines": {"incidents_6h": ["old"]},
+           "facts_text": "old long text", "explanation_incidents": [{"id": "E1", "facts_text": "f", "rows": []}],
+           "notes": ["n1"]}
+    src = tmp_path / "old" / "facts.json"
+    src.parent.mkdir()
+    src.write_text(json.dumps(old, indent=2), encoding="utf-8")
+    before = src.read_bytes()
+
+    new = sf.rerender(src, tmp_path / "new" / "facts.json")
+    stored = json.loads((tmp_path / "new" / "facts.json").read_text(encoding="utf-8"))
+    original = json.loads(before)
+    assert src.read_bytes() == before
+    for key in ("values", "snapshot_utc", "explanation_incidents"):
+        assert stored[key] == original[key]
+    text, lines = sf.render_facts(original["values"], SNAPSHOT)
+    assert stored["facts_text"] == new["facts_text"] == text and stored["lines"] == lines
+    assert "- (8 older incidents not listed)" in text
+    assert stored["notes"][0] == "n1" and len(stored["notes"]) == 2
+    # a second rerender of the new file gives the same text
+    again = sf.rerender(tmp_path / "new" / "facts.json", tmp_path / "again" / "facts.json")
+    assert again["facts_text"] == text and again["values"] == original["values"]
+    with pytest.raises(SystemExit):
+        sf.rerender(src, tmp_path / "new" / "facts.json")          # existing output
+    with pytest.raises(SystemExit):
+        sf.rerender(src, src)                                       # same file
 
 
 def test_facts_rendering_without_data():
@@ -549,8 +636,10 @@ def test_questions_file_keys():
     questions = json.loads((Path(sf.__file__).parent / "questions.json").read_text(encoding="utf-8"))
     assert [q["id"] for q in questions] == [f"Q{i}" for i in range(1, 16)]
     for q in questions:
-        assert set(q["expected_keys"]) <= set(sf.VALUE_KEYS), q["id"]
+        assert set(q["expected_keys"]) <= set(sf.LINE_KEYS), q["id"]
     keys = {q["id"]: q["expected_keys"] for q in questions}
+    assert keys["Q4"] == keys["Q14"] == ["incidents_counts"]
+    assert keys["Q6"] == ["incidents_peak"] and keys["Q7"] == ["incidents_deployment"]
     assert "service_now" in keys["Q13"] and "service_now" in keys["Q15"]
     assert "reference" in keys["Q15"] and keys["Q11"] == [] and keys["Q12"] == []
 
@@ -565,3 +654,41 @@ def test_blind_expected_text_for_q15_shows_current_and_normal_memory():
     assert "sample-service now: 20:31, cpu_rate 0.0031, memory 137 MB, latency 1.4 ms" in expected["Q15"]
     assert "normal reference: cpu_rate 0.0029, memory 135 MB, latency 1.5 ms" in expected["Q15"]
     assert "sample-service now: 20:31" in expected["Q13"]
+
+
+def test_blind_expected_text_for_incident_summary_questions():
+    questions = json.loads((Path(sf.__file__).parent / "questions.json").read_text(encoding="utf-8"))
+    _, lines = sf.render_facts(FIXTURE_VALUES, SNAPSHOT)
+    facts = {"lines": lines, "explanation_incidents": []}
+    rows = [{"model": "m", "item_id": q, "kind": "question", "rep": 1, "status": "ok", "answer": "a"}
+            for q in ("Q4", "Q6", "Q7", "Q14")]
+    sheet, _ = make_blind.build_sheet(rows, facts, questions, seed=3)
+    expected = {s["item_id"]: s["expected"] for s in sheet}
+    counts = "incidents last 6 h: 3 (low 2, medium 1, high 0)\nby signal: cpu 2, memory 1, latency 0, unclear 0"
+    assert expected["Q4"] == expected["Q14"] == counts
+    assert expected["Q6"] == "highest peak: 0.688 at 18:37 (tier medium, signal memory)"
+    assert expected["Q7"] == "linked to deployment: 1 (20:20)"
+
+
+def test_warmup_row_is_kept_for_the_token_print(tmp_path):
+    bench = run_bench.Bench(tmp_path, call=lambda p: fake_result("ready"))
+    assert bench.last_warmup is None
+    bench.run_model("m1", items("Q1"), 1, {})
+    assert bench.last_warmup["kind"] == "warmup" and bench.last_warmup["prompt_tokens"] == 10
+
+
+def test_incident_block_without_data_and_with_open_newest():
+    none = sf.render_incidents(None, SNAPSHOT)
+    for key in ("incidents_6h", "incidents_counts", "incidents_peak", "incidents_deployment"):
+        assert none[key] == ["incidents last 6 h: no data"]
+    lines = sf.render_lines(FIXTURE_VALUES, SNAPSHOT)["incidents_6h"]   # newest (20:20) is open
+    assert not any("What happened" in line for line in lines)
+
+
+def test_warmup_tokens_printed_once_right_after_the_warmup(tmp_path, capsys):
+    bench = run_bench.Bench(tmp_path, call=lambda p: fake_result("ready"))
+    bench.print_warmup_tokens = True
+    bench.run_model("m1", items("Q1"), 1, {})
+    bench.run_model("m2", items("Q1"), 1, {})
+    out = capsys.readouterr().out
+    assert out.count("warm-up prompt_tokens") == 1 and "m1: warm-up prompt_tokens 10, prompt_eval_s 0.1" in out

@@ -27,7 +27,9 @@ dropping and choosing models are fixed in `summarize.py` before the run.
   attempt. Each incident runs once, whatever `--reps` is. `similar=[]` means no Chroma context,
   which is a limitation to state.
 - `think` false is sent only to models whose `/api/show` capabilities include thinking.
-- Each model gets one warm-up call. Its load time is recorded as the cold load and it is not scored.
+- Each model gets one warm-up call: a fixed chat message ("This is a warm-up call...") after the
+  system prompt and FACTS, with its own request line. Its load time is recorded as the cold load
+  and it is not scored.
   The repetitions are the outer loop.
 - A call that takes more than 180 s is recorded as a failed row. In the summary it counts as 180 s.
 
@@ -80,6 +82,31 @@ is `memory_max_mb`, the field the normal reference uses, so the two can be compa
 Keep these files under `results/RUN/` for both stages: `facts.json`, `models.txt`,
 `pull_errors.txt` (if any), `raw.jsonl`, `ram.csv`, the scored `scores_blind.csv`, `key.csv`,
 `summary.csv` and `summary.md`.
+
+### Compact FACTS and re-rendering an old snapshot
+
+The incident block is compact, because a 3B model reads prompts at about 60 tokens/s on this CPU
+and a FACTS block of about 1,500 tokens (16 incidents) cost about 25 s before the first token
+(measured in stage 1 run 20261101-0459-s1). After
+the count line come three summary lines over every incident in the 6 hours: `by signal`,
+`highest peak` (the time shown is the start of that incident) and `linked to deployment`. Then
+only the latest 8 incidents are listed, newest first. Only the newest keeps its What happened text,
+and `- (N older incidents not listed)` follows when there are more. Signals other than cpu, memory
+and latency are counted as unclear. Q4 and Q14 point at the count and by-signal lines, Q6 at the
+peak line and Q7 at the deployment line.
+
+To rerun stage 1 on the same data as an older run, re-render its facts.json into a new run folder.
+No database is queried, and the values, snapshot time and explanation incidents are copied
+unchanged. The source file is not touched:
+
+```
+$B /bench/snapshot_facts.py --rerender /bench/results/$OLD/facts.json --out /bench/results/$NEW/facts.json
+```
+
+Always use a new run folder. In the old folder `raw.jsonl` would make every item look done. Old
+facts.json files lack the new line keys, so `make_blind.py` with the current questions.json works
+only on re-rendered or new snapshots. `run_bench.py` prints the warm-up `prompt_tokens` of the
+first model, which is the real prompt size (system prompt, FACTS and the warm-up question).
 
 ## Tests
 

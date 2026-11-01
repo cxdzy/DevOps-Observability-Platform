@@ -10,13 +10,19 @@ facts.json holds:
               "anomaly latest" (cpu_rate, memory_max_mb, latency_ms on that anomaly_score point);
               memory_max_mb is the field the normal reference uses (reference_level
               memory_max_mb_median and base_memory_max_mb), so the two are comparable
-  lines       the rendered FACTS lines for each value key (questions.json expected_keys point here)
+  lines       the rendered FACTS lines for each key in LINE_KEYS (questions.json expected_keys point
+              here). incidents_6h is the whole incident block; incidents_counts, incidents_peak and
+              incidents_deployment are single lines of it, so the blind sheet can show just those
   facts_text  the full FACTS block in the format of the chat plan, section 10 (times in MYT)
   explanation_incidents  5 past incidents for the explanation test, newest first, each with the
               scored rows that the explainer's build_facts needs and the facts text it gives
 
 Run inside the explainer image (see README.md):
   python /bench/snapshot_facts.py --out /bench/results/RUN/facts.json
+
+Re-render an existing snapshot in the current FACTS format, with no InfluxDB or Prometheus calls
+(values, snapshot time and explanation incidents are copied unchanged, the source is not touched):
+  python /bench/snapshot_facts.py --rerender /bench/results/OLD/facts.json --out /bench/results/NEW/facts.json
 
 The helpers load_explainer and incident_from_stored are also used by run_bench.py.
 """
@@ -37,6 +43,10 @@ RESTART_DAYS = 30
 MATCH_WINDOW_MS = 120 * 1000          # same as dashboard/server/incidents.js
 VALUE_KEYS = ["service_up", "anomaly_latest", "service_now", "model", "reference", "incidents_6h",
               "last_restart", "last_ci_deployment", "node_fyp_main", "node_staging"]
+# Extra line keys that repeat single lines of the incident block for questions.json.
+LINE_KEYS = VALUE_KEYS + ["incidents_counts", "incidents_peak", "incidents_deployment"]
+INCIDENTS_LISTED = 8
+SIGNALS = ["cpu", "memory", "latency", "unclear"]   # any other signal value is counted as unclear
 FOOTER = "Only the facts above are available. Logs, commit messages and metrics not listed are not available."
 
 # The scored-row columns build_facts reads (explainer/explainer.py).
@@ -159,19 +169,7 @@ def render_lines(values, snapshot):
                           f"normal reference: cpu_rate {_num(ref['cpu_rate'], 4)}, memory {_num(ref['memory_max_mb'], 0)} MB, "
                           f"latency {_num(ref['latency_ms'], 1)} ms"]
 
-    inc = values.get("incidents_6h")
-    if inc is None:
-        lines["incidents_6h"] = [f"incidents last {INCIDENT_HOURS} h: no data"]
-    else:
-        t = inc["by_tier"]
-        out = [f"incidents last {INCIDENT_HOURS} h: {inc['count']} (low {t['low']}, medium {t['medium']}, high {t['high']})"]
-        for i in inc["items"]:
-            line = (f"- {fmt_time(i['start_ms'], snapshot)}, tier {i['tier']}, signal {i['signal']}, {i['minutes']} min, "
-                    f"peak {_num(i['peak_score'], 3)}, deployment {yes_no(i['deployment'])}, {i['status']}.")
-            if i.get("what_happened"):
-                line += f" What happened: {i['what_happened']}"
-            out.append(line)
-        lines["incidents_6h"] = out
+    lines.update(render_incidents(values.get("incidents_6h"), snapshot))
 
     rs = values.get("last_restart")
     lines["last_restart"] = [f"last restart: none in the last {RESTART_DAYS} days" if not rs else
@@ -193,6 +191,50 @@ def render_lines(values, snapshot):
             parts.append(f"containers {'no data' if n.get('containers') is None else int(n['containers'])}")
         lines[key] = [f"node {name}: " + ", ".join(parts)]
     return lines
+
+
+def render_incidents(inc, snapshot):
+    """The compact incident block. The count, by-signal, highest peak and deployment lines cover
+    every incident in the window; the list shows the latest INCIDENTS_LISTED, newest first, and only
+    the newest keeps its What happened text. The peak time is the incident start (stored items
+    carry no peak minute). If the newest incident is still open it has no What happened text, so
+    then no listed incident shows one."""
+    head = f"incidents last {INCIDENT_HOURS} h"
+    if inc is None:
+        line = f"{head}: no data"
+        return {"incidents_6h": [line], "incidents_counts": [line], "incidents_peak": [line], "incidents_deployment": [line]}
+    items = sorted(inc["items"], key=lambda i: -i["start_ms"])
+    t = inc["by_tier"]
+    count = f"{head}: {inc['count']} (low {t['low']}, medium {t['medium']}, high {t['high']})"
+    by = {sig: 0 for sig in SIGNALS}
+    for i in items:
+        by[i["signal"] if i["signal"] in by else "unclear"] += 1
+    by_signal = "by signal: " + ", ".join(f"{sig} {by[sig]}" for sig in SIGNALS)
+
+    scored = [i for i in items if i.get("peak_score") is not None]
+    if scored:
+        top = max(scored, key=lambda i: (i["peak_score"], i["start_ms"]))   # ties go to the newest
+        peak = (f"highest peak: {_num(top['peak_score'], 3)} at {fmt_time(top['start_ms'], snapshot)} "
+                f"(tier {top['tier']}, signal {top['signal']})")
+    else:
+        peak = "highest peak: none"
+
+    linked = [i for i in items if i.get("deployment")]
+    deployment = ("linked to deployment: none" if not linked else
+                  f"linked to deployment: {len(linked)} ("
+                  + ", ".join(fmt_time(i["start_ms"], snapshot) for i in linked) + ")")
+
+    listed = []
+    for n, i in enumerate(items[:INCIDENTS_LISTED]):
+        line = (f"- {fmt_time(i['start_ms'], snapshot)}, tier {i['tier']}, signal {i['signal']}, {i['minutes']} min, "
+                f"peak {_num(i['peak_score'], 3)}, deployment {yes_no(i['deployment'])}, {i['status']}.")
+        if n == 0 and i.get("what_happened"):
+            line += f" What happened: {i['what_happened']}"
+        listed.append(line)
+    if len(items) > INCIDENTS_LISTED:
+        listed.append(f"- ({len(items) - INCIDENTS_LISTED} older incidents not listed)")
+    return {"incidents_6h": [count, by_signal, peak, deployment, *listed], "incidents_counts": [count, by_signal],
+            "incidents_peak": [peak], "incidents_deployment": [deployment]}
 
 
 def render_facts(values, snapshot):
@@ -397,11 +439,39 @@ def collect_explanation_incidents(influx, explainer, days):
     return out, notes
 
 
+def rerender(source, out):
+    """Rebuilds lines and facts_text from the values stored in an existing facts.json. No InfluxDB,
+    Prometheus or explainer import. Everything else is copied unchanged. Returns the new dict."""
+    src, dst = Path(source), Path(out)
+    if src.resolve() == dst.resolve():
+        raise SystemExit("--out must differ from the source file; the source is kept untouched")
+    if dst.exists():
+        raise SystemExit(f"{dst} already exists; not overwritten")
+    old = json.loads(src.read_text(encoding="utf-8"))
+    snapshot = datetime.fromisoformat(old["snapshot_utc"].replace("Z", "+00:00"))
+    text, lines = render_facts(old["values"], snapshot)
+    new = dict(old, lines=lines, facts_text=text,
+               notes=[*old.get("notes", []), f"facts_text re-rendered from {src.parent.name}/{src.name}"])
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(json.dumps(new, indent=2), encoding="utf-8")
+    return new
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", required=True, help="path of facts.json")
     ap.add_argument("--days", type=int, default=30, help="look-back for the explanation incidents")
+    ap.add_argument("--rerender", metavar="FACTS_JSON", help="re-render this existing facts.json into --out, no queries")
     args = ap.parse_args()
+
+    if args.rerender:
+        old_text = json.loads(Path(args.rerender).read_text(encoding="utf-8")).get("facts_text", "")
+        new = rerender(args.rerender, args.out)
+        print(new["facts_text"])
+        print(f"\nfacts_text {len(old_text)} characters before, {len(new['facts_text'])} after "
+              "(the real token count is the warm-up prompt_tokens that run_bench.py prints)")
+        print(f"written {args.out}")
+        return
 
     out = Path(args.out)
     if out.exists():

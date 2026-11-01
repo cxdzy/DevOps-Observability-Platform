@@ -198,7 +198,8 @@ class Bench:
         self.abort_file = self.dir / "ABORT"
         self.call, self.clock = call, clock
         self.run = self.dir.name
-        self.done, self.warmups = set(), {}
+        self.done, self.warmups, self.last_warmup = set(), {}, None
+        self.print_warmup_tokens = False
         if self.raw.exists():
             for line in self.raw.read_text(encoding="utf-8").splitlines():
                 if not line.strip():
@@ -261,6 +262,13 @@ class Bench:
         warm_rep = self.warmups.get(model, 0) + 1
         self.warmups[model] = warm_rep
         row = self.call_item(model, self.warmup, "warmup", warm_rep, info.get("think"))
+        self.last_warmup = row
+        if row is not None and row["status"] == "ok" and self.print_warmup_tokens:
+            # Printed once, for the first model whose warm-up runs. On a fresh run this call is cold,
+            # so prompt_tokens is the full prompt (after an abort the cache may still hold part of it).
+            print(f"{model}: warm-up prompt_tokens {row['prompt_tokens']}, "
+                  f"prompt_eval_s {row['prompt_eval_s']:.1f}", flush=True)
+            self.print_warmup_tokens = False
         if row is None:
             self.event("model_end", model, result="aborted")
             return "aborted"
@@ -310,6 +318,7 @@ def main():
                   "similar": "[] for explanations (no Chroma)", "num_thread": "Ollama default, not set by the bench",
                   "client_cpu_count": os.cpu_count()})
 
+    bench.print_warmup_tokens = True
     for model in models:
         if bench.aborted():
             print("ABORT file found, stopping. Remove it and run the same command to resume.")
