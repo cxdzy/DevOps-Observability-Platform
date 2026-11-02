@@ -31,6 +31,7 @@ const SOURCES = {
   status: ["anomaly scores", "incident records", "Prometheus"],
   last_incident: ["incident records"],
   incident_count: ["incident records"],
+  worry: ["anomaly scores", "incident records"],
   health_check: ["Prometheus", "anomaly scores", "the remediation log", "deployment records"],
   llm: ["anomaly scores", "incident records", "the remediation log", "deployment records", "Prometheus"],
 };
@@ -142,7 +143,50 @@ function fallbackText(values, snap, lang = "en") {
   return before + renderLines(values, snap).incidents_counts.join("; ") + after;
 }
 
-const TEMPLATES = { status: statusText, last_incident: lastIncidentText, health_check: healthText, incident_count: incidentCountText };
+// "Should I worry": yes when the latest minute is flagged or an incident is open, else no, with the
+// values that say so. Only FACTS values are used.
+const WORRY_TEXT = {
+  en: {
+    open: (i, time, score, threshold) => `Yes, look at it: ${i.tier} ${i.signal} incident open since ${time}, latest score ${score} (threshold ${threshold}).`,
+    flagged: (tier, time, score, threshold) => `Yes, look at it: the latest minute (${time}) is flagged as tier ${tier}, latest score ${score} (threshold ${threshold}).`,
+    calm: (score, threshold) => `No action needed right now: latest score ${score} is below the threshold ${threshold} and no incident is open.`,
+    notFlagged: (score, threshold) => `No action needed right now: latest score ${score} is not flagged (threshold ${threshold}) and no incident is open.`,
+    count: (n) => (n === 0 ? "There were no incidents in the last 6 hours." : n === 1
+      ? "There was 1 incident in the last 6 hours, closed." : `There were ${n} incidents in the last 6 hours, all closed.`),
+    noScore: "There is no anomaly score right now, so I cannot tell. Check the Overview page.",
+    noIncidents: (score, threshold) => `The latest score ${score} is below the threshold ${threshold}, but there is no incident data right now.`,
+  },
+  ms: {
+    open: (i, time, score, threshold) => `Ya, sila semak: insiden ${i.tier} ${i.signal} terbuka sejak ${time}, skor terkini ${score} (ambang ${threshold}).`,
+    flagged: (tier, time, score, threshold) => `Ya, sila semak: minit terkini (${time}) ditanda sebagai tier ${tier}, skor terkini ${score} (ambang ${threshold}).`,
+    calm: (score, threshold) => `Tiada tindakan diperlukan sekarang: skor terkini ${score} di bawah ambang ${threshold} dan tiada insiden terbuka.`,
+    notFlagged: (score, threshold) => `Tiada tindakan diperlukan sekarang: skor terkini ${score} tidak ditanda (ambang ${threshold}) dan tiada insiden terbuka.`,
+    count: (n) => (n === 0 ? "Tiada insiden dalam 6 jam lepas." : n === 1
+      ? "Terdapat 1 insiden dalam 6 jam lepas, sudah ditutup." : `Terdapat ${n} insiden dalam 6 jam lepas, semuanya ditutup.`),
+    noScore: "Tiada skor anomali sekarang, jadi saya tidak dapat menilai. Semak halaman Overview.",
+    noIncidents: (score, threshold) => `Skor terkini ${score} di bawah ambang ${threshold}, tetapi tiada data insiden sekarang.`,
+  },
+};
+
+function worryText(values, snap, parsed = {}) {
+  const t = WORRY_TEXT[parsed.lang] || WORRY_TEXT.en;
+  const a = values.anomaly_latest;
+  const inc = values.incidents_6h;
+  const fmt = (v) => (v === null || v === undefined ? "no data" : pyFixed(v, 3));
+  const open = inc ? inc.items.find((i) => i.status === "open") : null;   // items are newest first
+  if (open) return t.open(open, fmtTime(open.start_ms, snap), a ? fmt(a.score) : "no data", a ? fmt(a.threshold) : "no data");
+  if (!a) return t.noScore;
+  const score = fmt(a.score);
+  const threshold = fmt(a.threshold);
+  if (a.flagged) return t.flagged(a.tier || "no data", fmtTime(a.time_ms, snap), score, threshold);
+  if (!inc) return t.noIncidents(score, threshold);
+  const below = a.score !== null && a.threshold !== null && a.score < a.threshold;
+  return `${below ? t.calm(score, threshold) : t.notFlagged(score, threshold)} ${t.count(inc.count)}`;
+}
+
+const TEMPLATES = {
+  status: statusText, last_incident: lastIncidentText, health_check: healthText, incident_count: incidentCountText, worry: worryText,
+};
 
 // Incident chips: the incidents a reply is about.
 function chipsFor(kind, values, snap, answer) {
@@ -150,7 +194,7 @@ function chipsFor(kind, values, snap, answer) {
   if (!inc) return [];
   const chip = (i) => ({ start: i.start_ms, tier: i.tier });
   if (kind === "last_incident") return inc.items.slice(0, 1).map(chip);
-  if (kind === "status") return inc.items.filter((i) => i.status === "open").slice(0, 3).map(chip);
+  if (kind === "status" || kind === "worry") return inc.items.filter((i) => i.status === "open").slice(0, 3).map(chip);
   if (kind === "llm") {
     return inc.items.slice(0, INCIDENTS_LISTED).filter((i) => answer.includes(fmtTime(i.start_ms, snap))).slice(0, 4).map(chip);
   }
@@ -303,6 +347,6 @@ function createChatRouter(deps) {
 }
 
 module.exports = {
-  createChatRouter, cleanMessage, buildMessages, statusText, lastIncidentText, healthText, incidentCountText, fallbackText,
+  createChatRouter, cleanMessage, buildMessages, statusText, lastIncidentText, healthText, incidentCountText, worryText, fallbackText,
   SYSTEM_PROMPT, RETRY_LINE,
 };

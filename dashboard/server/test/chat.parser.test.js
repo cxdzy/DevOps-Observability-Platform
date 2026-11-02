@@ -53,6 +53,14 @@ const CASES = [
   ["How many incidents were there in the last 6 hours?", "incident_count", "en"],
   ["Berapa insiden memori hari ini?", "incident_count", "ms"],
   ["number of cpu incidents this week", "incident_count", "en"],
+  // "Should I worry" questions, answered from FACTS by a template.
+  ["Should I be worried right now?", "worry", "en"],
+  ["Is everything ok?", "worry", "en"],
+  ["Is anything wrong with sample-service?", "worry", "en"],
+  ["Any concern right now?", "worry", "en"],
+  ["Perlu risau tak?", "worry", "ms"],
+  ["Sistem ok tak?", "worry", "ms"],
+  ["Ada masalah sekarang?", "worry", "ms"],
   // Fixed templates (the command chips).
   ["System status", "status", "en"],
   ["system status?", "status", "en"],
@@ -60,7 +68,6 @@ const CASES = [
   ["Health check", "health_check", "en"],
   ["Insiden terakhir", "last_incident", "ms"],
   // Everything else goes to the model.
-  ["Should I be worried right now?", "llm", "en"],
   ["Ada insiden memori dalam 6 jam lepas?", "llm", "ms"],
   ["What is the latest anomaly score and is it above the threshold?", "llm", "en"],
 ];

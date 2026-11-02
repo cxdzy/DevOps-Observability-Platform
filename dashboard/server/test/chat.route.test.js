@@ -4,7 +4,7 @@ const { startApp, ORIGIN } = require("./helpers");
 const { createOllama, OllamaError } = require("../chat/ollama");
 const { createLimits } = require("../chat/limits");
 const { createChatLog, langfuseUrl } = require("../chat/log");
-const { SYSTEM_PROMPT, RETRY_LINE } = require("../routes/chat");
+const { SYSTEM_PROMPT, RETRY_LINE, worryText } = require("../routes/chat");
 
 const T = Date.UTC(2026, 9, 30, 8, 0, 0); // the helpers' clock
 
@@ -96,7 +96,7 @@ test("message length: 1 to 500 characters after trimming and removing control ch
 
 test("model question: messages, facts and response shape", async (t) => {
   const { ask, ollama, chatLog } = await setup(t);
-  const res = await ask("Should I be worried\u0007 right now?");
+  const res = await ask("Is memory\u0007 normal right now?");
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.kind, "llm");
@@ -107,7 +107,7 @@ test("model question: messages, facts and response shape", async (t) => {
   const [system, user] = ollama.calls[0].messages;
   assert.deepEqual(system, { role: "system", content: SYSTEM_PROMPT });
   assert.match(user.content, /^Request [0-9a-f]{8}\nFACTS \(snapshot /);
-  assert.match(user.content, /\n\nQUESTION: Should I be worried right now\?$/);
+  assert.match(user.content, /\n\nQUESTION: Is memory normal right now\?$/);
   assert.match(user.content, /^incidents last 6 h: 2 \(low 1, medium 1, high 0\)$/m);
   assert.ok(ollama.calls[0].timeoutMs <= 90000 && ollama.calls[0].timeoutMs > 80000);
   // Stateless: a second question sends no earlier turns, and gets a new request line.
@@ -169,6 +169,39 @@ test("incident counts are template answers that state the 6 hour window", async 
   assert.equal(malay.answer, "Dalam 6 jam lepas (dashboard tidak menyimpan data insiden yang lebih lama di sini): 2 insiden, " +
     "high 0, medium 1, low 1. Mengikut isyarat: cpu 1, memory 1, latency 0, unclear 0. Insiden yang lebih lama ada di halaman Incidents.");
   assert.equal(ollama.calls.length, 0);
+});
+
+test("worry: an open incident gives yes, with its tier, signal, start and the latest score", async (t) => {
+  const { ask, ollama } = await setup(t);
+  const body = await (await ask("Should I be worried right now?")).json();
+  assert.equal(body.kind, "template");
+  assert.equal(body.answer, "Yes, look at it: low cpu incident open since 15:50, latest score 0.347 (threshold 0.602).");
+  assert.deepEqual(body.incidents, [{ start: T - 600000, tier: "low" }]);
+  assert.deepEqual(body.sources, ["anomaly scores", "incident records"]);
+  const malay = await (await ask("Perlu risau tak?")).json();
+  assert.equal(malay.answer, "Ya, sila semak: insiden low cpu terbuka sejak 15:50, skor terkini 0.347 (ambang 0.602).");
+  assert.equal(ollama.calls.length, 0);
+});
+
+test("worry texts from FACTS values: flagged minute, calm, no score", () => {
+  const snap = Date.parse("2026-11-01T05:50:30Z");
+  const at = Date.parse("2026-11-01T05:48:00Z");
+  const closed = (n) => ({ count: n, by_tier: { low: n, medium: 0, high: 0 },
+    items: Array.from({ length: n }, (_, k) => ({ start_ms: at - (k + 1) * 3600000, tier: "low", signal: "cpu", status: "closed" })) });
+  const latest = (score, flagged, tier = "none") => ({ time_ms: at, score, threshold: 0.6024, flagged, tier });
+  assert.equal(worryText({ anomaly_latest: latest(0.71, true, "medium"), incidents_6h: closed(2) }, snap),
+    "Yes, look at it: the latest minute (13:48) is flagged as tier medium, latest score 0.710 (threshold 0.602).");
+  assert.equal(worryText({ anomaly_latest: latest(0.3465, false), incidents_6h: closed(11) }, snap),
+    "No action needed right now: latest score 0.346 is below the threshold 0.602 and no incident is open. " +
+    "There were 11 incidents in the last 6 hours, all closed.");
+  assert.equal(worryText({ anomaly_latest: latest(0.3465, false), incidents_6h: closed(1) }, snap),
+    "No action needed right now: latest score 0.346 is below the threshold 0.602 and no incident is open. " +
+    "There was 1 incident in the last 6 hours, closed.");
+  assert.equal(worryText({ anomaly_latest: latest(0.3465, false), incidents_6h: closed(0) }, snap, { lang: "ms" }),
+    "Tiada tindakan diperlukan sekarang: skor terkini 0.346 di bawah ambang 0.602 dan tiada insiden terbuka. " +
+    "Tiada insiden dalam 6 jam lepas.");
+  assert.equal(worryText({ anomaly_latest: null, incidents_6h: closed(0) }, snap),
+    "There is no anomaly score right now, so I cannot tell. Check the Overview page.");
 });
 
 test("a retry that passes is a normal model answer", async (t) => {

@@ -1,6 +1,6 @@
 // Rule intents for a chat message, checked before any model call (chat plan section 13, step 2):
-// action requests, the no-data guard, incident counts, the three fixed-template questions, else a
-// question for the model. Pure functions, no I/O.
+// action requests, the no-data guard, incident counts, "should I worry" questions, the three
+// fixed-template questions, else a question for the model. Pure functions, no I/O.
 
 // Words that ask for an action. Matched as whole words, so "restarted" or "stopped" in a question
 // about the past is not a request.
@@ -40,7 +40,7 @@ const TEMPLATE_INTENTS = {
 // Words that mark a Malay message, for the language of the fixed replies.
 const MALAY_WORDS = ["ada", "apa", "bila", "berapa", "dalam", "jam", "lepas", "tak", "tidak", "adakah", "kenapa",
   "mengapa", "bagaimana", "sekarang", "memori", "untuk", "yang", "ini", "itu", "saya", "boleh", "insiden", "cuaca",
-  "rangkaian", "masuk", "sistem", "semalam", "hari", "kah", "tolong", "jangan", "payah", "hentikan", "semula"];
+  "rangkaian", "masuk", "sistem", "risau", "masalah", "semalam", "hari", "kah", "tolong", "jangan", "payah", "hentikan", "semula"];
 
 const ACTION_REPLY = {
   admin: "Restart requests from the dashboard are not connected yet. Use the Telegram approval for now.",
@@ -143,6 +143,15 @@ function countQuestion(message) {
   return { tier, signal, longer };
 }
 
+// "Should I worry" questions, answered from the latest score and open incidents by a template.
+const WORRY_PHRASES = ["worried", "worry", "worrying", "concern", "concerned", "concerning", "anything wrong",
+  "something wrong", "is everything ok", "is everything okay", "is everything fine", "everything ok", "everything okay",
+  "everything fine", "all ok", "all good", "risau", "ok tak", "okay tak", "ada masalah"];
+
+function isWorry(message) {
+  return containsAny(normalise(message), WORRY_PHRASES);
+}
+
 function templateIntent(message) {
   const text = normalise(message).replace(/[?.!]+$/, "").trim();
   for (const [intent, phrases] of Object.entries(TEMPLATE_INTENTS)) {
@@ -151,20 +160,21 @@ function templateIntent(message) {
   return null;
 }
 
-// Returns { intent, lang } with intent one of action, no_data, incident_count, status, last_incident,
-// health_check, llm. incident_count also has tier, signal and longer (a period over 6 hours named).
+// Returns { intent, lang } with intent one of action, no_data, incident_count, worry, status,
+// last_incident, health_check, llm. incident_count also has tier, signal and longer (a period over 6 hours named).
 function parse(message) {
   const lang = isMalay(message) ? "ms" : "en";
   if (isActionRequest(message)) return { intent: "action", lang };
   if (isNoData(message)) return { intent: "no_data", lang };
   const count = countQuestion(message);
   if (count) return { intent: "incident_count", lang, ...count };
+  if (isWorry(message)) return { intent: "worry", lang };
   const template = templateIntent(message);
   if (template) return { intent: template, lang };
   return { intent: "llm", lang };
 }
 
 module.exports = {
-  parse, isActionRequest, isNoData, isMalay, templateIntent, countQuestion,
+  parse, isActionRequest, isNoData, isMalay, templateIntent, countQuestion, isWorry,
   NO_DATA_TOPICS, ACTION_WORDS, NEGATIONS, ACTION_REPLY, NO_DATA_REPLY,
 };
