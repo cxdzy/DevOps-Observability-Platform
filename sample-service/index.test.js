@@ -37,3 +37,29 @@ describe('sample-service', () => {
     expect(res.body.status).toBe('latency-spike started');
   });
 });
+
+describe('graceful shutdown', () => {
+  test('exits with code 0 shortly after SIGTERM', async () => {
+    const { spawn } = require('child_process');
+    const child = spawn(process.execPath, ['index.js'], {
+      cwd: __dirname,
+      env: { ...process.env, PORT: '4177' },
+    });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('service did not start')), 5000);
+      child.stdout.on('data', (d) => {
+        if (String(d).includes('listening')) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+    });
+    const started = Date.now();
+    const code = await new Promise((resolve) => {
+      child.on('exit', (c) => resolve(c));
+      child.kill('SIGTERM');
+    });
+    expect(code).toBe(0);
+    expect(Date.now() - started).toBeLessThan(3000);
+  }, 15000);
+});
