@@ -6,6 +6,13 @@ on:
     paths:
       - 'sample-service/**'
       - '.github/workflows/ci-cd.yml'
+  # Used by the n8n rollback workflow (Phase 5c) to redeploy a previous image.
+  workflow_dispatch:
+    inputs:
+      rollback_image:
+        description: 'Full image reference to redeploy, for example ghcr.io/<owner>/fyp-sample-service:<sha>'
+        required: true
+        type: string
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/fyp-sample-service
@@ -13,6 +20,7 @@ env:
 jobs:
   test:
     name: Build and Test
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -36,6 +44,7 @@ jobs:
 
   build-and-push:
     name: Build and Push Docker Image
+    if: github.event_name == 'push'
     needs: test
     runs-on: ubuntu-latest
     permissions:
@@ -69,6 +78,7 @@ jobs:
 
   deploy:
     name: Deploy to VPS
+    if: github.event_name == 'push'
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
@@ -93,6 +103,9 @@ jobs:
           script: |
             set -e
             echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            # Remember the image that is running now. It is the rollback target if this deployment goes wrong.
+            PREV_IMAGE=$(docker inspect --format '{{.Config.Image}}' sample-service 2>/dev/null || true)
+            echo "previous image: ${PREV_IMAGE:-none}"
             docker pull ${{ needs.build-and-push.outputs.image_tag }}
             docker stop sample-service || true
             docker rm sample-service || true
@@ -107,5 +120,57 @@ jobs:
             # Written from inside the VPS (InfluxDB listens on 127.0.0.1:8086). A failure here
             # never fails the deployment.
             curl -sS -m 10 --fail -XPOST 'http://127.0.0.1:8086/write?db=prometheus' \
-              --data-binary "deployment_event,container_name=sample-service,branch=master,source=ci commit_sha=\"${{ github.sha }}\",pipeline_run_id=\"${{ github.run_id }}\",is_recent=true" \
+              --data-binary "deployment_event,container_name=sample-service,branch=master,source=ci commit_sha=\"${{ github.sha }}\",pipeline_run_id=\"${{ github.run_id }}\",previous_image=\"${PREV_IMAGE}\",is_recent=true" \
               && echo "deployment event recorded" || echo "WARNING: could not record deployment event"
+
+  rollback:
+    name: Roll back to a previous image
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate the image reference
+        env:
+          ROLLBACK_IMAGE: ${{ inputs.rollback_image }}
+        run: |
+          set -euo pipefail
+          # Only an image from this project's own registry path may be redeployed.
+          expected_prefix="${{ env.IMAGE_NAME }}:"
+          case "$ROLLBACK_IMAGE" in
+            "$expected_prefix"*) ;;
+            *) echo "Refusing: image must start with $expected_prefix"; exit 1 ;;
+          esac
+          tag="${ROLLBACK_IMAGE#"$expected_prefix"}"
+          if ! [[ "$tag" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "Refusing: tag contains unexpected characters"; exit 1
+          fi
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+
+      - name: Roll back via SSH (over Tailscale)
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          ROLLBACK_IMAGE: ${{ inputs.rollback_image }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: ROLLBACK_IMAGE
+          script: |
+            set -e
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker pull "$ROLLBACK_IMAGE"
+            docker stop sample-service || true
+            docker rm sample-service || true
+            docker run -d \
+              --name sample-service \
+              --restart unless-stopped \
+              --network fyp-observability_obs-net \
+              -p 127.0.0.1:4000:4000 \
+              "$ROLLBACK_IMAGE"
+            docker image prune -f
+            # No deployment_event is written here on purpose: the worker treats every deployment_event
+            # as a recent deployment, so a rollback marker could trigger tier 3 again. n8n logs the
+            # rollback in remediation_action.

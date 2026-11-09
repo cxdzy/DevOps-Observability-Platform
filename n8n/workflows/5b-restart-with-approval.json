@@ -3,7 +3,7 @@
   "nodes": [
     {
       "parameters": {
-        "jsCode": "const store = $getWorkflowStaticData('global');\nstore.lastRestart = Date.now();\nconst pick = $('Pick incident').first().json;\nconst res = $input.first().json;\nconst result = res.data && res.data.result && res.data.result[0];\nconst up = result ? String(result.value[1]) === '1' : false;\nconst mode = pick.auto ? 'auto' : 'approved';\nconst how = pick.auto ? 'Automatic restart' : 'Approved restart';\nconst text = `${how} of sample-service (signal ${pick.signal}, ${pick.minutes} flagged minutes). ` +\n  (up ? 'Monitoring shows it is up again (checked 60 seconds after the restart).'\n      : 'Monitoring does not show it as up yet. Please check it.');\nreturn [{ json: { text, mode, signal: pick.signal, minutes: Math.round(Number(pick.minutes)), up: up ? 1 : 0, at: Date.now() - 60000 } }];"
+        "jsCode": "const store = $getWorkflowStaticData('global');\nstore.lastRestart = Date.now();\nconst pick = $('Pick incident').first().json;\nconst res = $input.first().json;\nconst result = res.data && res.data.result && res.data.result[0];\nconst up = result ? String(result.value[1]) === '1' : false;\nconst mode = pick.auto ? 'auto' : 'approved';\nconst how = pick.auto ? 'Automatic restart' : 'Approved restart';\nconst text = `${how} of sample-service (signal ${pick.signal}, ${pick.minutes} flagged minutes). ` +\n  (up ? 'Monitoring shows it is up again (checked 60 seconds after the restart).'\n      : 'Monitoring does not show it as up yet. Please check it.');\nreturn [{ json: { text, mode, outcome: up ? 'success' : 'failed', signal: pick.signal, minutes: Math.round(Number(pick.minutes)), up: up ? 1 : 0, at: Date.now() - 60000 } }];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -82,7 +82,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const AUTO = false;           // true: restart without asking once an incident has 2 flagged minutes. false: ask on Telegram first\nconst MIN_MINUTES_AUTO = 2;\nconst COOLDOWN_MS = 10 * 60 * 1000;\nconst store = $getWorkflowStaticData('global');\nconst res = $input.first().json;\nconst series = res.results && res.results[0] && res.results[0].series ? res.results[0].series[0] : null;\nconst rows = [];\nif (series) {\n  for (const v of series.values) {\n    const r = {};\n    series.columns.forEach((c, i) => { r[c] = v[i]; });\n    rows.push(r);\n  }\n}\nstore.handled = store.handled || {};\nif (!store.init) {\n  rows.forEach(r => { store.handled[r.time] = true; });\n  store.init = true;\n  return [];\n}\nconst now = Date.now();\nfor (const t of Object.keys(store.handled)) {\n  if (now - Number(t) > 12 * 3600 * 1000) delete store.handled[t];\n}\nfor (const r of rows) {\n  if (store.handled[r.time]) continue;\n  if (r.action !== 'restart') { store.handled[r.time] = true; continue; }\n  if (AUTO && Number(r.minutes) < MIN_MINUTES_AUTO) continue;\n  store.handled[r.time] = true;\n  if (store.lastRestart && now - store.lastRestart < COOLDOWN_MS) continue;\n  const dep = r.deployment ? '\\nRecent deployment: yes' : '';\n  return [{ json: { auto: AUTO, signal: r.signal, minutes: r.minutes, text:\n    `Medium incident on sample-service, signal ${r.signal}\\n` +\n    `Peak score ${Number(r.peak_score).toFixed(2)}, ${r.minutes} min so far${dep}\\n\\n` +\n    `Restart sample-service now?` } }];\n}\nreturn [];"
+        "jsCode": "const AUTO = false;           // true: restart without asking once an incident has 2 flagged minutes. false: ask on Telegram first\nconst MIN_MINUTES_AUTO = 2;\nconst COOLDOWN_MS = 10 * 60 * 1000;\nconst store = $getWorkflowStaticData('global');\nconst res = $input.first().json;\nconst series = res.results && res.results[0] && res.results[0].series ? res.results[0].series[0] : null;\nconst rows = [];\nif (series) {\n  for (const v of series.values) {\n    const r = {};\n    series.columns.forEach((c, i) => { r[c] = v[i]; });\n    rows.push(r);\n  }\n}\nstore.handled = store.handled || {};\nif (!store.init) {\n  rows.forEach(r => { store.handled[r.time] = true; });\n  store.init = true;\n  return [];\n}\nconst now = Date.now();\nfor (const t of Object.keys(store.handled)) {\n  if (now - Number(t) > 12 * 3600 * 1000) delete store.handled[t];\n}\nfor (const r of rows) {\n  if (store.handled[r.time]) continue;\n  if (r.action !== 'restart') { store.handled[r.time] = true; continue; }\n  if (AUTO && Number(r.minutes) < MIN_MINUTES_AUTO) continue;\n  store.handled[r.time] = true;\n  if (store.lastRestart && now - store.lastRestart < COOLDOWN_MS) {\n    return [{ json: { proceed: false, mode: 'skipped', outcome: 'skipped_cooldown', signal: r.signal, minutes: Math.round(Number(r.minutes)) } }];\n  }\n  const dep = r.deployment ? '\\nRecent deployment: yes' : '';\n  return [{ json: { proceed: true, auto: AUTO, signal: r.signal, minutes: r.minutes, text:\n    `Medium incident on sample-service, signal ${r.signal}\\n` +\n    `Peak score ${Number(r.peak_score).toFixed(2)}, ${r.minutes} min so far${dep}\\n\\n` +\n    `Restart sample-service now?` } }];\n}\nreturn [];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -274,7 +274,7 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "text/plain",
-        "body": "=remediation_action,job=sample-service,mode={{ $json.mode }} action=\"restart\",signal=\"{{ $json.signal }}\",minutes={{ $json.minutes }}i,service_up={{ $json.up }}i {{ $json.at }}",
+        "body": "=remediation_action,job=sample-service,mode={{ $json.mode }} action=\"restart\",signal=\"{{ $json.signal }}\",minutes={{ $json.minutes }}i,service_up={{ $json.up }}i,outcome=\"{{ $json.outcome }}\" {{ $json.at }}",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
@@ -285,6 +285,163 @@
       ],
       "id": "5dcc687e-7b6a-484a-abf2-14fcc62c8707",
       "name": "Log action"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "2a583cbb-e7e0-4a16-bcdc-8d2ac30bc985",
+              "leftValue": "={{ $json.proceed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        380,
+        -140
+      ],
+      "id": "d51591c9-90f1-4260-bffe-13f14bfcf4a5",
+      "name": "Proceed?"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://influxdb:8086/write",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "db",
+              "value": "prometheus"
+            },
+            {
+              "name": "precision",
+              "value": "ms"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "body": "=remediation_action,job=sample-service,mode={{ $json.mode }} action=\"restart\",signal=\"{{ $json.signal }}\",minutes={{ $json.minutes }}i,service_up=0i,outcome=\"{{ $json.outcome }}\"",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1000,
+        360
+      ],
+      "id": "8a55ad8b-77ca-4b0b-9c35-f4c68f1757b3",
+      "name": "Log outcome"
+    },
+    {
+      "parameters": {
+        "jsCode": "const pick = $('Pick incident').first().json;\nconst approved = $input.first().json.data ? $input.first().json.data.approved : undefined;\nconst outcome = approved === false ? 'rejected' : 'expired';\nreturn [{ json: { mode: outcome, outcome, signal: pick.signal, minutes: Math.round(Number(pick.minutes)) } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        820,
+        360
+      ],
+      "id": "beb10071-3235-450a-8128-0ee07a0320a1",
+      "name": "Classify refusal"
+    },
+    {
+      "parameters": {
+        "url": "http://influxdb:8086/query",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "db",
+              "value": "prometheus"
+            },
+            {
+              "name": "epoch",
+              "value": "ms"
+            },
+            {
+              "name": "q",
+              "value": "SELECT \"score\" FROM \"anomaly_score\" WHERE \"is_anomaly\" = 1 AND time > now() - 4m"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        900,
+        -300
+      ],
+      "id": "80bf7418-41cf-4c06-baab-9a7a44ad6bf0",
+      "name": "Check incident still open"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "75f396d8-a08f-4725-adbe-64fa4ad1e0d0",
+              "leftValue": "={{ !!($json.results && $json.results[0] && $json.results[0].series) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1080,
+        -300
+      ],
+      "id": "2b4bea36-914e-4a3c-b0da-7329bfdd2666",
+      "name": "Still open?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const pick = $('Pick incident').first().json;\nreturn [{ json: { mode: 'skipped', outcome: 'skipped_closed', signal: pick.signal, minutes: Math.round(Number(pick.minutes)) } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1260,
+        -300
+      ],
+      "id": "6065658c-3bb7-40a0-9ecd-480adf198309",
+      "name": "Classify closed"
     }
   ],
   "pinData": {},
@@ -342,7 +499,7 @@
       "main": [
         [
           {
-            "node": "Auto mode?",
+            "node": "Proceed?",
             "type": "main",
             "index": 0
           }
@@ -364,12 +521,18 @@
       "main": [
         [
           {
-            "node": "Restart sample-service",
+            "node": "Check incident still open",
             "type": "main",
             "index": 0
           }
         ],
-        []
+        [
+          {
+            "node": "Classify refusal",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Wait 60 s": {
@@ -421,6 +584,75 @@
       "main": [
         []
       ]
+    },
+    "Proceed?": {
+      "main": [
+        [
+          {
+            "node": "Auto mode?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check incident still open": {
+      "main": [
+        [
+          {
+            "node": "Still open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still open?": {
+      "main": [
+        [
+          {
+            "node": "Restart sample-service",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify closed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify closed": {
+      "main": [
+        [
+          {
+            "node": "Log outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify refusal": {
+      "main": [
+        [
+          {
+            "node": "Log outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "active": true,
@@ -428,7 +660,7 @@
     "executionOrder": "v1",
     "binaryMode": "separate"
   },
-  "versionId": "0f95b229-d428-4fa1-9fe8-db58d921902a",
+  "versionId": "0505852c-9200-4414-8d53-24d328d604b3",
   "meta": {
     "templateCredsSetupCompleted": true
   },

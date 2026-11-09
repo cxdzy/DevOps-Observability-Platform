@@ -135,9 +135,23 @@ app.post('/simulate/latency-spike', (req, res) => {
 });
 
 if (require.main === module) {
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`sample-service listening on port ${PORT}`);
   });
+
+  // Graceful shutdown. As PID 1 in a container, Node ignores SIGTERM unless a handler exists,
+  // so every `docker restart` would wait the full stop timeout and end in a force-kill.
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`${signal} received, shutting down`);
+    server.close(() => process.exit(0));
+    // Safety net in case a connection never closes (below Docker's 10 s stop timeout).
+    setTimeout(() => process.exit(1), 5000).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 module.exports = app;
