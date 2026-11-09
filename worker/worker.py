@@ -34,6 +34,19 @@ accepted if its spread is within REFERENCE_MAX_GROWTH times the smallest accepte
 of the last REFERENCE_ANCHOR_DAYS days (accepted references are kept in the measurement
 "reference_level").
 
+Restart warm-up. A container restart resets the counters and memory, so the first minutes after it
+look unusual even though nothing is wrong. A restart is recognised by a drop in the CPU counter
+(process_cpu_seconds_total only ever grows). Minutes from the restart minute for WARMUP_MINUTES are still
+scored, but they are never flagged (field "warmup" = 1), and they are left out of the reference and of
+the training data. Without this, a successful automatic restart would raise a new incident.
+
+Early warning. Before the model flags a minute, the worker fits a straight line to the last
+TREND_MINUTES minutes of each signal. If the line rises steadily (R squared at least EW_MIN_R2, total rise
+at least EW_MIN_RISE_DEV normal spreads) and would reach the "moved" level (DEV_MIN spreads above normal)
+within EW_HORIZON_MIN minutes, the minute gets early_warning = 1 with the estimated minutes to that level.
+An early warning never changes the tier or the action. The first minute of each warning is also written
+to the measurement "early_warning" so it can be notified once.
+
 If the registry has no champion yet, the run tagged "selected" in the source
 experiment is registered as the first champion.
 
@@ -103,6 +116,17 @@ MIN_REFERENCE_POINTS = int(os.environ.get("MIN_REFERENCE_POINTS", "200"))
 REFERENCE_MEASUREMENT = os.environ.get("REFERENCE_MEASUREMENT", "reference_level")
 REFERENCE_MAX_GROWTH = float(os.environ.get("REFERENCE_MAX_GROWTH", "10"))
 REFERENCE_ANCHOR_DAYS = int(os.environ.get("REFERENCE_ANCHOR_DAYS", "7"))
+
+# Restart warm-up
+WARMUP_MINUTES = int(os.environ.get("WARMUP_MINUTES", "3"))   # restart minute plus the next ones are never flagged
+
+# Early warning (trend and time to threshold)
+TREND_MINUTES = int(os.environ.get("TREND_MINUTES", "5"))                 # minutes the straight line is fitted to
+EW_MIN_R2 = float(os.environ.get("EW_MIN_R2", "0.85"))                    # how straight the rise must be
+EW_MIN_RISE_DEV = float(os.environ.get("EW_MIN_RISE_DEV", "1.5"))         # total rise in the window, in normal spreads
+EW_HORIZON_MIN = float(os.environ.get("EW_HORIZON_MIN", "10"))            # warn only if the level is this close
+EW_RENOTIFY_MINUTES = int(os.environ.get("EW_RENOTIFY_MINUTES", "10"))   # one early_warning point per episode
+EW_MEASUREMENT = os.environ.get("EW_MEASUREMENT", "early_warning")
 
 # Nightly retraining
 RETRAIN_HOUR_UTC = int(os.environ.get("RETRAIN_HOUR_UTC", "19"))          # 19:00 UTC is 03:00 in Malaysia
@@ -215,9 +239,12 @@ def load_reference(influx, now=None):
     now = now or pd.Timestamp.now(tz="UTC")
     since = (now - timedelta(hours=REFERENCE_HOURS)).isoformat()
     cols = ", ".join(f'"{c}"' for c in SIGNALS.values())
-    query = (f'SELECT {cols} FROM "{SCORE_MEASUREMENT}" '
+    query = (f'SELECT {cols}, "warmup", "early_warning" FROM "{SCORE_MEASUREMENT}" '
              f'WHERE "job" = \'{JOB}\' AND "is_anomaly" = 0 AND time >= \'{since}\'')
     df = pd.DataFrame(list(influx.query(query).get_points()))
+    for column in ("warmup", "early_warning"):      # restart warm-up and rising minutes are not normal
+        if column in df:
+            df = df[pd.to_numeric(df[column], errors="coerce").fillna(0) == 0]
     if len(df) < MIN_REFERENCE_POINTS:
         return dict(FALLBACK_REFERENCE), "fallback"
 
@@ -321,6 +348,72 @@ def deviation(column, value, reference):
     return max(0.0, (float(value) - median) / spread)
 
 
+def find_restarts(raw):
+    """Start minutes of container restarts, from drops in the CPU counter (it only ever grows)."""
+    minutes = set()
+    for frame in raw["cpu"]:
+        series = frame.sort_index()["value"]
+        for ts in series.index[series.diff() < 0]:
+            minutes.add(pd.Timestamp(ts).floor("min"))
+    return sorted(minutes)
+
+
+def warmup_mask(index, restarts):
+    """Boolean array: is the minute starting at each index value in the warm-up after a restart?"""
+    mask = np.zeros(len(index), dtype=bool)
+    for r in restarts:
+        mask |= np.asarray((index >= r) & (index < r + timedelta(minutes=WARMUP_MINUTES)))
+    return mask
+
+
+def trend_warning(window, reference):
+    """Early warning from the last TREND_MINUTES minutes (a DataFrame, oldest first).
+
+    Returns the signal that would reach its "moved" level soonest, as a dict, or None."""
+    n = len(window)
+    x = np.arange(n, dtype=float)
+    best = None
+    for name, column in SIGNALS.items():
+        median, p99 = reference[column]
+        spread = _spread(column, median, p99)
+        y = window[column].to_numpy(dtype=float)
+        slope, intercept = np.polyfit(x, y, 1)
+        if slope <= 0:
+            continue
+        ss_tot = float(((y - y.mean()) ** 2).sum())
+        r2 = 1.0 - float(((y - (slope * x + intercept)) ** 2).sum()) / ss_tot if ss_tot > 0 else 0.0
+        level = median + DEV_MIN * spread
+        if r2 < EW_MIN_R2 or slope * (n - 1) < EW_MIN_RISE_DEV * spread or y[-1] >= level:
+            continue
+        minutes = (level - y[-1]) / slope
+        if minutes > EW_HORIZON_MIN:
+            continue
+        if best is None or minutes < best["minutes"]:
+            best = {"signal": name, "minutes": float(minutes), "slope": float(slope),
+                    "r2": float(r2), "current": float(y[-1]), "level": float(level)}
+    return best
+
+
+def early_warnings(features, pending_index, reference, warm, flagged):
+    """Maps minute -> early warning dict for every pending minute that is not flagged and has a clean window.
+
+    `warm` is the warm-up mask over features.index, `flagged` the flags of the pending minutes."""
+    found = {}
+    position = {ts: i for i, ts in enumerate(features.index)}
+    step = timedelta(minutes=1)
+    for minute, flag in zip(pending_index, flagged):
+        i = position[minute]
+        if flag or i < TREND_MINUTES - 1:
+            continue
+        window = features.iloc[i - TREND_MINUTES + 1:i + 1]
+        if window.index[-1] - window.index[0] != step * (TREND_MINUTES - 1) or warm[i - TREND_MINUTES + 1:i + 1].any():
+            continue                                   # a gap or a restart inside the window
+        warning = trend_warning(window, reference)
+        if warning:
+            found[minute] = warning
+    return found
+
+
 def classify(row, flagged, reference, deployed):
     """Tier, action and the signals behind them for one minute."""
     devs = {name: deviation(column, row[column], reference) for name, column in SIGNALS.items()}
@@ -363,9 +456,11 @@ def score_features(champion, features):
     return scores, flagged
 
 
-def make_points(champion, features, scores, flagged, reference, deployments):
+def make_points(champion, features, scores, flagged, reference, deployments, warm=None, warnings=None):
     points = []
-    for (minute, row), score, flag in zip(features.iterrows(), scores, flagged):
+    warm = warm if warm is not None else np.zeros(len(features), dtype=bool)
+    warnings = warnings or {}
+    for (minute, row), score, flag, is_warm in zip(features.iterrows(), scores, flagged, warm):
         c = classify(row, bool(flag), reference, deployed_recently(minute, deployments))
         fields = {
             "score": float(score),
@@ -377,6 +472,8 @@ def make_points(champion, features, scores, flagged, reference, deployments):
             "signal": c["signal"],
             "signals": c["signals"],
             "recent_deployment": c["recent_deployment"],
+            "warmup": int(bool(is_warm)),
+            "early_warning": int(minute in warnings),
             "dev_cpu": float(c["devs"]["cpu"]),
             "dev_memory": float(c["devs"]["memory"]),
             "dev_latency": float(c["devs"]["latency"]),
@@ -384,6 +481,9 @@ def make_points(champion, features, scores, flagged, reference, deployments):
         }
         for column, (median, _) in reference.items():
             fields[f"base_{column}"] = float(median)
+        if minute in warnings:
+            w = warnings[minute]
+            fields.update(ew_signal=w["signal"], ew_minutes=w["minutes"], ew_slope=w["slope"], ew_r2=w["r2"])
         points.append({
             "measurement": SCORE_MEASUREMENT,
             "tags": {"job": JOB, "model": f"v{champion.version}"},
@@ -399,6 +499,28 @@ def read_last_scored(influx):
     return pd.to_datetime(points[0]["time"], utc=True) if points else None
 
 
+def announce_warnings(influx, warnings, state):
+    """Writes one early_warning point at the start of each warning episode (a new one only after
+    EW_RENOTIFY_MINUTES without a warning), so a notification workflow is not triggered every minute."""
+    points = []
+    for minute in sorted(warnings):
+        last = state.get("last_warning")
+        if last is None or minute - last > timedelta(minutes=EW_RENOTIFY_MINUTES):
+            w = warnings[minute]
+            points.append({"measurement": EW_MEASUREMENT, "tags": {"job": JOB, "signal": w["signal"]},
+                           "time": minute.isoformat(),
+                           "fields": {"minutes_to_threshold": w["minutes"], "slope_per_min": w["slope"],
+                                      "r2": w["r2"], "current": w["current"], "level": w["level"]}})
+            log.warning("EARLY WARNING %s %s rising %.3g per minute, about %.1f minutes to %.3g (now %.3g)",
+                        minute, w["signal"], w["slope"], w["minutes"], w["level"], w["current"])
+        state["last_warning"] = minute
+    if points:
+        try:
+            influx.write_points(points)
+        except Exception:
+            log.exception("could not write the early warning")
+
+
 def score_pending(influx, champion, now=None, state=None):
     """Scores every completed, not yet scored minute. Returns the number of minutes written."""
     state = state if state is not None else {}
@@ -411,7 +533,8 @@ def score_pending(influx, champion, now=None, state=None):
     if first > last_complete:
         return 0
 
-    lookback_minutes = int((now - first).total_seconds() // 60) + 5   # 5 extra for the rate warm-up
+    # 5 extra minutes for the rate warm-up, plus the history the trend line and the restart warm-up look back on
+    lookback_minutes = int((now - first).total_seconds() // 60) + 5 + max(TREND_MINUTES, WARMUP_MINUTES)
     raw = t.fetch_raw(lookback=f"{lookback_minutes}m", job=JOB, verbose=False, client=influx)
     features = t.build_features(raw)
     pending = features[(features.index >= first) & (features.index <= last_complete)]
@@ -419,10 +542,15 @@ def score_pending(influx, champion, now=None, state=None):
         return 0
 
     scores, flagged = score_features(champion, pending)
+    warm_all = warmup_mask(features.index, find_restarts(raw))
+    warm = warm_all[features.index.isin(pending.index)]
+    flagged = flagged & ~warm                          # a restart is never reported as an anomaly
     reference = get_reference(influx, state, now)
+    warnings = early_warnings(features, pending.index, reference, warm_all, flagged)
     deployments = read_deployments(influx, first - timedelta(minutes=DEPLOY_WINDOW_MINUTES))
-    points = make_points(champion, pending, scores, flagged, reference, deployments)
+    points = make_points(champion, pending, scores, flagged, reference, deployments, warm, warnings)
     influx.write_points(points)
+    announce_warnings(influx, warnings, state)
 
     for p, flag in zip(points, flagged):
         f = p["fields"]
@@ -445,16 +573,29 @@ def next_retrain_time(now=None):
     return target if target > now else target + timedelta(days=1)
 
 
+def training_exclusions(raw, ground_truth):
+    """Minutes that must not be used for training: the warm-up after each restart, and the ramp-up part of
+    gradual faults (injector records with shape "ramp"), which is a fault that still looks normal."""
+    spans = [(r, r + timedelta(minutes=WARMUP_MINUTES)) for r in find_restarts(raw)]
+    for rec in ground_truth:
+        if rec.get("shape") == "ramp" and rec.get("triggered_successfully"):
+            start = pd.Timestamp(rec["timestamp"])
+            spans.append((start, start + timedelta(seconds=rec.get("ramp_up_seconds", 0))))
+    return spans
+
+
 def load_dataset(influx):
     """The labelled dataset the training script builds, from the live metrics."""
     ground_truth = t.load_ground_truth()
-    features = t.build_features(t.fetch_raw(job=JOB, verbose=False, client=influx))
+    raw = t.fetch_raw(job=JOB, verbose=False, client=influx)
+    features = t.build_features(raw)
     injections = len(ground_truth)
     if t.DATA_START:
         cutoff = pd.Timestamp(t.DATA_START)
         features = features[features.index >= cutoff]
         injections = sum(1 for r in ground_truth if pd.Timestamp(r["timestamp"]) >= cutoff)
     spans, _ = t.expand_exclusions(t.EXCLUDE_WINDOWS, ground_truth)
+    spans += training_exclusions(raw, ground_truth)
     features, dropped = t.drop_excluded(features, spans)
     tiers, cover = t.label_rows(features, ground_truth)
     return features, tiers, cover, {"minutes_excluded": dropped, "injections_in_log": injections,
