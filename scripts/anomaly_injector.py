@@ -7,6 +7,11 @@ table. Every injection is logged with its exact start/end time and type to
 ground_truth_log.jsonl, which is later used to calculate precision, recall
 and false positive rate for the Isolation Forest model (Chapter 3, Section 6).
 
+Most faults are steps (the fault is at full strength within seconds). The memory ramp grows a leak
+slowly over many minutes and is logged with "shape": "ramp" and "ramp_up_seconds", the first part of
+the ramp, which still looks nearly normal. The detection report uses it to measure how early the
+trend check warns, and the retraining leaves the ramp-up part out of the training data.
+
 Also writes a DEPLOYMENT_EVENT point directly to InfluxDB for medium/high
 tier injections, since those are framed as deployment-triggered incidents
 (matching the ERD's DEPLOYMENT_EVENT measurement).
@@ -38,19 +43,28 @@ SCENARIOS = [
         "tier": "low",
         "endpoint": "/simulate/cpu-spike",
         "params": {"duration": 30},
-        "weight": 0.5,
+        "weight": 0.4,
     },
     {
         "tier": "medium",
         "endpoint": "/simulate/memory-leak",
         "params": {"sizeMb": 150, "duration": 90},
-        "weight": 0.3,
+        "weight": 0.2,
     },
     {
         "tier": "high",
         "endpoint": "/simulate/latency-spike",
         "params": {"delayMs": 3000, "duration": 60},
-        "weight": 0.2,
+        "weight": 0.15,
+    },
+    {
+        # a slow leak: 120 MB in 40 steps over 20 minutes (about 6 MB a minute)
+        "tier": "medium",
+        "endpoint": "/simulate/memory-ramp",
+        "params": {"sizeMb": 120, "steps": 40, "duration": 1200},
+        "weight": 0.25,
+        "shape": "ramp",
+        "ramp_up_fraction": 0.5,
     },
 ]
 
@@ -59,7 +73,7 @@ def log_event(record):
     with open(LOG_FILE, "a") as f:
         f.write(json.dumps(record) + "\n")
     print(f"[{record['timestamp']}] {record['tier'].upper()} tier: {record['scenario']} "
-          f"(duration {record['duration_seconds']}s)")
+          f"({record.get('shape', 'step')}, duration {record['duration_seconds']}s)")
 
 
 def write_deployment_event(commit_sha, is_recent):
@@ -111,7 +125,10 @@ def inject(scenario):
         "params": scenario["params"],
         "duration_seconds": duration,
         "triggered_successfully": success,
+        "shape": scenario.get("shape", "step"),
     }
+    if record["shape"] == "ramp":
+        record["ramp_up_seconds"] = int(duration * scenario["ramp_up_fraction"])
     log_event(record)
 
     # Real deployments are recorded by the CI/CD pipeline (source=ci). The high tier needs a
