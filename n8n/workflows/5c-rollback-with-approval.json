@@ -1,0 +1,723 @@
+{
+  "name": "5c Rollback with approval",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -300,
+        0
+      ],
+      "id": "de894b19-bbdd-4ab3-8e19-9a3a75c49d5d",
+      "name": "Every minute"
+    },
+    {
+      "parameters": {
+        "url": "http://influxdb:8086/query",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "db",
+              "value": "prometheus"
+            },
+            {
+              "name": "epoch",
+              "value": "ms"
+            },
+            {
+              "name": "q",
+              "value": "SELECT \"tier\",\"action\",\"signal\",\"peak_score\",\"minutes\",\"deployment\",\"tier_level\" FROM \"incident_open\" WHERE time > now() - 3h ORDER BY time ASC"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -100,
+        0
+      ],
+      "id": "88b69efa-756e-4687-8b26-dc12dfee7671",
+      "name": "Query incident_open"
+    },
+    {
+      "parameters": {
+        "url": "http://influxdb:8086/query",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "db",
+              "value": "prometheus"
+            },
+            {
+              "name": "epoch",
+              "value": "ms"
+            },
+            {
+              "name": "q",
+              "value": "SELECT \"source\",\"previous_image\",\"commit_sha\" FROM \"deployment_event\" WHERE time > now() - 3h ORDER BY time ASC"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        100,
+        0
+      ],
+      "id": "b3973863-3511-4417-9ee4-12da1573abbf",
+      "name": "Query deployment_event"
+    },
+    {
+      "parameters": {
+        "jsCode": "const COOLDOWN_MS = 30 * 60 * 1000;\nconst store = $getWorkflowStaticData('global');\nconst toRows = (res) => {\n  const series = res.results && res.results[0] && res.results[0].series ? res.results[0].series[0] : null;\n  const out = [];\n  if (series) {\n    for (const v of series.values) {\n      const r = {};\n      series.columns.forEach((c, i) => { r[c] = v[i]; });\n      out.push(r);\n    }\n  }\n  return out;\n};\nconst rows = toRows($('Query incident_open').first().json);\nconst deployments = toRows($input.first().json);\nstore.handled = store.handled || {};\nif (!store.init) {\n  rows.forEach(r => { store.handled[r.time] = true; });\n  store.init = true;\n  return [];\n}\nconst now = Date.now();\nfor (const t of Object.keys(store.handled)) {\n  if (now - Number(t) > 12 * 3600 * 1000) delete store.handled[t];\n}\nfor (const r of rows) {\n  if (store.handled[r.time]) continue;\n  if (r.action !== 'rollback') { store.handled[r.time] = true; continue; }\n  store.handled[r.time] = true;\n  const minutes = Math.round(Number(r.minutes));\n  const skip = (outcome) => [{ json: { proceed: false, mode: 'skipped', outcome, signal: r.signal, minutes } }];\n  if (store.lastRollback && now - store.lastRollback < COOLDOWN_MS) return skip('skipped_cooldown');\n  // The deployment that caused the incident: the latest one up to a minute after the incident\n  // started and at most 20 minutes before it.\n  let dep = null;\n  for (const x of deployments) {\n    if (x.time <= r.time + 60000 && x.time >= r.time - 20 * 60000) dep = x;\n  }\n  if (!dep) return skip('skipped_no_deployment');\n  if (dep.source !== 'ci') return skip('skipped_simulated');\n  if (!dep.previous_image) return skip('skipped_no_previous_image');\n  const sha = String(dep.commit_sha || '').slice(0, 7);\n  return [{ json: { proceed: true, pickedAt: now, signal: r.signal, minutes, image: dep.previous_image, sha, text:\n    `High incident on sample-service after deployment ${sha}, signal ${r.signal}\\n` +\n    `Peak score ${Number(r.peak_score).toFixed(2)}, ${minutes} min so far\\n\\n` +\n    `Roll back to ${dep.previous_image}?` } }];\n}\nreturn [];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        0
+      ],
+      "id": "06d20a66-9e7f-44b0-8480-e7a6b158dd09",
+      "name": "Pick incident"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "c978092a-cc20-47c3-b2e8-7b53a5cc3409",
+              "leftValue": "={{ $json.proceed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        500,
+        0
+      ],
+      "id": "40f4b178-372d-4998-89ad-ae97bc8f7e55",
+      "name": "Proceed?"
+    },
+    {
+      "parameters": {
+        "operation": "sendAndWait",
+        "chatId": "763653428",
+        "message": "={{ $json.text }}",
+        "approvalOptions": {
+          "values": {
+            "approvalType": "double"
+          }
+        },
+        "options": {
+          "limitWaitTime": {
+            "values": {
+              "resumeAmount": 15,
+              "resumeUnit": "minutes"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        700,
+        120
+      ],
+      "id": "f0ade4b9-bdd1-4c24-9aad-89113f5f9c57",
+      "name": "Ask for approval",
+      "webhookId": "5b793849-eef9-4c68-b2c7-60f1940c7b56",
+      "credentials": {
+        "telegramApi": {
+          "id": "Bvw7NQseUMpPlDDU",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "16f362ce-a175-42c3-a046-d8a904f78f12",
+              "leftValue": "={{ $json.data ? $json.data.approved : false }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        900,
+        120
+      ],
+      "id": "5aa2f084-73d1-4a89-bb9e-6589c77d5f05",
+      "name": "Approved?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const pick = $('Pick incident').first().json;\nconst approved = $input.first().json.data ? $input.first().json.data.approved : undefined;\nconst outcome = approved === false ? 'rejected' : 'expired';\nreturn [{ json: { mode: outcome, outcome, signal: pick.signal, minutes: pick.minutes } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        360
+      ],
+      "id": "ce2bf00e-6fb8-4213-9791-042723e25fc0",
+      "name": "Classify refusal"
+    },
+    {
+      "parameters": {
+        "url": "http://influxdb:8086/query",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "db",
+              "value": "prometheus"
+            },
+            {
+              "name": "epoch",
+              "value": "ms"
+            },
+            {
+              "name": "q",
+              "value": "SELECT \"score\" FROM \"anomaly_score\" WHERE \"is_anomaly\" = 1 AND time > now() - 4m"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1100,
+        0
+      ],
+      "id": "0a75542c-2470-4ce8-9bc0-0adbf95b0724",
+      "name": "Check incident still open"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "33a0f40b-b304-4880-a141-10f56fddbb84",
+              "leftValue": "={{ !!($json.results && $json.results[0] && $json.results[0].series) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1300,
+        0
+      ],
+      "id": "57c0836b-d867-4f08-a9e8-fa9b759cac88",
+      "name": "Still open?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const pick = $('Pick incident').first().json;\nreturn [{ json: { mode: 'skipped', outcome: 'skipped_closed', signal: pick.signal, minutes: pick.minutes } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        360
+      ],
+      "id": "e95bd4bd-408a-4483-9d75-98d6a3f496f0",
+      "name": "Classify closed"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/cxdzy/DevOps-Observability-Platform/actions/workflows/ci-cd.yml/dispatches",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ref: 'master', inputs: { rollback_image: $('Pick incident').first().json.image } }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1500,
+        0
+      ],
+      "id": "d35b1b04-0e8b-4a92-b2d2-76d79fdb1e29",
+      "name": "Trigger rollback",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "amount": 120
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1700,
+        0
+      ],
+      "id": "5341b499-1595-4d59-8950-ddf10e5e4857",
+      "name": "Wait 120 s",
+      "webhookId": "b90d6d77-91bb-4e50-9790-7bab80ce31d5"
+    },
+    {
+      "parameters": {
+        "url": "https://api.github.com/repos/cxdzy/DevOps-Observability-Platform/actions/workflows/ci-cd.yml/runs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "event",
+              "value": "workflow_dispatch"
+            },
+            {
+              "name": "per_page",
+              "value": "1"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "X-GitHub-Api-Version",
+              "value": "2022-11-28"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1900,
+        0
+      ],
+      "id": "4f102430-a98b-4d2a-b158-7f1bb0a55ae0",
+      "name": "Get rollback run",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "url": "http://prometheus:9090/api/v1/query",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "up{job=\"sample-service\"}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2100,
+        0
+      ],
+      "id": "a1c60aed-9968-4dc1-b535-2833866fe51b",
+      "name": "Check service is up"
+    },
+    {
+      "parameters": {
+        "jsCode": "const store = $getWorkflowStaticData('global');\nstore.lastRollback = Date.now();\nconst pick = $('Pick incident').first().json;\nconst runs = $('Get rollback run').first().json;\nconst run = runs.workflow_runs && runs.workflow_runs[0];\nconst runOk = !!run && Date.parse(run.created_at) >= pick.pickedAt && run.status === 'completed' && run.conclusion === 'success';\nconst upRes = $input.first().json;\nconst result = upRes.data && upRes.data.result && upRes.data.result[0];\nconst up = result ? String(result.value[1]) === '1' : false;\nconst outcome = runOk && up ? 'success' : 'failed';\nconst text = `Rollback of sample-service to ${pick.image} (signal ${pick.signal}). ` +\n  (runOk ? 'The rollback pipeline run finished successfully. ' : 'The rollback pipeline run did not finish successfully, please check GitHub Actions. ') +\n  (up ? 'Monitoring shows the service up.' : 'Monitoring does not show the service as up yet.');\nreturn [{ json: { text, mode: 'approved', outcome, signal: pick.signal, minutes: pick.minutes, up: up ? 1 : 0, image: pick.image, at: Date.now() } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2300,
+        0
+      ],
+      "id": "67c9245b-d83c-4bc0-843e-5ad2440f31ad",
+      "name": "Build Result"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://influxdb:8086/write",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "db",
+              "value": "prometheus"
+            },
+            {
+              "name": "precision",
+              "value": "ms"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "body": "=remediation_action,job=sample-service,mode={{ $json.mode }} action=\"rollback\",signal=\"{{ $json.signal }}\",minutes={{ $json.minutes }}i,service_up={{ $json.up }}i,outcome=\"{{ $json.outcome }}\",image=\"{{ $json.image }}\" {{ $json.at }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2500,
+        160
+      ],
+      "id": "e51eefbf-2ca9-4529-9cd4-6f3c677b9eff",
+      "name": "Log action"
+    },
+    {
+      "parameters": {
+        "chatId": "763653428",
+        "text": "={{ $('Build Result').item.json.text }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2500,
+        -60
+      ],
+      "id": "aa267543-b087-4073-b923-d400350fe776",
+      "name": "Send result",
+      "webhookId": "9aad5233-5cf7-452a-90d9-887e6d8241e0",
+      "credentials": {
+        "telegramApi": {
+          "id": "Bvw7NQseUMpPlDDU",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://influxdb:8086/write",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "db",
+              "value": "prometheus"
+            },
+            {
+              "name": "precision",
+              "value": "ms"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "body": "=remediation_action,job=sample-service,mode={{ $json.mode }} action=\"rollback\",signal=\"{{ $json.signal }}\",minutes={{ $json.minutes }}i,service_up=0i,outcome=\"{{ $json.outcome }}\"",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1500,
+        360
+      ],
+      "id": "28f384d3-92ab-4d53-95bd-5720bb812a6a",
+      "name": "Log outcome"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every minute": {
+      "main": [
+        [
+          {
+            "node": "Query incident_open",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query incident_open": {
+      "main": [
+        [
+          {
+            "node": "Query deployment_event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query deployment_event": {
+      "main": [
+        [
+          {
+            "node": "Pick incident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick incident": {
+      "main": [
+        [
+          {
+            "node": "Proceed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Proceed?": {
+      "main": [
+        [
+          {
+            "node": "Ask for approval",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask for approval": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Check incident still open",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify refusal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify refusal": {
+      "main": [
+        [
+          {
+            "node": "Log outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check incident still open": {
+      "main": [
+        [
+          {
+            "node": "Still open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still open?": {
+      "main": [
+        [
+          {
+            "node": "Trigger rollback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify closed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify closed": {
+      "main": [
+        [
+          {
+            "node": "Log outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger rollback": {
+      "main": [
+        [
+          {
+            "node": "Wait 120 s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 120 s": {
+      "main": [
+        [
+          {
+            "node": "Get rollback run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get rollback run": {
+      "main": [
+        [
+          {
+            "node": "Check service is up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check service is up": {
+      "main": [
+        [
+          {
+            "node": "Build Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Result": {
+      "main": [
+        [
+          {
+            "node": "Log action",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "e50cb10f-a3c5-414e-b177-f952cb158ba6",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "nodeGroups": [],
+  "id": "5cRollbackWorkflow01",
+  "tags": []
+}
