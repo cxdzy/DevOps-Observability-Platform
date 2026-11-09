@@ -31,6 +31,13 @@ describe('sample-service', () => {
     expect(res.body.status).toBe('memory-leak started');
   });
 
+  test('POST /simulate/memory-ramp accepts the request', async () => {
+    const res = await request(app).post('/simulate/memory-ramp?sizeMb=4&steps=2&duration=1');
+    expect(res.statusCode).toBe(202);
+    expect(res.body.status).toBe('memory-ramp started');
+    expect(res.body.steps).toBe(2);
+  });
+
   test('POST /simulate/latency-spike accepts the request', async () => {
     const res = await request(app).post('/simulate/latency-spike?delayMs=10&duration=1');
     expect(res.statusCode).toBe(202);

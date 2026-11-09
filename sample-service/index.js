@@ -116,6 +116,39 @@ app.post('/simulate/memory-leak', (req, res) => {
   });
 });
 
+// Medium tier, gradual: a leak that grows in steps over the whole duration instead of one allocation.
+// Used to measure how early the trend check warns before the model flags the minute.
+app.post('/simulate/memory-ramp', (req, res) => {
+  const sizeMb = parseInt(req.query.sizeMb) || 150;
+  const durationSeconds = parseInt(req.query.duration) || 300;
+  const steps = Math.max(1, parseInt(req.query.steps) || 10);
+  const stepMb = Math.max(1, Math.round(sizeMb / steps));
+  const intervalMs = Math.max(100, Math.round((durationSeconds * 1000) / steps));
+
+  collectGarbage();
+  let done = 0;
+  const grow = setInterval(() => {
+    memoryLeakBuffers.push(Buffer.alloc(stepMb * 1024 * 1024, 'x'));
+    done += 1;
+    if (done >= steps) clearInterval(grow);
+  }, intervalMs);
+  grow.unref();
+
+  const releaseTimer = setTimeout(() => {
+    clearInterval(grow);
+    memoryLeakBuffers = [];
+    collectGarbage();
+  }, durationSeconds * 1000 + 1000);
+  releaseTimer.unref();
+
+  res.status(202).json({
+    status: 'memory-ramp started',
+    size_mb: stepMb * steps,
+    steps,
+    duration_seconds: durationSeconds,
+  });
+});
+
 // High tier: latency degradation, simulates a bad deployment regression
 app.post('/simulate/latency-spike', (req, res) => {
   const delayMs = parseInt(req.query.delayMs) || 2000;
