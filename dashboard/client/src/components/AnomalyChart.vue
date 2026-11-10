@@ -1,31 +1,54 @@
 <script setup lang="ts">
-import type { AnomalyPoint } from '@/types'
+import type { AnomalyPoint, ChartWindow, ZoomWindow } from '@/types'
 import { LineChart, ScatterChart } from 'echarts/charts'
 import {
   DataZoomInsideComponent,
+  DataZoomSliderComponent,
   GridComponent,
   LegendPlainComponent,
+  MarkLineComponent,
   TooltipComponent,
 } from 'echarts/components'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { useMediaQuery } from '@vueuse/core'
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import VChart from 'vue-echarts'
+import { useWheelScrollsPage } from '@/components/ResourceChart.vue'
 import { LINE_ICON, MONO, useChartTheme, withAlpha } from '@/lib/chartTheme'
 import { clockTime, fixed, localDateTime, shortDate } from '@/lib/format'
 import { FLAG_TIERS, TIER_STYLE, toTier } from '@/lib/tier'
 
-use([LineChart, ScatterChart, GridComponent, TooltipComponent, DataZoomInsideComponent, LegendPlainComponent, CanvasRenderer])
+use([LineChart, ScatterChart, GridComponent, TooltipComponent, DataZoomInsideComponent, DataZoomSliderComponent, LegendPlainComponent, MarkLineComponent, CanvasRenderer])
 
 const props = defineProps<{
   points: AnomalyPoint[]
   hours: number
   selected: number | null
+  // Zoom window in percent of the loaded range; the view owns it.
+  zoom: ZoomWindow
+  // Times (ms) of early warnings, drawn as dashed vertical lines in the warn colour.
+  warnings: number[]
 }>()
-const emit = defineEmits<{ select: [time: number] }>()
+const emit = defineEmits<{ select: [time: number], zoom: [window: ZoomWindow], window: [window: ChartWindow] }>()
+
+// Pixel insets of the plot area as configured. ECharts 6 can move the plot edges inwards to keep
+// axis labels inside the canvas, so the window event measures the drawn edges once the chart has
+// rendered and uses these only until then.
+const GRID_LEFT = 48
+const GRID_RIGHT = 16
+
+// The x axis covers the loaded range, so a zoom percent means the same times everywhere.
+const axisRange = computed(() => {
+  const pts = props.points
+  const min = pts.length ? pts[0].time : 0
+  const max = pts.length ? pts[pts.length - 1].time : 0
+  return { min, max: max > min ? max : min + 60000 }
+})
 
 const chart = ref<InstanceType<typeof VChart> | null>(null)
+// The chart's container; also the width the event lane under the chart must match.
+const box = ref<HTMLElement | null>(null)
 
 // On phones the legend wraps to two lines, so the plot starts lower.
 const narrow = useMediaQuery('(max-width: 639px)')
@@ -36,10 +59,22 @@ const { palette, fontReady } = useChartTheme()
 // Legend icon for the threshold: a dashed bar, 24 by 2, next to the solid LINE_ICON.
 const DASHED_ICON = 'path://M0 0h5v2H0zM9 0h5v2H9zM18 0h6v2h-6z'
 
+// The window the chart was last drawn with. Not reactive on purpose: the option is rebuilt for new
+// data or a theme change and then takes the current window, but a zoom alone does not rebuild it.
+let drawn: ZoomWindow = { ...props.zoom }
+
+// Drag to pan only where the main pointer is a mouse, so a finger can still scroll the page.
+const finePointer = typeof window !== 'undefined' && window.matchMedia?.('(pointer: fine)').matches !== false
+
 const byTime = computed(() => new Map(props.points.map(p => [p.time, p])))
 
 function axisLabel(ms: number): string {
   return props.hours > 24 ? `${shortDate(ms)}\n${clockTime(ms)}` : clockTime(ms)
+}
+
+function sliderLabel(ms: number): string {
+  const d = new Date(ms)
+  return d.getHours() === 0 && d.getMinutes() === 0 ? shortDate(ms) : clockTime(ms)
 }
 
 function tooltip(params: unknown): string {
@@ -79,7 +114,8 @@ const option = computed(() => {
 
   return {
     animation: false,
-    grid: { left: 48, right: 16, top: narrow.value ? 64 : 40, bottom: 40 },
+    // The bottom leaves room for the two-line time labels and the slider.
+    grid: { left: GRID_LEFT, right: GRID_RIGHT, top: narrow.value ? 64 : 40, bottom: 80 },
     legend: {
       top: 0,
       // Plain line icons for the two lines. The default line icon draws a symbol on top, which
@@ -101,9 +137,48 @@ const option = computed(() => {
       textStyle: { color: c.ink, fontSize: 12 },
       axisPointer: { lineStyle: { color: c.thresh } },
     },
-    dataZoom: [{ type: 'inside', xAxisIndex: 0 }],
+    dataZoom: [
+      {
+        id: 'zi',
+        type: 'inside',
+        xAxisIndex: 0,
+        filterMode: 'none',
+        start: drawn.start,
+        end: drawn.end,
+        moveOnMouseMove: finePointer,
+        // A plain wheel scrolls the page; Ctrl + wheel (and a trackpad pinch) zooms.
+        zoomOnMouseWheel: 'ctrl',
+        moveOnMouseWheel: false,
+      },
+      {
+        id: 'zs',
+        type: 'slider',
+        xAxisIndex: 0,
+        filterMode: 'none',
+        start: drawn.start,
+        end: drawn.end,
+        height: 24,
+        bottom: 8,
+        // Room on both sides for the handle time labels, so the end label is not clipped.
+        left: 64,
+        right: 48,
+        borderColor: c.line,
+        backgroundColor: 'transparent',
+        fillerColor: withAlpha(c.primary, 0.12),
+        dataBackground: { lineStyle: { color: c.thresh }, areaStyle: { color: withAlpha(c.thresh, 0.2) } },
+        selectedDataBackground: { lineStyle: { color: c.chartline }, areaStyle: { color: withAlpha(c.chartline, 0.15) } },
+        handleStyle: { color: c.panel, borderColor: c.thresh },
+        moveHandleStyle: { color: c.thresh },
+        textStyle: { color: c.faint, fontFamily: MONO, fontSize: 11 },
+        // Clock time only (the date at midnight), as on Resources: a date and time label is wider
+        // than the room beside the handles and would be clipped at the canvas edge.
+        labelFormatter: (v: number) => sliderLabel(v),
+      },
+    ],
     xAxis: {
       type: 'time',
+      min: axisRange.value.min,
+      max: axisRange.value.max,
       axisLine: { lineStyle: { color: c.grid } },
       axisTick: { lineStyle: { color: c.grid } },
       splitLine: { show: false },
@@ -126,6 +201,15 @@ const option = computed(() => {
         showSymbol: false,
         lineStyle: { width: 1.5, color: c.chartline },
         itemStyle: { color: c.chartline },
+        // Early warnings: dashed vertical lines in the warn colour.
+        markLine: {
+          silent: true,
+          symbol: 'none',
+          animation: false,
+          label: { show: false },
+          lineStyle: { color: c.warn, type: 'dashed', width: 1 },
+          data: props.warnings.map(t => ({ xAxis: t })),
+        },
         // Area under the line, fading from 12 percent to nothing.
         areaStyle: {
           origin: 'start',
@@ -166,6 +250,79 @@ const option = computed(() => {
     ],
   }
 })
+
+const close = (a: ZoomWindow, b: ZoomWindow) => Math.abs(a.start - b.start) < 0.01 && Math.abs(a.end - b.end) < 0.01
+
+function currentZoom(): ZoomWindow | null {
+  const opt = chart.value?.getOption() as { dataZoom?: { start?: number, end?: number }[] } | undefined
+  const dz = opt?.dataZoom?.[0]
+  return dz && typeof dz.start === 'number' && typeof dz.end === 'number' ? { start: dz.start, end: dz.end } : null
+}
+
+// The visible time range and the drawn plot edges, for the event lane under the chart. Sent again
+// after every render (new data, zoom, resize, theme), but only when something changed.
+let sent: ChartWindow | null = null
+function emitWindow() {
+  const { min, max } = axisRange.value
+  const span = max - min
+  const start = min + (span * drawn.start) / 100
+  const end = min + (span * drawn.end) / 100
+  let left = GRID_LEFT
+  let right = GRID_RIGHT
+  const instance = chart.value
+  const width = box.value?.clientWidth ?? 0
+  if (instance && width > 0) {
+    try {
+      const a = Number(instance.convertToPixel({ xAxisIndex: 0 }, start))
+      const b = Number(instance.convertToPixel({ xAxisIndex: 0 }, end))
+      if (Number.isFinite(a) && Number.isFinite(b) && b > a) {
+        left = a
+        right = width - b
+      }
+    }
+    catch {
+      // Not drawn yet: keep the configured insets.
+    }
+  }
+  const next = { start, end, left, right }
+  if (sent && sent.start === start && sent.end === end && Math.abs(sent.left - left) < 0.5 && Math.abs(sent.right - right) < 0.5) return
+  sent = next
+  emit('window', next)
+}
+watch(axisRange, emitWindow, { immediate: true })
+
+// A wheel, pinch, drag or slider move.
+function onDataZoom() {
+  const z = currentZoom()
+  if (!z) return
+  drawn = z
+  if (!close(z, props.zoom)) emit('zoom', z)
+  emitWindow()
+}
+
+// A toolbar button or a preset changed the window: one dataZoom action.
+watch(() => props.zoom, (z) => {
+  drawn = { ...z }
+  const now = currentZoom()
+  if (!now || !close(now, z)) chart.value?.dispatchAction({ type: 'dataZoom', dataZoomId: 'zi', start: z.start, end: z.end })
+  // After the action, so the plot edges are measured on the new window.
+  emitWindow()
+}, { deep: true })
+
+// The browser zooms the whole page on Ctrl + wheel; over the plot area ECharts uses it to zoom the
+// chart, so the page zoom is stopped there only.
+function onWheel(e: WheelEvent) {
+  if (!e.ctrlKey || !box.value) return
+  const rect = box.value.getBoundingClientRect()
+  if (chart.value?.containPixel({ gridIndex: 0 }, [e.clientX - rect.left, e.clientY - rect.top])) e.preventDefault()
+}
+watch(box, (el, old) => {
+  old?.removeEventListener('wheel', onWheel)
+  el?.addEventListener('wheel', onWheel, { passive: false })
+})
+onUnmounted(() => box.value?.removeEventListener('wheel', onWheel))
+// A plain wheel over the chart scrolls the page.
+useWheelScrollsPage(box)
 
 const MARKER_HIT_PX = 8
 
@@ -210,10 +367,11 @@ function onClick(event: { offsetX: number, offsetY: number }) {
 
 <template>
   <div
-    class="h-[260px] w-full md:h-[320px]"
+    ref="box"
+    class="h-[300px] w-full md:h-[360px]"
     role="img"
     aria-label="Anomaly score over time with the detection threshold and flagged minutes marked by tier: low circle, medium triangle, high diamond"
   >
-    <VChart ref="chart" class="size-full" :option="option" autoresize @zr:click="onClick" />
+    <VChart ref="chart" class="size-full" :option="option" autoresize @zr:click="onClick" @datazoom="onDataZoom" @finished="emitWindow" />
   </div>
 </template>

@@ -7,6 +7,8 @@ const { createGoogle } = require("./google");
 const { createOverview, loadIncidents, SERVERS } = require("./overview");
 const { createResources, HOURS: RESOURCE_HOURS } = require("./resources");
 const { loadRemediation } = require("./remediation");
+const { loadEvents } = require("./events");
+const { loadStatus } = require("./status");
 const { createModel } = require("./model");
 const { createChatRouter } = require("./routes/chat");
 
@@ -201,6 +203,28 @@ function createApp(deps) {
   app.get("/api/activity", async (req, res) => {
     try {
       res.json(await overview.activity(now()));
+    } catch (err) {
+      res.status(502).json({ error: "influxdb unreachable" });
+    }
+  });
+
+  // Timeline events. Each source fails on its own; 502 only when every source fails.
+  app.get("/api/events", async (req, res) => {
+    const hours = hoursParam(req, res);
+    if (hours === null) return;
+    try {
+      const result = await loadEvents(query, hours);
+      if (!result) return res.status(502).json({ error: "influxdb unreachable" });
+      res.json(result);
+    } catch (err) {
+      res.status(502).json({ error: "influxdb unreachable" });
+    }
+  });
+
+  // Current state for the header. No request text reaches the queries.
+  app.get("/api/status", async (req, res) => {
+    try {
+      res.json(await loadStatus(query, now()));
     } catch (err) {
       res.status(502).json({ error: "influxdb unreachable" });
     }

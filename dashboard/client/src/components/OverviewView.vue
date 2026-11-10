@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import type { ActivityItem, AnomalyPoint, Health, Incident, LatestAnomaly, NodeInfo, ServicesInfo } from '@/types'
+import type { ActivityItem, AnomalyPoint, ChartWindow, EventsResponse, Health, Incident, LatestAnomaly, NodeInfo, ServicesInfo, StatusInfo, ZoomWindow } from '@/types'
 import { computed, defineAsyncComponent, ref } from 'vue'
 import ChartLoadError from '@/components/ChartLoadError.vue'
 import ChartSkeleton from '@/components/ChartSkeleton.vue'
+import ChartToolbar from '@/components/ChartToolbar.vue'
+import EventLane from '@/components/EventLane.vue'
 import NodeCard from '@/components/NodeCard.vue'
 import RecentActivity from '@/components/RecentActivity.vue'
 import ServicesTable from '@/components/ServicesTable.vue'
+import StatusChip from '@/components/StatusChip.vue'
 import TierBadge from '@/components/TierBadge.vue'
 import { Skeleton } from '@/components/ui/skeleton'
 import { api, usePoll } from '@/composables/useApi'
@@ -36,6 +39,8 @@ const points = source<AnomalyPoint[]>([])
 const nodes = source<NodeInfo[]>([])
 const services = source<ServicesInfo | null>(null)
 const activity = source<ActivityItem[]>([])
+const serviceStatus = source<StatusInfo | null>(null)
+const events = source<EventsResponse>({ events: [], unavailable: [] })
 const loading = ref(true)
 
 function apply<T>(s: ReturnType<typeof source<T>>, result: PromiseSettledResult<{ data: T }>, valid: (v: unknown) => boolean) {
@@ -51,7 +56,7 @@ const isArray = (v: unknown) => Array.isArray(v)
 
 async function load() {
   const params = { hours: HOURS }
-  const [h, l, i, p, n, s, a] = await Promise.allSettled([
+  const [h, l, i, p, n, s, a, st, ev] = await Promise.allSettled([
     api.get<Health>('/api/health'),
     api.get<LatestAnomaly>('/api/anomaly/latest'),
     api.get<Incident[]>('/api/incidents', { params }),
@@ -59,6 +64,8 @@ async function load() {
     api.get<NodeInfo[]>('/api/nodes'),
     api.get<ServicesInfo>('/api/services'),
     api.get<ActivityItem[]>('/api/activity'),
+    api.get<StatusInfo>('/api/status'),
+    api.get<EventsResponse>('/api/events', { params }),
   ])
   apply(health, h, isObject)
   apply(latest, l, isObject)
@@ -67,12 +74,45 @@ async function load() {
   apply(nodes, n, isArray)
   apply(services, s, v => isObject(v) && isArray((v as ServicesInfo).expected) && isArray((v as ServicesInfo).containers))
   apply(activity, a, isArray)
+  apply(serviceStatus, st, v => isObject(v) && typeof (v as StatusInfo).state === 'string')
+  apply(events, ev, v => isObject(v) && isArray((v as EventsResponse).events))
   loading.value = false
   emit('refreshed', h.status === 'fulfilled')
 }
 
 // Every 30 seconds; a tick is skipped while the previous load is still running.
 usePoll(load, 30000)
+
+// Zoom of the service chart; the narrowest window is about 10 minutes of the 6 hours.
+const PRESETS = [{ value: HOURS, label: '6 h', title: 'Last 6 hours' }]
+const FULL: ZoomWindow = { start: 0, end: 100 }
+const MIN_SPAN = (10 / (HOURS * 60)) * 100
+const chartHours = ref(HOURS)
+const zoom = ref<ZoomWindow>({ ...FULL })
+const laneWindow = ref<ChartWindow | null>(null)
+function setZoom(start: number, end: number) {
+  let span = Math.max(MIN_SPAN, Math.min(100, end - start))
+  let s = Math.max(0, Math.min(100 - span, start))
+  if (span >= 100) {
+    s = 0
+    span = 100
+  }
+  zoom.value = { start: s, end: s + span }
+}
+const span = computed(() => zoom.value.end - zoom.value.start)
+const centre = computed(() => (zoom.value.start + zoom.value.end) / 2)
+const zoomIn = () => setZoom(centre.value - span.value / 4, centre.value + span.value / 4)
+const zoomOut = () => setZoom(centre.value - span.value, centre.value + span.value)
+const earlier = () => setZoom(zoom.value.start - span.value / 4, zoom.value.end - span.value / 4)
+const later = () => setZoom(zoom.value.start + span.value / 4, zoom.value.end + span.value / 4)
+const reset = () => { zoom.value = { ...FULL } }
+function onChartZoom(z: ZoomWindow) {
+  if (Math.abs(z.start - zoom.value.start) < 0.01 && Math.abs(z.end - zoom.value.end) < 0.01) return
+  zoom.value = { start: z.start, end: z.end }
+}
+const atFull = computed(() => zoom.value.start <= 0.01 && zoom.value.end >= 99.99)
+const atMin = computed(() => span.value <= MIN_SPAN + 0.001)
+const warnings = computed(() => events.data.value.events.filter(e => e.kind === 'early_warning').map(e => e.time))
 
 const greeting = computed(() => {
   const hour = new Date().getHours()
@@ -127,12 +167,22 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
   <div class="flex flex-wrap items-end justify-between gap-3">
     <div>
       <p class="text-[13px] text-muted-foreground">{{ greeting }}</p>
-      <h1 class="mt-0.5 text-2xl font-semibold tracking-[-0.02em]">Overview</h1>
+      <div class="mt-0.5 flex flex-wrap items-center gap-3">
+        <h1 class="text-2xl font-semibold tracking-[-0.02em]">Overview</h1>
+        <StatusChip :status="serviceStatus.data.value" :failed="serviceStatus.failed.value" />
+      </div>
     </div>
     <a href="#incidents" class="inline-flex min-h-9 items-center rounded-lg border border-border px-3.5 text-[13px] font-medium text-foreground no-underline hover:bg-chip">
       Open incidents
     </a>
   </div>
+
+  <StatusChip
+    v-if="serviceStatus.failed.value || (serviceStatus.data.value && serviceStatus.data.value.state !== 'normal')"
+    variant="banner"
+    :status="serviceStatus.data.value"
+    :failed="serviceStatus.failed.value"
+  />
 
   <p v-if="health.failed.value" class="rounded-lg bg-tier-high-bg p-3 text-[13px] text-tier-high-fg" role="alert">
     The API did not answer. Retrying in 30 s.
@@ -233,7 +283,34 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
       <p v-else-if="points.data.value.length === 0" class="py-16 text-center text-[13px] text-muted-foreground">
         No sample-service data in the last 6 hours
       </p>
-      <MetricChart v-else :points="points.data.value" />
+      <template v-else>
+        <MetricChart
+          :points="points.data.value"
+          :zoom="zoom"
+          :warnings="warnings"
+          @zoom="onChartZoom"
+          @window="laneWindow = $event"
+        />
+        <p v-if="events.failed.value && !events.loaded.value" class="mt-2 text-xs text-muted-foreground" role="status">
+          Events could not be loaded. Retrying in 30 s.
+        </p>
+        <EventLane v-else class="mt-2" :events="events.data.value.events" :window="laneWindow" :unavailable="events.data.value.unavailable" />
+        <div class="mt-3 flex justify-end">
+          <ChartToolbar
+            v-model="chartHours"
+            :presets="PRESETS"
+            :at-full="atFull"
+            :at-min="atMin"
+            :at-start="zoom.start <= 0.01"
+            :at-end="zoom.end >= 99.99"
+            @zoom-in="zoomIn"
+            @zoom-out="zoomOut"
+            @earlier="earlier"
+            @later="later"
+            @reset="reset"
+          />
+        </div>
+      </template>
     </section>
     <RecentActivity
       class="min-w-0 flex-[1_1_300px]"

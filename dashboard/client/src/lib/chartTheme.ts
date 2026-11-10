@@ -35,6 +35,9 @@ export function readPalette() {
     series2: cssVar('--series2', '#2563EB'),
     amber: cssVar('--amber', '#D97706'),
     red: cssVar('--red', '#DC2626'),
+    okdot: cssVar('--okdot', '#16A34A'),
+    // Early warning only (DESIGN.md section 7.1): purple, so it is never read as a tier.
+    warn: cssVar('--warn', '#7C3AED'),
     tiers: {
       low: cssVar(TIER_STYLE.low.markerVar, '#2563EB'),
       medium: cssVar(TIER_STYLE.medium.markerVar, '#D97706'),

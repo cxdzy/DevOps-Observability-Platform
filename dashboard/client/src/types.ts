@@ -177,3 +177,62 @@ export interface ResourcesInfo {
 
 // Zoom window of a chart in percent of its loaded window, 0 to 100.
 export interface ZoomWindow { start: number, end: number }
+
+// GET /api/status: the current state of the service as the worker and the explainer see it.
+export type StatusInfo =
+  | { state: 'normal', time: number }
+  // An early warning on the latest minute.
+  | { state: 'watching', time: number, signal: string | null, minutes: number | null }
+  | { state: 'incident', tier: string | null, job: string | null, start: number, peakScore: number | null }
+  // Warm-up after a restart; step and of are present only when known, for example 2 of 3.
+  | { state: 'recovering', time: number, step?: number, of?: number }
+  // The latest scored minute is older than 5 minutes, or there is no data.
+  | { state: 'stale', time: number | null }
+
+export type EventKind = 'deploy' | 'retrain' | 'early_warning' | 'incident' | 'action'
+
+// One marker from GET /api/events. Any detail field may be null.
+export interface EventItem {
+  time: number
+  kind: EventKind
+  label: string
+  detail: {
+    // deploy
+    commit?: string | null
+    shortCommit?: string | null
+    branch?: string | null
+    runId?: string | null
+    // retrain
+    promoted?: boolean | null
+    newVersion?: string | null
+    championVersion?: string | null
+    // early_warning
+    signal?: string | null
+    minutes?: number | null
+    // incident
+    tier?: string | null
+    peakScore?: number | null
+    job?: string | null
+    // action
+    action?: string | null
+    mode?: string | null
+    outcome?: string | null
+    family?: 'worked' | 'failed' | 'not_run' | null
+  }
+}
+
+// GET /api/events?hours=N. unavailable names the sources that could not be read, for example
+// "deployments" or "retraining".
+export interface EventsResponse {
+  events: EventItem[]
+  unavailable: string[]
+}
+
+// The visible time range of a chart and the pixel insets of its plot area from the left and
+// right edges of the chart container. The event lane under a chart uses it to place markers.
+export interface ChartWindow {
+  start: number
+  end: number
+  left: number
+  right: number
+}
