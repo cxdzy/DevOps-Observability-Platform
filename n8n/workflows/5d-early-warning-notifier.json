@@ -1,0 +1,139 @@
+{
+  "name": "5d Early warning notifier",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "f8f9039f-49a6-46db-b08d-d37511057001",
+      "name": "Every minute"
+    },
+    {
+      "parameters": {
+        "url": "http://influxdb:8086/query",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "db",
+              "value": "prometheus"
+            },
+            {
+              "name": "epoch",
+              "value": "ms"
+            },
+            {
+              "name": "q",
+              "value": "SELECT \"signal\",\"minutes_to_threshold\",\"slope_per_min\",\"current\",\"level\" FROM \"early_warning\" WHERE time > now() - 30m ORDER BY time ASC"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        0
+      ],
+      "id": "eedf52f0-3ad4-4581-9f88-31e6f7f14050",
+      "name": "Query early_warning"
+    },
+    {
+      "parameters": {
+        "jsCode": "const store = $getWorkflowStaticData('global');\nconst res = $input.first().json;\nconst series = res.results && res.results[0] && res.results[0].series ? res.results[0].series[0] : null;\nif (!store.last) { store.last = Date.now(); return []; }   // first run: remember \"now\", send nothing old\nif (!series) return [];\nconst fmt = (signal, v) => {\n  v = Number(v);\n  if (signal === 'cpu') return `${(v * 100).toFixed(1)}% of one CPU core`;\n  if (signal === 'memory') return `${v.toFixed(0)} MB`;\n  return `${v.toFixed(0)} ms`;\n};\nconst out = [];\nlet newest = store.last;\nfor (const row of series.values) {\n  const r = {};\n  series.columns.forEach((c, i) => { r[c] = row[i]; });\n  if (r.time > store.last) {\n    const minutes = Math.max(1, Math.round(Number(r.minutes_to_threshold)));\n    out.push({ json: { text:\n      `Early warning: ${r.signal} is rising steadily\\n` +\n      `Now ${fmt(r.signal, r.current)}, heading for ${fmt(r.signal, r.level)} in about ${minutes} min at this pace\\n\\n` +\n      `This is a warning only. No restart or rollback is started unless the detector flags the service.` } });\n    if (r.time > newest) newest = r.time;\n  }\n}\nstore.last = newest;\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "id": "227dac7f-e679-4cec-af49-68cda7ebbdfd",
+      "name": "Build message"
+    },
+    {
+      "parameters": {
+        "chatId": "763653428",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        0
+      ],
+      "id": "4d84e043-314f-483d-b9b4-d75e0d2127ed",
+      "name": "Send warning",
+      "credentials": {
+        "telegramApi": {
+          "id": "Bvw7NQseUMpPlDDU",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every minute": {
+      "main": [
+        [
+          {
+            "node": "Query early_warning",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query early_warning": {
+      "main": [
+        [
+          {
+            "node": "Build message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build message": {
+      "main": [
+        [
+          {
+            "node": "Send warning",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "428932fd-736f-4a68-b287-9a2e483591e7",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "id": "5dEarlyWarning0001",
+  "tags": []
+}

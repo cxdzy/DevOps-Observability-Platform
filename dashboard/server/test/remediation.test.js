@@ -50,7 +50,9 @@ test("restarts come back newest first, each with its matching open incident", as
   assert.deepEqual(await res.json(), [
     {
       time: T,
+      action: "restart",
       mode: "auto",
+      outcome: "failed",
       signal: "latency",
       minutes: 3,
       service_up: 0,
@@ -58,13 +60,43 @@ test("restarts come back newest first, each with its matching open incident", as
     },
     {
       time: T - 120 * MIN,
+      action: "restart",
       mode: "approved",
+      outcome: "success",
       signal: "memory",
       minutes: 2,
       service_up: 1,
       incident: { start: T - 130 * MIN, tier: "medium", peak_score: 0.69 },
     },
   ]);
+});
+
+test("logged outcomes and rollbacks are passed through, old rows get an outcome from service_up", () => {
+  const rows = [
+    { time: T, action: "rollback", mode: "approved", outcome: "success", job: "sample-service", service_up: 1 },
+    { time: T - MIN, action: "restart", mode: "expired", outcome: "expired", job: "sample-service", service_up: 0 },
+    { time: T - 2 * MIN, action: "restart", mode: "skipped", outcome: "skipped_cooldown", job: "sample-service" },
+    { time: T - 3 * MIN, mode: "approved", job: "sample-service", service_up: 1 },
+    { time: T - 4 * MIN, mode: "auto", job: "sample-service", service_up: 0 },
+    { time: T - 5 * MIN, mode: "rejected", job: "sample-service" },
+  ];
+  const out = matchRestarts(rows, []);
+  assert.deepEqual(out.map((r) => [r.action, r.outcome]), [
+    ["rollback", "success"],
+    ["restart", "expired"],
+    ["restart", "skipped_cooldown"],
+    ["restart", "success"],
+    ["restart", "failed"],
+    ["restart", "rejected"],
+  ]);
+});
+
+test("the remediation query asks for action and outcome", async (t) => {
+  const influx = fakeInflux();
+  const get = await signedIn(t, influx.query);
+  await get("/api/remediation");
+  const q = influx.sent.find((x) => x.includes('FROM "remediation_action"'));
+  assert.match(q, /"action","mode","outcome"/);
 });
 
 test("no restarts gives an empty list", async (t) => {
