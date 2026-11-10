@@ -43,8 +43,10 @@ function pick(hours: number) {
   if (!props.inactive) value.value = hours
 }
 
-// 32 px buttons, 44 px where the main pointer is a finger. aria-disabled ones are muted.
-const base = 'rounded-lg border border-border text-foreground aria-disabled:cursor-not-allowed aria-disabled:opacity-40 [&:not([aria-disabled=true])]:hover:bg-chip'
+// 32 px buttons, 44 px where the main pointer is a finger. An aria-disabled button dims only its
+// label and icon (a muted text colour, which the icons follow, and a fainter icon), never the
+// whole button, so its focus ring stays at full strength.
+const base = 'rounded-lg border border-border text-foreground aria-disabled:cursor-not-allowed aria-disabled:text-faint [&[aria-disabled=true]_svg]:opacity-60 [&:not([aria-disabled=true])]:hover:bg-chip'
 const icon = `flex size-8 shrink-0 items-center justify-center ${base} pointer-coarse:size-11`
 </script>
 
@@ -56,7 +58,7 @@ const icon = `flex size-8 shrink-0 items-center justify-center ${base} pointer-c
           v-for="p in presets"
           :key="p.value"
           type="button"
-          class="min-h-[26px] rounded-md px-2.5 text-[13px] aria-disabled:cursor-not-allowed aria-disabled:opacity-40 pointer-coarse:min-h-11"
+          class="min-h-[26px] rounded-md px-2.5 text-[13px] aria-disabled:cursor-not-allowed aria-disabled:text-faint aria-disabled:hover:text-faint pointer-coarse:min-h-11"
           :class="value === p.value ? 'bg-card font-medium text-foreground ring-1 ring-border' : 'text-muted-foreground hover:text-foreground'"
           :aria-pressed="value === p.value"
           :aria-label="p.title"

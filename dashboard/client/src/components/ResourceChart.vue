@@ -244,6 +244,32 @@ watch(box, (el, old) => {
   el?.addEventListener('wheel', onWheel, { passive: false })
 })
 onUnmounted(() => box.value?.removeEventListener('wheel', onWheel))
+
+// A plain wheel over the chart scrolls the page (see useWheelScrollsPage below).
+useWheelScrollsPage(box)
+</script>
+
+<script lang="ts">
+import type { Ref } from 'vue'
+import { onUnmounted as onUnmountedShared, watch as watchShared } from 'vue'
+
+// ECharts' inside dataZoom cancels every wheel over the plot area, even with
+// zoomOnMouseWheel: 'ctrl', so a plain wheel would not scroll the page there. This listener runs
+// on the chart's container in the capture phase, before ECharts sees the event. A wheel without
+// Ctrl or Cmd is stopped from reaching ECharts but never cancelled, so the browser scrolls the
+// page. Ctrl + wheel (and a trackpad pinch, which arrives as Ctrl + wheel) is left alone, so
+// ECharts zooms as before. Call from a chart component's setup with the container element ref.
+export function useWheelScrollsPage(container: Ref<HTMLElement | null>) {
+  function onCapture(e: WheelEvent) {
+    if (!e.ctrlKey && !e.metaKey) e.stopPropagation()
+  }
+  const options = { capture: true, passive: true } as const
+  watchShared(container, (el, old) => {
+    old?.removeEventListener('wheel', onCapture, options)
+    el?.addEventListener('wheel', onCapture, options)
+  }, { immediate: true })
+  onUnmountedShared(() => container.value?.removeEventListener('wheel', onCapture, options))
+}
 </script>
 
 <template>
