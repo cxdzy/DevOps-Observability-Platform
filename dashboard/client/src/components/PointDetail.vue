@@ -10,6 +10,12 @@ const props = defineProps<{
   incident: Incident | null
 }>()
 
+function earlyWarning(p: AnomalyPoint): string {
+  if (p.early_warning !== 1) return 'No'
+  const minutes = p.ew_minutes === null || p.ew_minutes === undefined ? '' : `, about ${Math.max(1, Math.round(p.ew_minutes))} min to its level`
+  return `${orDash(p.ew_signal)} rising${minutes}`
+}
+
 // [label, value, shown in mono]
 const rows = computed(() => {
   const p = props.point
@@ -23,6 +29,7 @@ const rows = computed(() => {
     ['Memory', p.memory_mb === null ? '-' : `${fixed(p.memory_mb, 1)} MB`, true],
     ['Latency', p.latency_ms === null ? '-' : `${fixed(p.latency_ms, 1)} ms`, true],
     ['Recent deployment', deployed ? 'Yes' : 'No', false],
+    ['Early warning', earlyWarning(p), false],
     ['Model', orDash(p.model), true],
   ] as const
 })

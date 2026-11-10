@@ -30,6 +30,10 @@ export interface AnomalyPoint {
   latency_ms: number | null
   recent_deployment: number | boolean | null
   model: string | null
+  // Trend warning (worker): 1 when a signal is rising steadily towards its warning level. Absent on older points.
+  early_warning?: number | null
+  ew_signal?: string | null
+  ew_minutes?: number | null
 }
 
 export type IncidentStatus = 'open' | 'closed' | 'awaiting_explanation'
@@ -88,7 +92,11 @@ export type ActivityItem =
 // 60 seconds after the restart.
 export interface RemediationRow {
   time: number
+  // restart (workflow 5b) or rollback (workflow 5c)
+  action: string
   mode: string | null
+  // success, failed, expired, rejected or skipped_*; null only if nothing was logged
+  outcome: string | null
   signal: string | null
   minutes: number | null
   service_up: number | null
