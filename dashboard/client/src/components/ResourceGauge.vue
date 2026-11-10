@@ -34,7 +34,7 @@ const aria = computed(() =>
 </script>
 
 <template>
-  <div class="flex flex-col rounded-xl border border-border px-3.5 py-3">
+  <div class="flex min-w-0 flex-col rounded-xl border border-border px-3.5 py-3">
     <div class="text-[13px] text-muted-foreground">{{ label }}</div>
     <svg viewBox="0 0 120 70" class="mx-auto mt-1 block w-full max-w-[150px]" role="img" :aria-label="aria">
       <path :d="ARC" fill="none" class="stroke-track" stroke-width="10" stroke-linecap="round" />

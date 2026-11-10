@@ -133,8 +133,15 @@ function uptime(seconds: number | null): string {
   return `${(days / 7).toFixed(1)} weeks`
 }
 const pct = (share: number | null) => (share === null ? null : share * 100)
-function stamp(ms: number): string {
-  return hours.value > 24 ? `${shortDate(ms)} ${clockTime(ms)}` : clockTime(ms)
+// Both ends of the shown window. The date is included when the loaded window is 24 h or longer,
+// or the two ends fall on different calendar days, so 24 h never reads "01:10 to 01:10".
+function rangeLabel(from: number, to: number): string {
+  const a = new Date(from)
+  const b = new Date(to)
+  const sameDay = a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+  const withDate = hours.value >= 24 || !sameDay
+  const stamp = (ms: number) => (withDate ? `${shortDate(ms)} ${clockTime(ms)}` : clockTime(ms))
+  return `Showing ${stamp(from)} to ${stamp(to)}`
 }
 
 const nodeLine = computed(() => {
@@ -221,13 +228,15 @@ const visible = computed(() => {
   const len = d.end - d.start
   return { from: d.start + (len * zoom.value.start) / 100, to: d.start + (len * zoom.value.end) / 100 }
 })
-const rangeText = computed(() => (visible.value ? `Showing ${stamp(visible.value.from)} to ${stamp(visible.value.to)}` : ''))
+const rangeText = computed(() => (visible.value ? rangeLabel(visible.value.from, visible.value.to) : ''))
+const atMin = computed(() => span.value <= MIN_SPAN + 0.01)
 
 function dotClass(up: boolean | null) {
   return up === true ? 'bg-okdot' : up === false ? 'bg-red' : 'border-2 border-idle'
 }
+// The node exporter's state in words; the dot only repeats it.
 function upText(up: boolean | null) {
-  return up === true ? 'reporting' : up === false ? 'not reporting' : 'status unknown'
+  return up === true ? 'up' : up === false ? 'down' : 'status unknown'
 }
 </script>
 
@@ -246,11 +255,12 @@ function upText(up: boolean | null) {
           class="inline-flex min-h-[30px] items-center gap-[7px] rounded-md px-3 font-mono text-[13px] pointer-coarse:min-h-11"
           :class="node === n.key ? 'bg-card font-medium text-foreground ring-1 ring-border' : 'text-muted-foreground hover:text-foreground'"
           :aria-pressed="node === n.key"
+          :aria-label="`${n.displayName}, ${upText(n.up)}`"
           :title="`${n.displayName}, ${upText(n.up)}`"
           @click="node = n.key"
         >
           <span class="size-2 shrink-0 rounded-full" :class="dotClass(n.up)" aria-hidden="true" />
-          {{ n.displayName }}<span class="sr-only">, {{ upText(n.up) }}</span>
+          {{ n.displayName }}
         </button>
       </div>
       <button
@@ -281,11 +291,12 @@ function upText(up: boolean | null) {
         <span class="text-xs text-muted-foreground">Amber from 70 percent, red from 90 percent</span>
       </div>
 
-      <div v-if="!data" class="grid grid-cols-[repeat(auto-fit,minmax(min(150px,100%),1fr))] gap-3">
-        <Skeleton v-for="n in 6" :key="n" class="h-[136px] rounded-xl" />
+      <!-- Below 480 px: the Pressure card takes a full row, then the gauges two per row. -->
+      <div v-if="!data" class="grid grid-cols-[repeat(auto-fit,minmax(min(150px,100%),1fr))] gap-3 max-[480px]:grid-cols-2">
+        <Skeleton v-for="n in 6" :key="n" class="h-[136px] rounded-xl first:max-[480px]:col-span-2" />
       </div>
-      <div v-else class="grid grid-cols-[repeat(auto-fit,minmax(min(150px,100%),1fr))] gap-3">
-        <div class="flex flex-col gap-2 rounded-xl border border-border px-3.5 py-3">
+      <div v-else class="grid grid-cols-[repeat(auto-fit,minmax(min(150px,100%),1fr))] gap-3 max-[480px]:grid-cols-2">
+        <div class="flex min-w-0 flex-col gap-2 rounded-xl border border-border px-3.5 py-3 max-[480px]:col-span-2">
           <div class="text-[13px] text-muted-foreground">Pressure</div>
           <div v-for="p in pressure" :key="p.label" class="grid grid-cols-[44px_1fr_auto] items-center gap-2 text-xs">
             <span class="text-muted-foreground">{{ p.label }}</span>
@@ -320,9 +331,10 @@ function upText(up: boolean | null) {
           v-model="hours"
           :presets="PRESETS"
           :at-full="atFull"
+          :at-min="atMin"
           :at-start="zoom.start <= 0.01"
           :at-end="zoom.end >= 99.99"
-          :disabled="!data"
+          :inactive="!data"
           @zoom-in="zoomIn"
           @zoom-out="zoomOut"
           @earlier="earlier"

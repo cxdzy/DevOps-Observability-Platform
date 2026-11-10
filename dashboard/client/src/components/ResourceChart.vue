@@ -4,7 +4,7 @@ import { LineChart } from 'echarts/charts'
 import { DataZoomInsideComponent, DataZoomSliderComponent, GridComponent, TooltipComponent } from 'echarts/components'
 import { connect, use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import VChart from 'vue-echarts'
 import { MONO, useChartTheme, withAlpha } from '@/lib/chartTheme'
 import { clockTime, localDateTime, shortDate } from '@/lib/format'
@@ -124,7 +124,10 @@ const option = computed(() => {
         start: drawn.start,
         end: drawn.end,
         moveOnMouseMove: finePointer,
-        zoomOnMouseWheel: true,
+        // A plain wheel scrolls the page; Ctrl + wheel (and a trackpad pinch, which arrives as
+        // Ctrl + wheel) zooms.
+        zoomOnMouseWheel: 'ctrl',
+        moveOnMouseWheel: false,
       },
       {
         id: 'zs',
@@ -136,6 +139,9 @@ const option = computed(() => {
         end: drawn.end,
         height: 24,
         bottom: 8,
+        // Room on both sides for the handle time labels, so the end label is not clipped.
+        left: 64,
+        right: 48,
         borderColor: c.line,
         backgroundColor: 'transparent',
         fillerColor: withAlpha(c.primary, 0.12),
@@ -159,8 +165,10 @@ const option = computed(() => {
     yAxis: {
       type: 'value',
       min: 0,
+      // Percent charts: fixed 0, 25, 50, 75, 100, so no label is squeezed in under 100.
       max: props.kind === 'percent' ? 100 : undefined,
-      splitNumber: 3,
+      interval: props.kind === 'percent' ? 25 : undefined,
+      splitNumber: props.kind === 'percent' ? undefined : 3,
       axisLine: { show: false },
       splitLine: { lineStyle: { color: c.grid, type: [3, 4] } },
       axisLabel: { ...axisText, formatter: (v: number) => (props.kind === 'percent' ? `${v}%` : rate(v)) },
@@ -220,6 +228,22 @@ watch(() => props.zoom, (z) => {
 }, { deep: true })
 
 onMounted(() => connect(props.group))
+
+// The browser zooms the whole page on Ctrl + wheel. Over the plot area ECharts uses that wheel
+// to zoom the chart, so the page zoom is stopped there only; a plain wheel and Ctrl + wheel
+// outside the plot area are left alone. The listener is not passive, so preventDefault works.
+const box = ref<HTMLElement | null>(null)
+function onWheel(e: WheelEvent) {
+  if (!e.ctrlKey || !box.value) return
+  const rect = box.value.getBoundingClientRect()
+  const point = [e.clientX - rect.left, e.clientY - rect.top]
+  if (chart.value?.containPixel({ gridIndex: 0 }, point)) e.preventDefault()
+}
+watch(box, (el, old) => {
+  old?.removeEventListener('wheel', onWheel)
+  el?.addEventListener('wheel', onWheel, { passive: false })
+})
+onUnmounted(() => box.value?.removeEventListener('wheel', onWheel))
 </script>
 
 <template>
@@ -234,7 +258,7 @@ onMounted(() => connect(props.group))
       </span>
     </div>
     <p v-if="empty" class="flex h-[200px] items-center justify-center text-[13px] text-muted-foreground">No data in this window</p>
-    <div v-else :class="slider ? 'h-[240px]' : 'h-[200px]'" class="w-full" role="img" :aria-label="description">
+    <div v-else ref="box" :class="slider ? 'h-[240px]' : 'h-[200px]'" class="w-full" role="img" :aria-label="description">
       <VChart ref="chart" class="size-full" :option="option" :group="group" autoresize @datazoom="onDataZoom" />
     </div>
   </div>

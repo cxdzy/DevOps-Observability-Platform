@@ -73,7 +73,9 @@ function stubPrometheus(t, options = {}) {
   const lookup = new Map();
   for (const [key, q] of Object.entries(QUERIES)) {
     for (const [name, text] of Object.entries(q.instant)) lookup.set(text, { key, name, kind: "instant" });
-    for (const [name, text] of Object.entries(q.range)) lookup.set(text, { key, name, kind: "range" });
+    for (const preset of Object.values(q.range)) {
+      for (const [name, text] of Object.entries(preset)) lookup.set(text, { key, name, kind: "range" });
+    }
   }
   globalThis.fetch = async (url, init) => {
     const href = String(url);
@@ -236,7 +238,7 @@ test("only allow-listed strings for the chosen server are sent, all with GET", a
       assert.equal(s.method, "GET");
       assert.ok(["/api/v1/query", "/api/v1/query_range"].includes(s.path), s.path);
     }
-    const expected = [UP_QUERY, ...Object.values(QUERIES[node].instant), ...Object.values(QUERIES[node].range)];
+    const expected = [UP_QUERY, ...Object.values(QUERIES[node].instant), ...Object.values(QUERIES[node].range[6])];
     assert.deepEqual(new Set(sent.map((s) => s.query)), new Set(expected));
     // The other server's job never appears in a node query.
     const otherJob = node === "main" ? "node-exporter-old" : 'job="node-exporter"';
@@ -263,6 +265,47 @@ test("the range step is about window / 360 for every window", async (t) => {
     }
     assert.equal(body.stepSeconds, (hours * 3600) / 360);
   }
+});
+
+// The six history queries of one server with a given rate window, written out in full.
+function expectedRange(job, window) {
+  const net = 'device!~"lo|veth.*|docker.*|br-.*"';
+  const disk = 'device!~"loop.*"';
+  return [
+    `100 * (1 - avg by (job) (rate(node_cpu_seconds_total{job="${job}",mode="idle"}[${window}])))`,
+    `100 * (1 - node_memory_MemAvailable_bytes{job="${job}"} / node_memory_MemTotal_bytes{job="${job}"})`,
+    `sum by (job) (rate(node_network_receive_bytes_total{job="${job}",${net}}[${window}]))`,
+    `sum by (job) (rate(node_network_transmit_bytes_total{job="${job}",${net}}[${window}]))`,
+    `sum by (job) (rate(node_disk_read_bytes_total{job="${job}",${disk}}[${window}]))`,
+    `sum by (job) (rate(node_disk_written_bytes_total{job="${job}",${disk}}[${window}]))`,
+  ];
+}
+
+test("each preset sends exactly its range strings, with a rate window of max(5m, step)", async (t) => {
+  const sent = stubPrometheus(t);
+  const get = await signedIn(t);
+  const windows = { 1: "5m", 6: "5m", 24: "5m", 72: "12m", 168: "28m" };
+  for (const [node, job] of [["main", "node-exporter"], ["old", "node-exporter-old"]]) {
+    for (const [hours, window] of Object.entries(windows)) {
+      sent.length = 0;
+      assert.equal((await get(`/api/resources?node=${node}&hours=${hours}`)).status, 200);
+      const ranges = sent.filter((s) => s.path === "/api/v1/query_range").map((s) => s.query);
+      assert.deepEqual(ranges.sort(), expectedRange(job, window).sort(), `${node} ${hours} h`);
+      // The instant queries do not depend on the preset.
+      const instant = sent.filter((s) => s.path === "/api/v1/query").map((s) => s.query);
+      assert.deepEqual(new Set(instant), new Set([UP_QUERY, ...Object.values(QUERIES[node].instant)]));
+    }
+  }
+});
+
+test("the allow list is fixed: one string per server, preset and query, plus the instant ones", () => {
+  const instant = Object.values(QUERIES.main.instant).length + Object.values(QUERIES.old.instant).length;
+  // Per server: 5 rate queries in 3 distinct windows (5m, 12m, 28m), plus the memory query, which
+  // has no rate and is the same string in every preset.
+  const range = new Set(Object.values(QUERIES).flatMap((q) => Object.values(q.range).flatMap((p) => Object.values(p))));
+  assert.equal(range.size, 2 * (5 * 3 + 1));
+  assert.equal(new Set(ALLOWED).size, 1 + instant + range.size);
+  assert.ok(Object.isFrozen(QUERIES.main.range[168]));
 });
 
 test("the root filter and the container count match overview.js", () => {

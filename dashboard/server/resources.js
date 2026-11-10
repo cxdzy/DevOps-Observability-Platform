@@ -31,13 +31,14 @@ const INSTANT_TEMPLATES = Object.freeze({
   containers: 'count by (job) (count by (job, name) (container_memory_working_set_bytes{job="%C",name!=""}))',
 });
 
+// %W is the rate window of the chosen preset (see rateWindow).
 const RANGE_TEMPLATES = Object.freeze({
-  cpu: '100 * (1 - avg by (job) (rate(node_cpu_seconds_total{job="%J",mode="idle"}[5m])))',
+  cpu: '100 * (1 - avg by (job) (rate(node_cpu_seconds_total{job="%J",mode="idle"}[%W])))',
   memory: '100 * (1 - node_memory_MemAvailable_bytes{job="%J"} / node_memory_MemTotal_bytes{job="%J"})',
-  networkIn: `sum by (job) (rate(node_network_receive_bytes_total{job="%J",${NET_DEVICES}}[5m]))`,
-  networkOut: `sum by (job) (rate(node_network_transmit_bytes_total{job="%J",${NET_DEVICES}}[5m]))`,
-  diskRead: `sum by (job) (rate(node_disk_read_bytes_total{job="%J",${DISK_DEVICES}}[5m]))`,
-  diskWrite: `sum by (job) (rate(node_disk_written_bytes_total{job="%J",${DISK_DEVICES}}[5m]))`,
+  networkIn: `sum by (job) (rate(node_network_receive_bytes_total{job="%J",${NET_DEVICES}}[%W]))`,
+  networkOut: `sum by (job) (rate(node_network_transmit_bytes_total{job="%J",${NET_DEVICES}}[%W]))`,
+  diskRead: `sum by (job) (rate(node_disk_read_bytes_total{job="%J",${DISK_DEVICES}}[%W]))`,
+  diskWrite: `sum by (job) (rate(node_disk_written_bytes_total{job="%J",${DISK_DEVICES}}[%W]))`,
 });
 
 // Whether each server's node exporter is up, for the status dots on the node switch.
@@ -47,18 +48,38 @@ const UP_QUERY = OVERVIEW_QUERIES.up;
 const HOURS = Object.freeze([1, 6, 24, 72, 168]);
 const POINTS = 360;
 
-function fill(template, server) {
-  return template.replace(/%J/g, server.nodeJob).replace(/%C/g, server.cadvisorJob);
+// Step in seconds for a window, so the history has about POINTS points.
+function stepFor(hours) {
+  return Math.round((hours * 3600) / POINTS);
 }
 
-// Query strings per server key: { main: { instant: {...}, range: {...} }, old: {...} }.
+// Rate window of a preset: the step in whole minutes, at least 5 minutes, so each point covers
+// the time since the one before and short spikes are not skipped. 1 h, 6 h and 24 h: 5m;
+// 3 d: 12m; 7 d: 28m.
+function rateWindow(hours) {
+  return `${Math.max(5, Math.round(stepFor(hours) / 60))}m`;
+}
+
+function fill(template, server, window = "") {
+  return template.replace(/%J/g, server.nodeJob).replace(/%C/g, server.cadvisorJob).replace(/%W/g, window);
+}
+
+// Query strings per server key: { main: { instant: {...}, range: { 1: {...}, 6: {...}, ... } },
+// old: {...} }. range is keyed by preset hours, each preset with its own rate window.
 const QUERIES = Object.freeze(
   Object.fromEntries(
     SERVERS.map((s) => [
       s.key,
       Object.freeze({
         instant: Object.freeze(Object.fromEntries(Object.entries(INSTANT_TEMPLATES).map(([k, t]) => [k, fill(t, s)]))),
-        range: Object.freeze(Object.fromEntries(Object.entries(RANGE_TEMPLATES).map(([k, t]) => [k, fill(t, s)]))),
+        range: Object.freeze(
+          Object.fromEntries(
+            HOURS.map((h) => [
+              h,
+              Object.freeze(Object.fromEntries(Object.entries(RANGE_TEMPLATES).map(([k, t]) => [k, fill(t, s, rateWindow(h))]))),
+            ])
+          )
+        ),
       }),
     ])
   )
@@ -66,7 +87,10 @@ const QUERIES = Object.freeze(
 
 const ALLOWED = Object.freeze([
   UP_QUERY,
-  ...Object.values(QUERIES).flatMap((q) => [...Object.values(q.instant), ...Object.values(q.range)]),
+  ...Object.values(QUERIES).flatMap((q) => [
+    ...Object.values(q.instant),
+    ...Object.values(q.range).flatMap((preset) => Object.values(preset)),
+  ]),
 ]);
 
 function numberOrNull(value) {
@@ -76,11 +100,6 @@ function numberOrNull(value) {
 // The first value of an instant result, or null when Prometheus returned no series.
 function first(rows) {
   return rows.length ? numberOrNull(rows[0].value) : null;
-}
-
-// Step in seconds for a window, so the history has about POINTS points.
-function stepFor(hours) {
-  return Math.round((hours * 3600) / POINTS);
 }
 
 function createResources({ prometheus, now = Date.now } = {}) {
@@ -97,13 +116,14 @@ function createResources({ prometheus, now = Date.now } = {}) {
     const start = end - hours * 3600;
 
     const instantNames = Object.keys(q.instant);
-    const rangeNames = Object.keys(q.range);
+    const ranges = q.range[hours];
+    const rangeNames = Object.keys(ranges);
     // Any failed request rejects the whole load (the route answers 502). An empty result is a
     // missing metric and becomes null.
     const [upRows, instant, range] = await Promise.all([
       prom.query(UP_QUERY),
       Promise.all(instantNames.map((n) => prom.query(q.instant[n]))),
-      Promise.all(rangeNames.map((n) => prom.queryRange(q.range[n], start, end, step))),
+      Promise.all(rangeNames.map((n) => prom.queryRange(ranges[n], start, end, step))),
     ]);
     const r = Object.fromEntries(instantNames.map((n, i) => [n, instant[i]]));
     const v = (name) => first(r[name]);
@@ -159,4 +179,4 @@ function createResources({ prometheus, now = Date.now } = {}) {
   return { load };
 }
 
-module.exports = { createResources, QUERIES, ALLOWED, UP_QUERY, HOURS, POINTS, stepFor, ROOT_FS };
+module.exports = { createResources, QUERIES, ALLOWED, UP_QUERY, HOURS, POINTS, stepFor, rateWindow, ROOT_FS };
