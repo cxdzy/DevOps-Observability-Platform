@@ -32,7 +32,8 @@ REFERENCE_HOURS hours of minutes the model called normal. A reference guard stop
 model that misses anomalies from widening its own normal range: a new reference is only
 accepted if its spread is within REFERENCE_MAX_GROWTH times the smallest accepted spread
 of the last REFERENCE_ANCHOR_DAYS days (accepted references are kept in the measurement
-"reference_level").
+"reference_level"). Minutes in the REFERENCE_PRE_FLAG_MINUTES before any flagged minute are also left
+out, because a slow fault looks normal until the model flags it.
 
 Restart warm-up. A container restart resets the counters and memory, so the first minutes after it
 look unusual even though nothing is wrong. A restart is recognised by a drop in the CPU counter
@@ -115,6 +116,11 @@ MIN_REFERENCE_POINTS = int(os.environ.get("MIN_REFERENCE_POINTS", "200"))
 # the last REFERENCE_ANCHOR_DAYS days. Otherwise the last accepted reference for that signal is kept.
 REFERENCE_MEASUREMENT = os.environ.get("REFERENCE_MEASUREMENT", "reference_level")
 REFERENCE_MAX_GROWTH = float(os.environ.get("REFERENCE_MAX_GROWTH", "10"))
+# A slow fault is not flagged until it has climbed for several minutes, and those minutes look normal. Left in
+# the reference they widened the memory spread from 5 MB to 49 MB (10 to 11 November 2026), which put the
+# "memory moved" test above what a ramp reaches. Minutes in the REFERENCE_PRE_FLAG_MINUTES before any flagged
+# minute are therefore left out. This uses only the model's own flags, not the ground truth log.
+REFERENCE_PRE_FLAG_MINUTES = int(os.environ.get("REFERENCE_PRE_FLAG_MINUTES", "15"))
 REFERENCE_ANCHOR_DAYS = int(os.environ.get("REFERENCE_ANCHOR_DAYS", "7"))
 
 # Restart warm-up
@@ -235,6 +241,22 @@ def maybe_reload(client, champion):
 
 # --------------------------------------------------------------- attribution
 
+def drop_pre_flag_minutes(df, flagged_times, minutes):
+    """Removes the rows whose time is within `minutes` before a flagged minute (the flagged minute itself is
+    not in df). df needs a "time" column; flagged_times is a list of timestamps."""
+    if df.empty or "time" not in df or not len(flagged_times) or minutes <= 0:
+        return df
+    # seconds since the epoch, so time zones and pandas versions do not matter
+    to_seconds = lambda values: np.array([pd.Timestamp(v).tz_convert("UTC").timestamp() if pd.Timestamp(v).tzinfo
+                                          else pd.Timestamp(v, tz="UTC").timestamp() for v in values])
+    times = to_seconds(df["time"])
+    flagged = np.sort(to_seconds(flagged_times))
+    # the first flagged minute at or after each row; the row is dropped if it is close enough
+    pos = np.searchsorted(flagged, times, side="left")
+    nxt = np.where(pos < len(flagged), flagged[np.minimum(pos, len(flagged) - 1)], np.inf)
+    return df[~((nxt - times) <= minutes * 60)]
+
+
 def load_reference(influx, now=None):
     """Median and p99 of each signal over the last REFERENCE_HOURS hours of normal minutes.
 
@@ -250,6 +272,10 @@ def load_reference(influx, now=None):
     for column in ("warmup", "early_warning"):      # restart warm-up and rising minutes are not normal
         if column in df:
             df = df[pd.to_numeric(df[column], errors="coerce").fillna(0) == 0]
+    flag_query = (f'SELECT "is_anomaly" FROM "{SCORE_MEASUREMENT}" '
+                  f'WHERE "job" = \'{JOB}\' AND "is_anomaly" = 1 AND time >= \'{since}\'')
+    flagged_times = [p["time"] for p in influx.query(flag_query).get_points()]
+    df = drop_pre_flag_minutes(df, flagged_times, REFERENCE_PRE_FLAG_MINUTES)
     if len(df) < MIN_REFERENCE_POINTS:
         return dict(FALLBACK_REFERENCE), "fallback"
 
