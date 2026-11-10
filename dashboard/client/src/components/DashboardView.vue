@@ -8,13 +8,14 @@ import IncidentsView from '@/components/IncidentsView.vue'
 import ModelView from '@/components/ModelView.vue'
 import OverviewView from '@/components/OverviewView.vue'
 import RemediationView from '@/components/RemediationView.vue'
+import ResourcesView from '@/components/ResourcesView.vue'
 import { useRangeData } from '@/composables/useRangeData'
 
-const TABS = ['overview', 'anomaly', 'incidents', 'remediation', 'chat', 'model'] as const
+const TABS = ['overview', 'resources', 'anomaly', 'incidents', 'remediation', 'chat', 'model'] as const
 type Tab = typeof TABS[number]
-const TITLES: Record<Tab, string> = { overview: 'Overview', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', model: 'Model' }
+const TITLES: Record<Tab, string> = { overview: 'Overview', resources: 'Resources', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', model: 'Model' }
 // Breadcrumb group, the same grouping as the sidebar.
-const GROUPS: Record<Tab, string> = { overview: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', model: 'System' }
+const GROUPS: Record<Tab, string> = { overview: 'Monitoring', resources: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', model: 'System' }
 
 function tabFromHash(): Tab {
   const name = window.location.hash.slice(1)
@@ -64,7 +65,7 @@ watch([pointsFailed, incidentsFailed], ([p, i]) => { live.value = !p && !i })
 // The champion version for the sidebar, known once the Model view has loaded.
 const championVersion = ref<string | null>(null)
 
-// Overview, Remediation and Model poll on their own and report each load here.
+// Overview, Resources, Remediation and Model poll on their own and report each load here.
 function onViewRefreshed(ok: boolean) {
   live.value = ok
   if (ok) refreshedAt.value = Date.now()
@@ -105,6 +106,7 @@ function openIncident(start: number) {
       <div class="flex flex-col gap-5 p-4 md:p-6">
         <!-- v-if, so a hidden view stops polling and the chart is not drawn in a hidden box. -->
         <OverviewView v-if="tab === 'overview'" @refreshed="onViewRefreshed" />
+        <ResourcesView v-else-if="tab === 'resources'" @refreshed="onViewRefreshed" />
         <AnomalyView
           v-else-if="tab === 'anomaly'"
           v-model:hours="hours"

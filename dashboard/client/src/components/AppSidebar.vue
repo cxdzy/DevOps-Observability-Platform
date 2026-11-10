@@ -20,6 +20,8 @@ const NAV = [
     label: 'Monitoring',
     items: [
       { id: 'overview', label: 'Overview', icon: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z' },
+      // Two stacked servers.
+      { id: 'resources', label: 'Resources', icon: 'M4.5 4h15A1.5 1.5 0 0 1 21 5.5v4a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 9.5v-4A1.5 1.5 0 0 1 4.5 4zM4.5 13h15a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-4A1.5 1.5 0 0 1 4.5 13zM7 7.5h.01M7 16.5h.01' },
       { id: 'anomaly', label: 'Anomaly', icon: 'M3 12h4l3-8 4 16 3-8h4' },
       { id: 'incidents', label: 'Incidents', icon: 'M12 3 2.5 20h19zM12 10v4M12 17h.01' },
     ],

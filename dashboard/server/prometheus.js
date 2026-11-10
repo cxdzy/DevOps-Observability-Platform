@@ -1,5 +1,6 @@
-// Read-only Prometheus helper. Only instant queries (/api/v1/query) are sent, with GET, and only
-// query strings from an allow list (the constants in overview.js), never text from a request.
+// Read-only Prometheus helper. Only instant queries (/api/v1/query) and range queries
+// (/api/v1/query_range) are sent, with GET, and only query strings from an allow list (the
+// constants in overview.js and resources.js), never text from a request.
 const PROMETHEUS_URL = process.env.PROMETHEUS_URL || "http://prometheus:9090";
 const TIMEOUT_MS = 5000;
 
@@ -30,7 +31,44 @@ function createPrometheus({ allowed, url = PROMETHEUS_URL }) {
     });
   }
 
-  return { query };
+  // Range query from startSec to endSec (Unix seconds) every stepSec seconds. Returns the matrix
+  // as [{ labels, values: [[ms, number|null]] }]. The times are numbers the caller computed, never
+  // request text; anything that is not a finite number is refused before a request is sent.
+  async function queryRange(q, startSec, endSec, stepSec) {
+    if (!allowList.has(q)) {
+      throw new Error("query is not in the allow list");
+    }
+    const times = [startSec, endSec, stepSec];
+    if (!times.every((n) => typeof n === "number" && Number.isFinite(n)) || stepSec <= 0 || endSec < startSec) {
+      throw new Error("range times must be finite numbers with a positive step");
+    }
+    const params = new URLSearchParams({
+      query: q,
+      start: String(startSec),
+      end: String(endSec),
+      step: String(stepSec),
+    });
+    const res = await fetch(`${url}/api/v1/query_range?${params}`, {
+      method: "GET",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      throw new Error(`prometheus returned ${res.status}`);
+    }
+    const body = await res.json();
+    if (!body || body.status !== "success" || !body.data || body.data.resultType !== "matrix") {
+      throw new Error("prometheus returned an unexpected response");
+    }
+    return body.data.result.map((item) => ({
+      labels: { ...item.metric },
+      values: (Array.isArray(item.values) ? item.values : []).map((pair) => {
+        const n = Number(pair && pair[1]);
+        return [Number(pair && pair[0]) * 1000, Number.isFinite(n) ? n : null];
+      }),
+    }));
+  }
+
+  return { query, queryRange };
 }
 
 module.exports = { createPrometheus, PROMETHEUS_URL };

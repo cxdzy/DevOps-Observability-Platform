@@ -72,3 +72,60 @@ test("an HTTP error, an error status or a network failure rejects", async (t) =>
   mode = "network";
   await assert.rejects(prom.query(ALLOWED), /fetch failed/);
 });
+
+function matrix(result) {
+  return json({ status: "success", data: { resultType: "matrix", result } });
+}
+
+test("an allowed range query is sent with GET to /api/v1/query_range with start, end and step", async (t) => {
+  const calls = stubFetch(t, () =>
+    matrix([{ metric: { job: "node-exporter" }, values: [[1700000000, "0.5"], [1700000060, "NaN"], [1700000120, "2"]] }])
+  );
+  const prom = createPrometheus({ allowed: [ALLOWED], url: URL_BASE });
+  const rows = await prom.queryRange(ALLOWED, 1700000000, 1700000120, 60);
+  assert.deepEqual(rows, [
+    { labels: { job: "node-exporter" }, values: [[1700000000000, 0.5], [1700000060000, null], [1700000120000, 2]] },
+  ]);
+  assert.equal(calls.length, 1);
+  const sent = new URL(calls[0].url);
+  assert.equal(sent.origin + sent.pathname, `${URL_BASE}/api/v1/query_range`);
+  assert.equal(sent.searchParams.get("query"), ALLOWED);
+  assert.equal(sent.searchParams.get("start"), "1700000000");
+  assert.equal(sent.searchParams.get("end"), "1700000120");
+  assert.equal(sent.searchParams.get("step"), "60");
+  assert.equal(calls[0].init.method, "GET");
+  assert.ok(calls[0].init.signal, "a timeout signal is set");
+});
+
+test("a range query outside the allow list or with bad times is refused before any request", async (t) => {
+  const calls = stubFetch(t, () => matrix([]));
+  const prom = createPrometheus({ allowed: [ALLOWED], url: URL_BASE });
+  await assert.rejects(prom.queryRange('up{job="anything"}', 0, 60, 15), /allow list/);
+  await assert.rejects(prom.queryRange(ALLOWED, "0", 60, 15), /finite/);
+  await assert.rejects(prom.queryRange(ALLOWED, 0, NaN, 15), /finite/);
+  await assert.rejects(prom.queryRange(ALLOWED, 0, 60, 0), /positive step/);
+  await assert.rejects(prom.queryRange(ALLOWED, 120, 60, 15), /positive step/);
+  assert.equal(calls.length, 0);
+});
+
+test("a range query rejects an HTTP error, a vector answer and a network failure", async (t) => {
+  const prom = createPrometheus({ allowed: [ALLOWED], url: URL_BASE });
+  let mode = "http";
+  stubFetch(t, () => {
+    if (mode === "http") return json({ status: "error" }, 503);
+    if (mode === "vector") return json({ status: "success", data: { resultType: "vector", result: [] } });
+    throw new TypeError("fetch failed");
+  });
+  await assert.rejects(prom.queryRange(ALLOWED, 0, 60, 15), /503/);
+  mode = "vector";
+  await assert.rejects(prom.queryRange(ALLOWED, 0, 60, 15), /unexpected/);
+  mode = "network";
+  await assert.rejects(prom.queryRange(ALLOWED, 0, 60, 15), /fetch failed/);
+});
+
+test("query() still only uses /api/v1/query", async (t) => {
+  const calls = stubFetch(t, () => json({ status: "success", data: { resultType: "vector", result: [] } }));
+  const prom = createPrometheus({ allowed: [ALLOWED], url: URL_BASE });
+  await prom.query(ALLOWED);
+  assert.equal(new URL(calls[0].url).pathname, "/api/v1/query");
+});

@@ -4,7 +4,8 @@ const express = require("express");
 const helmet = require("helmet");
 const { createAuth } = require("./auth");
 const { createGoogle } = require("./google");
-const { createOverview, loadIncidents } = require("./overview");
+const { createOverview, loadIncidents, SERVERS } = require("./overview");
+const { createResources, HOURS: RESOURCE_HOURS } = require("./resources");
 const { loadRemediation } = require("./remediation");
 const { createModel } = require("./model");
 const { createChatRouter } = require("./routes/chat");
@@ -48,6 +49,7 @@ const TRUST_NOBODY = { has: () => false };
 
 // deps: { db, query, influxUrl, config, trusted, now, log, oidc, prometheus, mlflow }
 // prometheus: a client from prometheus.js; tests pass a stub. Defaults to PROMETHEUS_URL.
+// resourcesPrometheus: the same for /api/resources, which has its own allow list.
 // mlflow: a client from mlflow.js. Defaults to MLFLOW_URL.
 // config: { appOrigin, cookieSecure, sessionMaxAgeMs, googleClientId, googleClientSecret, clientDist, bcryptCost }
 // trusted: the resolved trusted proxy addresses (security.createTrustedProxies).
@@ -171,6 +173,26 @@ function createApp(deps) {
   app.get("/api/services", async (req, res) => {
     try {
       res.json(await overview.services());
+    } catch (err) {
+      res.status(502).json({ error: "prometheus unreachable" });
+    }
+  });
+
+  // Node resources of one server. node and hours must be exactly one of the fixed values; anything
+  // else is a 400 and no query is sent. The values only select constants in resources.js.
+  const resources = createResources({ prometheus: deps.resourcesPrometheus, now });
+  app.get("/api/resources", async (req, res) => {
+    const node = req.query.node === undefined ? "main" : req.query.node;
+    const rawHours = req.query.hours === undefined ? "6" : req.query.hours;
+    if (typeof node !== "string" || !SERVERS.some((s) => s.key === node)) {
+      return res.status(400).json({ error: "node must be main or old" });
+    }
+    const hours = typeof rawHours === "string" && /^\d+$/.test(rawHours) ? Number(rawHours) : NaN;
+    if (!RESOURCE_HOURS.includes(hours)) {
+      return res.status(400).json({ error: `hours must be one of ${RESOURCE_HOURS.join(", ")}` });
+    }
+    try {
+      res.json(await resources.load(node, hours));
     } catch (err) {
       res.status(502).json({ error: "prometheus unreachable" });
     }

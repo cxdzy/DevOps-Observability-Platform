@@ -31,6 +31,10 @@ export function readPalette() {
     chartline: cssVar('--chartline', '#18181B'),
     thresh: cssVar('--thresh', '#A1A1AA'),
     grid: cssVar('--grid', '#E4E4E7'),
+    // Second line in a chart, and the 70 and 90 percent thresholds (DESIGN.md section 7.1).
+    series2: cssVar('--series2', '#2563EB'),
+    amber: cssVar('--amber', '#D97706'),
+    red: cssVar('--red', '#DC2626'),
     tiers: {
       low: cssVar(TIER_STYLE.low.markerVar, '#2563EB'),
       medium: cssVar(TIER_STYLE.medium.markerVar, '#D97706'),

@@ -135,3 +135,45 @@ export interface ModelInfo {
   mlflowOk: boolean
   influxOk: boolean
 }
+
+// GET /api/resources?node=main|old&hours=1|6|24|72|168: node resources of one server from
+// Prometheus. Null means Prometheus returned no value for that metric.
+export type ResourceSeries = [number, number | null][]
+export interface ResourcesInfo {
+  key: 'main' | 'old'
+  displayName: string
+  hostname: string | null
+  role: string
+  provider: string
+  location: string
+  hours: number
+  stepSeconds: number
+  // The history window in ms.
+  start: number
+  end: number
+  // Both servers, for the status dots on the node switch. up is null when Prometheus has no value.
+  nodes: { key: 'main' | 'old', displayName: string, up: boolean | null }[]
+  // Shares from 0 to 1, except pressure, which is percent of the last minute spent waiting.
+  // swapUsed is null when the server reports no swap.
+  now: {
+    cpuBusy: number | null
+    loadPerCore: number | null
+    memoryUsed: number | null
+    swapUsed: number | null
+    diskUsed: number | null
+    pressure: { cpu: number | null, memory: number | null, io: number | null }
+  }
+  facts: {
+    cores: number | null
+    memoryTotalBytes: number | null
+    swapTotalBytes: number | null
+    rootSizeBytes: number | null
+    uptimeSeconds: number | null
+    containers: number | null
+  }
+  // cpu and memory in percent, network and disk in bytes per second.
+  history: Record<'cpu' | 'memory' | 'networkIn' | 'networkOut' | 'diskRead' | 'diskWrite', ResourceSeries>
+}
+
+// Zoom window of a chart in percent of its loaded window, 0 to 100.
+export interface ZoomWindow { start: number, end: number }

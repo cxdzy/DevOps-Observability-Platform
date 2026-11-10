@@ -63,6 +63,16 @@
     --color-grid: var(--grid);
     --color-track: var(--track);
     --color-idle: var(--idle);
+    /* DESIGN.md section 7.1. */
+    --color-warn: var(--warn);
+    --color-warnbg: var(--warnbg);
+    --color-warnfg: var(--warnfg);
+    --color-warnring: var(--warnring);
+    --color-strip: var(--strip);
+    --color-stripup: var(--stripup);
+    --color-series2: var(--series2);
+    --color-amber: var(--amber);
+    --color-red: var(--red);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
     --radius-lg: var(--radius);
@@ -101,6 +111,16 @@
     --grid: #E4E4E7;
     --track: #E4E4E7;
     --idle: #A1A1AA;
+    /* DESIGN.md section 7.1: early warning (purple, never a tier), strips, second chart line, gauge thresholds. */
+    --warn: #7C3AED;
+    --warnbg: #F5F3FF;
+    --warnfg: #6D28D9;
+    --warnring: #DDD6FE;
+    --strip: #D4D4D8;
+    --stripup: #BBF7D0;
+    --series2: #2563EB;
+    --amber: #D97706;
+    --red: #DC2626;
 
     --background: var(--side);
     --foreground: var(--ink);
@@ -165,6 +185,15 @@
     --grid: #252C36;
     --track: #252C36;
     --idle: #6E7B89;
+    --warn: #B49CFF;
+    --warnbg: #241B3D;
+    --warnfg: #CDBEFF;
+    --warnring: #3B2E63;
+    --strip: #2F3843;
+    --stripup: #1F4A2E;
+    --series2: #58A6FF;
+    --amber: #F0A83C;
+    --red: #FF6B6B;
 
     --background: var(--side);
     --foreground: var(--ink);
