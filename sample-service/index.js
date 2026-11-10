@@ -29,6 +29,11 @@ register.registerMetric(httpRequestDuration);
 let memoryLeakBuffers = [];
 let artificialLatencyMs = 0;
 
+// ROLLBACK DEMO ONLY. This release carries a performance regression: every normal request is slowed
+// down. It exists to show the high tier end to end (deployment, latency flagged, approval, rollback to
+// the previous image). Revert the commit that adds it once the demo is over.
+const RELEASE_LATENCY_MS = 600;
+
 app.use((req, res, next) => {
   const start = Date.now();
   res.on('finish', () => {
@@ -39,10 +44,11 @@ app.use((req, res, next) => {
   next();
 });
 
-// Apply artificial latency to all non-simulate requests, if a latency-spike is active
+// Apply artificial latency to all non-simulate requests, if a latency-spike is active (and the demo release delay)
 app.use((req, res, next) => {
-  if (artificialLatencyMs > 0 && !req.path.startsWith('/simulate')) {
-    setTimeout(next, artificialLatencyMs);
+  const delay = artificialLatencyMs + RELEASE_LATENCY_MS;
+  if (delay > 0 && !req.path.startsWith('/simulate')) {
+    setTimeout(next, delay);
   } else {
     next();
   }
