@@ -42,8 +42,8 @@ the training data. Without this, a successful automatic restart would raise a ne
 
 Early warning. Before the model flags a minute, the worker fits a straight line to the last
 TREND_MINUTES minutes of each signal. If the line rises steadily (R squared at least EW_MIN_R2, total rise
-at least EW_MIN_RISE_DEV normal spreads) and would reach the "moved" level (DEV_MIN spreads above normal)
-within EW_HORIZON_MIN minutes, the minute gets early_warning = 1 with the estimated minutes to that level.
+at least EW_MIN_RISE_DEV normal spreads) and would reach its warning level (DEV_MIN spreads above normal,
+EW_MEMORY_LEVEL_DEV for memory) within EW_HORIZON_MIN minutes, the minute gets early_warning = 1 with the estimated minutes to that level.
 An early warning never changes the tier or the action. The first minute of each warning is also written
 to the measurement "early_warning" so it can be notified once.
 
@@ -125,6 +125,11 @@ TREND_MINUTES = int(os.environ.get("TREND_MINUTES", "5"))                 # minu
 EW_MIN_R2 = float(os.environ.get("EW_MIN_R2", "0.85"))                    # how straight the rise must be
 EW_MIN_RISE_DEV = float(os.environ.get("EW_MIN_RISE_DEV", "1.5"))         # total rise in the window, in normal spreads
 EW_HORIZON_MIN = float(os.environ.get("EW_HORIZON_MIN", "10"))            # warn only if the level is this close
+# The level a rising signal is warned about. CPU and latency use DEV_MIN, the level at which the signal counts as
+# moved. Memory does not: its normal spread is tiny (the 5 MB floor), so DEV_MIN is only about 15 MB above normal,
+# which a leak passes within a minute or two, while the model flagged the first minute of ten slow leaks only
+# after about 60 MB (12 spreads), 10 to 11 minutes in (report of 9 to 10 November 2026: 1 of 10 ramps warned).
+EW_MEMORY_LEVEL_DEV = float(os.environ.get("EW_MEMORY_LEVEL_DEV", "12"))
 EW_RENOTIFY_MINUTES = int(os.environ.get("EW_RENOTIFY_MINUTES", "10"))   # one early_warning point per episode
 EW_MEASUREMENT = os.environ.get("EW_MEASUREMENT", "early_warning")
 
@@ -382,7 +387,7 @@ def trend_warning(window, reference):
             continue
         ss_tot = float(((y - y.mean()) ** 2).sum())
         r2 = 1.0 - float(((y - (slope * x + intercept)) ** 2).sum()) / ss_tot if ss_tot > 0 else 0.0
-        level = median + DEV_MIN * spread
+        level = median + (EW_MEMORY_LEVEL_DEV if name == "memory" else DEV_MIN) * spread
         if r2 < EW_MIN_R2 or slope * (n - 1) < EW_MIN_RISE_DEV * spread or y[-1] >= level:
             continue
         minutes = (level - y[-1]) / slope
