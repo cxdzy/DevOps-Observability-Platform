@@ -209,7 +209,7 @@ const cell = 'px-[18px] py-3'
                 </span>
                 <span v-else class="text-muted-foreground">No matching incident</span>
               </td>
-              <td :class="cell">{{ modeLabel(row.mode) }}</td>
+              <td :class="cell">{{ ran(row) ? modeLabel(row.mode) : '-' }}</td>
               <td :class="cell">
                 <span class="inline-flex items-center gap-1.5" :class="outcomeInfo(row).tone === 'bad' ? 'text-tier-high-fg' : outcomeInfo(row).tone === 'quiet' ? 'text-muted-foreground' : ''">
                   <svg v-if="outcomeInfo(row).tone === 'ok'" class="size-3.5 text-ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12l6 6L20 6" /></svg>
