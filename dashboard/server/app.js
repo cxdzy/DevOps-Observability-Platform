@@ -10,6 +10,7 @@ const { loadRemediation } = require("./remediation");
 const { loadEvents } = require("./events");
 const { loadEvaluation, parseParams: parseEvaluationParams } = require("./evaluation");
 const { loadStatus } = require("./status");
+const { loadDrift, DAYS: DRIFT_DAYS } = require("./drift");
 const { loadTimeline, parseParams: parseTimelineParams } = require("./timeline");
 const { createModel } = require("./model");
 const { createChatRouter } = require("./routes/chat");
@@ -261,6 +262,20 @@ function createApp(deps) {
       const result = await loadEvents(query, hours);
       if (!result) return res.status(502).json({ error: "influxdb unreachable" });
       res.json(result);
+    } catch (err) {
+      res.status(502).json({ error: "influxdb unreachable" });
+    }
+  });
+
+  // Drift view. days must be exactly one of the fixed values; anything else is a 400 and no query is sent.
+  app.get("/api/drift", async (req, res) => {
+    const raw = req.query.days === undefined ? "30" : req.query.days;
+    const days = typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : NaN;
+    if (!DRIFT_DAYS.includes(days)) {
+      return res.status(400).json({ error: `days must be one of ${DRIFT_DAYS.join(", ")}` });
+    }
+    try {
+      res.json(await loadDrift(query, days, now()));
     } catch (err) {
       res.status(502).json({ error: "influxdb unreachable" });
     }

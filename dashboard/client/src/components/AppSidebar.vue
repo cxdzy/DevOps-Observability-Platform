@@ -38,6 +38,8 @@ const NAV = [
     items: [
       // A bar chart with a check mark.
       { id: 'evaluation', label: 'Evaluation', icon: 'M4 20V10M10 20V4M16 20v-7M3 20h18M18 5l1.5 1.5L22 4' },
+      // A line over a column of bars.
+      { id: 'drift', label: 'Drift', icon: 'M4 20V10M10 20V6M16 20v-8M3 8l5-3 5 4 7-5' },
     ],
   },
   {

@@ -376,3 +376,62 @@ export interface Evaluation {
   // Counts over everything stored, for the objectives table. null when they could not be read.
   evidence: { ci_deployments: number, explanations: number, actions: { ran: number, restart_worked: number, rollback_worked: number } } | null
 }
+
+// GET /api/drift?days=7|14|30|60 (dashboard/server/drift.js). Times are ms. Rates are fractions from 0 to 1.
+export interface DriftDay {
+  // Start of the UTC day.
+  day: number
+  // The run of detection_report.py --save the day came from, or null when it has no readable run time.
+  run: number | null
+  // False alarms over normal minutes, or null when the day had no normal minutes.
+  rate: number | null
+  false_alarms: number | null
+  normal_minutes: number | null
+  scored_minutes: number | null
+  flagged_minutes: number | null
+  injections: number | null
+}
+
+// An accepted detection reference of the worker (measurement reference_level), written every 30 minutes.
+export interface DriftReference {
+  time: number
+  memory_median: number | null
+  memory_p99: number | null
+  cpu_median: number | null
+  cpu_p99: number | null
+  latency_median: number | null
+  latency_p99: number | null
+  // Signals whose new reference the worker's guard refused (for example latency_ms).
+  rejected: string[]
+}
+
+export interface DriftPromotion {
+  time: number
+  old_version: string | null
+  new_version: string | null
+  // Test F1 of the old champion and of the new model on the same test minutes.
+  old_f1: number | null
+  new_f1: number | null
+}
+
+// A run of consecutive days above the false alarm threshold. end is the end of the last day.
+export interface DriftEpisode {
+  start: number
+  end: number
+  days: number
+  peak_rate: number
+  false_alarms: number
+}
+
+export interface DriftResponse {
+  days: DriftDay[]
+  reference: DriftReference[]
+  latest_reference: DriftReference | null
+  promotions: DriftPromotion[]
+  episodes: DriftEpisode[]
+  // The false alarm rate above which a day counts toward an episode.
+  episode_rate: number
+  // Start of the first requested day and end of the last, in ms.
+  from: number
+  to: number
+}
