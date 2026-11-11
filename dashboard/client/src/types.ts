@@ -48,6 +48,8 @@ export interface Incident {
   start: number
   end: number
   status: IncidentStatus
+  // The job tag the explainer stored with the incident; null when the row has none.
+  job: string | null
   tier: string | null
   action: string | null
   signal: string | null

@@ -50,10 +50,10 @@ const EXPECTED = [
 // InfluxDB queries for the activity list.
 const INCIDENT_HOURS = 168;
 const EXPLANATION_QUERY =
-  'SELECT "tier","action","signal","peak_score","minutes","source","deployment","explanation" ' +
+  'SELECT "tier","action","signal","peak_score","minutes","source","deployment","explanation","job" ' +
   'FROM "incident_explanation" WHERE time > now() - %Hh ORDER BY time ASC';
 const OPEN_QUERY =
-  'SELECT "tier","tier_level","action","signal","peak_score","minutes","deployment" ' +
+  'SELECT "tier","tier_level","action","signal","peak_score","minutes","deployment","job" ' +
   'FROM "incident_open" WHERE time > now() - %Hh ORDER BY time ASC';
 // Only real deployments from the CI workflow; the fault injector writes source=simulated.
 const DEPLOY_QUERY =

@@ -13,9 +13,6 @@ const STATUS_CLASS: Record<IncidentStatus, string> = {
   closed: 'bg-chip text-chipfg',
   awaiting_explanation: 'bg-chip text-chipfg',
 }
-// The incident list does not carry the job, and the pipeline monitors one service, the explainer's
-// and worker's default JOB. The timeline route needs it, so it is set here until the list returns it.
-const JOB = 'sample-service'
 const SOURCE_LABEL: Record<string, string> = { llm: 'LLM', template: 'Template' }
 
 // The explainer writes three labelled lines. When all three are there they get their own
@@ -69,7 +66,9 @@ const facts = computed(() => {
         </div>
       </dl>
 
-      <IncidentTimeline :start="incident.start" :job="JOB" :tier="incident.tier" />
+      <!-- The timeline is looked up by start and job; an incident stored without a job has none. -->
+      <IncidentTimeline v-if="incident.job" :start="incident.start" :job="incident.job" :tier="incident.tier" />
+      <p v-else class="text-[13px] text-muted-foreground">Timeline not available, no job recorded</p>
 
       <div v-if="sections" class="flex flex-col gap-3.5">
         <div>

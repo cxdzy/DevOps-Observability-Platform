@@ -6,6 +6,7 @@
 // yet (remediation_action is written only when the request is answered), so there is nothing to show.
 
 const { outcomeOf, familyOf } = require("./events");
+const { matchRestarts, MATCH_WINDOW_MS: ACTION_MATCH_MS } = require("./remediation");
 
 const MINUTE = 60000;
 // The window around an incident: this long before the start and after the end.
@@ -79,12 +80,44 @@ function parseParams(query, nowMs) {
   return { start, job: rawJob };
 }
 
-// The window in ms for an incident that started at start and has minutes flagged minutes.
-function windowOf(start, minutes) {
-  const end = start + Math.max(0, minutes) * MINUTE;
+// The window in ms for an incident from start to end (see incidentEnd): from 30 minutes before the
+// start to 20 minutes after the end, but never later than 6 hours after the start.
+function windowOf(start, end) {
   const from = start - BEFORE_MS;
-  const to = Math.min(end + AFTER_MS, from + MAX_WINDOW_MS);
+  const to = Math.min(Math.max(start, end) + AFTER_MS, start + MAX_WINDOW_MS);
   return { from, to, end };
+}
+
+// The end of an incident. The explanation's end_time when it is stored (the explainer's last
+// flagged minute). Otherwise the last is_anomaly = 1 minute for this job at or after the start and
+// before the next incident_open for the same job, so a long incident with few flagged minutes still
+// gets its whole span. Without either, start plus its flagged minutes. flagged is any list of
+// anomaly_score rows; nextStart is the next incident's start or null.
+function incidentEnd(start, minutes, explanation, flagged, nextStart) {
+  const stored = explanation ? Date.parse(text(explanation.end_time) || "") : NaN;
+  if (Number.isFinite(stored)) return Math.round(stored);
+  let last = null;
+  for (const p of flagged || []) {
+    if (!valid(p) || !isFlagged(p)) continue;
+    const t = num(p.time);
+    if (t < start || (nextStart !== null && t >= nextStart)) continue;
+    if (last === null || t > last) last = t;
+  }
+  return last !== null ? last : start + Math.max(0, minutes) * MINUTE;
+}
+
+// The actions that belong to this incident: each remediation_action row is matched to an incident
+// the same way the Remediation view does it (matchRestarts in remediation.js: same job, the latest
+// incident that started at or before the action and at most 30 minutes earlier), and only the rows
+// matched to this incident's start (within the open-row tolerance) are kept. Rollback rows follow
+// the same rule, so "Rollback not run" depends only on this incident. opens are the incident_open
+// rows for the job around the window; rows from InfluxDB are filtered by job already, so job is set
+// on both before matching. Returns rows oldest first in the shape buildSteps reads.
+function ownActions(actions, opens, start, job) {
+  const withJob = (rows) => (rows || []).filter(valid).map((r) => ({ ...r, job }));
+  return matchRestarts(withJob(actions), withJob(opens))
+    .filter((a) => a.incident && Math.abs(a.incident.start - start) <= OPEN_MATCH_MS)
+    .sort((a, b) => a.time - b.time);
 }
 
 const valid = (r) => r && num(r.time) !== null;
@@ -336,10 +369,34 @@ async function loadTimeline(query, requested, job) {
   const start = Math.round(num(open.time));
   const s = String(start);
   const minutes = Math.max(0, Math.round(num(open.minutes) || 0));
-  const { from, to } = windowOf(start, minutes);
+  const latest = String(start + MAX_WINDOW_MS);
+
+  // Second round: what decides the end, and the incidents an action could be matched to (an action
+  // can answer an incident that started up to 30 minutes before it, so the list starts that much
+  // before the window).
+  const [explanations, opens, flagged] = await Promise.all([
+    query(
+      'SELECT "end_time","source","attempts","minutes" FROM "incident_explanation" ' +
+        `WHERE "job" = '${job}' AND time >= ${String(start - EXPLANATION_MATCH_MS)}ms AND time <= ${String(start + EXPLANATION_MATCH_MS)}ms ORDER BY time ASC`
+    ),
+    query(
+      'SELECT "tier","peak_score" FROM "incident_open" ' +
+        `WHERE "job" = '${job}' AND time >= ${String(start - BEFORE_MS - ACTION_MATCH_MS)}ms AND time <= ${latest}ms ORDER BY time ASC`
+    ),
+    query(
+      'SELECT "is_anomaly","warmup" FROM "anomaly_score" ' +
+        `WHERE "job" = '${job}' AND "is_anomaly" = 1 AND time >= ${s}ms AND time <= ${latest}ms ORDER BY time ASC`
+    ),
+  ]);
+  const explanation = nearestRow(explanations, start);
+  const next = (opens || []).filter(valid).map((r) => num(r.time)).filter((x) => x > start + OPEN_MATCH_MS);
+  const nextStart = next.length ? Math.min(...next) : null;
+  const end = incidentEnd(start, minutes, explanation, flagged, nextStart);
+  const { from, to } = windowOf(start, end);
   const f = String(from);
-  const t = String(to);
-  const [scores, warnings, actions, explanations] = await Promise.all([
+  const t = String(Math.round(to));
+
+  const [scores, warnings, actions] = await Promise.all([
     query(
       'SELECT "score","threshold","is_anomaly","tier","tier_level","signal","cpu_rate","memory_mb","latency_ms","recent_deployment","model","early_warning","ew_signal","ew_minutes","ew_slope","ew_r2","warmup" ' +
         `FROM "anomaly_score" WHERE "job" = '${job}' AND time >= ${f}ms AND time <= ${t}ms ORDER BY time ASC`
@@ -352,16 +409,12 @@ async function loadTimeline(query, requested, job) {
       'SELECT "action","mode","outcome","signal","minutes","service_up" FROM "remediation_action" ' +
         `WHERE "job" = '${job}' AND time >= ${f}ms AND time <= ${t}ms ORDER BY time ASC`
     ),
-    query(
-      'SELECT "end_time","source","attempts","minutes" FROM "incident_explanation" ' +
-        `WHERE "job" = '${job}' AND time >= ${String(start - EXPLANATION_MATCH_MS)}ms AND time <= ${String(start + EXPLANATION_MATCH_MS)}ms ORDER BY time ASC`
-    ),
   ]);
   const steps = buildSteps({ ...open, time: start }, {
     scores,
     warning: warnings.find(valid) || null,
-    actions,
-    explanation: nearestRow(explanations, start),
+    actions: ownActions(actions, opens, start, job),
+    explanation,
   });
   return {
     start,
@@ -376,4 +429,4 @@ async function loadTimeline(query, requested, job) {
   };
 }
 
-module.exports = { parseParams, windowOf, buildSteps, loadTimeline, QUIET_MINUTES_TO_CLOSE };
+module.exports = { parseParams, windowOf, incidentEnd, ownActions, buildSteps, loadTimeline, QUIET_MINUTES_TO_CLOSE };

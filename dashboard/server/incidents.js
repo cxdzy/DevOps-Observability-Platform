@@ -23,6 +23,8 @@ function toIncident(row, status, explanation) {
     start,
     end: start + minutes * 60000,
     status,
+    // The job tag of the incident_explanation or incident_open row, null when it is missing.
+    job: text(row.job),
     tier: text(row.tier),
     action: text(row.action),
     signal: text(row.signal),

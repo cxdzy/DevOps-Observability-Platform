@@ -23,7 +23,7 @@ test("closed only", () => {
   const out = mergeIncidents([expl(T0)], [], T0 + 60 * MIN);
   assert.equal(out.length, 1);
   assert.deepEqual(out[0], {
-    start: T0, end: T0 + 6 * MIN, status: "closed", tier: "medium", action: "restart",
+    start: T0, end: T0 + 6 * MIN, status: "closed", job: null, tier: "medium", action: "restart",
     signal: "memory", peakScore: 0.71, minutes: 6, deployment: false, source: "llm",
     explanation: "Line one.\nLine two.",
   });
@@ -68,6 +68,21 @@ test("awaiting_explanation after the window", () => {
   // minutes 3, so the window ends at start + 8 minutes
   assert.equal(mergeIncidents([], [open(T0)], T0 + 8 * MIN - 1)[0].status, "open");
   assert.equal(mergeIncidents([], [open(T0)], T0 + 8 * MIN)[0].status, "awaiting_explanation");
+});
+
+test("each incident carries the job of its row, or null when the row has none", () => {
+  const out = mergeIncidents(
+    [expl(T0, { job: "sample-service" }), expl(T0 + 20 * MIN, { job: "" })],
+    [open(T0 + 40 * MIN, { job: "other-service" }), open(T0 + 60 * MIN)],
+    T0 + 61 * MIN
+  );
+  const byStart = Object.fromEntries(out.map((i) => [i.start, i.job]));
+  assert.deepEqual(byStart, {
+    [T0]: "sample-service",
+    [T0 + 20 * MIN]: null,
+    [T0 + 40 * MIN]: "other-service",
+    [T0 + 60 * MIN]: null,
+  });
 });
 
 test("null and missing fields do not throw", () => {

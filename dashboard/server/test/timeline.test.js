@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startApp } = require("./helpers");
-const { buildSteps, parseParams, windowOf } = require("../timeline");
+const { buildSteps, parseParams, windowOf, incidentEnd, ownActions } = require("../timeline");
 
 const MIN = 60000;
 // The test app's clock starts at this time (see helpers.js).
@@ -32,10 +32,42 @@ function scores(extra = {}) {
 const open = (extra) => ({ time: START, tier: "medium", action: "restart", minutes: 2, deployment: 0, ...extra });
 const kinds = (steps) => steps.map((s) => s.kind);
 
-test("windowOf runs from 30 min before to 20 min after the end, capped at 6 h", () => {
-  assert.deepEqual(windowOf(START, 5), { from: START - 30 * MIN, to: START + 25 * MIN, end: START + 5 * MIN });
-  const long = windowOf(START, 1000);
-  assert.equal(long.to - long.from, 6 * 60 * MIN);
+test("windowOf runs from 30 min before the start to 20 min after the end, capped at start plus 6 h", () => {
+  assert.deepEqual(windowOf(START, START + 5 * MIN), { from: START - 30 * MIN, to: START + 25 * MIN, end: START + 5 * MIN });
+  assert.equal(windowOf(START, START + 1000 * MIN).to, START + 6 * 60 * MIN);
+  assert.equal(windowOf(START, START + 340 * MIN).to, START + 6 * 60 * MIN);
+  assert.equal(windowOf(START, START + 339 * MIN).to, START + 359 * MIN);
+});
+
+test("incidentEnd uses the stored end_time, else the last flag before the next incident, else the flagged minutes", () => {
+  const flags = [flagged(0), flagged(1), flagged(40), flagged(95), flagged(130), score(140, { is_anomaly: 1, warmup: 1 })];
+  // The explanation's end_time wins.
+  const iso = new Date(START + 50 * MIN).toISOString();
+  assert.equal(incidentEnd(START, 2, { time: START, end_time: iso }, flags, null), START + 50 * MIN);
+  // Without it, the last flagged minute; warm-up minutes are never flags.
+  assert.equal(incidentEnd(START, 2, null, flags, null), START + 130 * MIN);
+  // A later incident_open for the same job ends the search.
+  assert.equal(incidentEnd(START, 2, null, flags, START + 100 * MIN), START + 95 * MIN);
+  // An end_time that is not a date is ignored; flags before the start are not counted.
+  assert.equal(incidentEnd(START, 2, { end_time: "soon" }, [flagged(-3), flagged(1)], null), START + MIN);
+  // No flags at all: start plus the flagged minutes.
+  assert.equal(incidentEnd(START, 3, null, [], null), START + 3 * MIN);
+});
+
+test("ownActions keeps only the actions matched to this incident", () => {
+  const opens = [{ time: START }, { time: START + 20 * MIN }];
+  const actions = [
+    { time: START + 5 * MIN, action: "restart", mode: "approved", outcome: "success", service_up: 1 },
+    { time: START + 25 * MIN, action: "restart", mode: "expired", outcome: "expired" },
+    { time: START + 26 * MIN, action: "rollback", mode: "skipped", outcome: "skipped_no_deployment" },
+    // Before both incidents, so it answers neither.
+    { time: START - 10 * MIN, action: "restart", mode: "expired", outcome: "expired" },
+  ];
+  assert.deepEqual(ownActions(actions, opens, START, JOB).map((a) => a.time), [START + 5 * MIN]);
+  assert.deepEqual(ownActions(actions, opens, START + 20 * MIN, JOB).map((a) => a.time), [START + 25 * MIN, START + 26 * MIN]);
+  // The open-row tolerance applies: a stored start 60 s off still owns its actions.
+  assert.deepEqual(ownActions(actions, [{ time: START + MIN }], START, JOB).map((a) => a.time), [START + 5 * MIN, START + 25 * MIN, START + 26 * MIN]);
+  assert.deepEqual(ownActions([], opens, START, JOB), []);
 });
 
 test("a full incident gives every step in time order", () => {
@@ -285,18 +317,71 @@ test("the route returns the window's minutes and the steps", async (t) => {
   assert.equal(body.tier, "medium");
   assert.equal(body.deployment, false);
   assert.equal(body.from, START - 30 * MIN);
-  assert.equal(body.to, START + 2 * MIN + 20 * MIN);
+  // No end_time stored, so the end is the last flagged minute (minute 1).
+  assert.equal(body.to, START + MIN + 20 * MIN);
   assert.equal(body.points.length, 18);
   assert.deepEqual(kinds(body.steps), ["early_warning", "first_flag", "incident_open", "incident_closed", "explanation", "rollback_not_run"]);
   assert.equal(body.steps.find((s) => s.kind === "explanation").detail, "Template used after 3 attempts with the local LLM.");
 
   // Constant InfluxQL with only the validated numbers and job.
-  assert.equal(sent.length, 5);
+  const sixHours = START + 6 * 60 * MIN;
+  assert.equal(sent.length, 7);
   assert.equal(sent[0], `SELECT "tier","action","signal","peak_score","minutes","deployment" FROM "incident_open" WHERE "job" = 'sample-service' AND time >= ${START - 2 * MIN}ms AND time <= ${START + 2 * MIN}ms ORDER BY time ASC`);
-  assert.ok(sent.some((q) => q.includes(`FROM "anomaly_score" WHERE "job" = 'sample-service' AND time >= ${START - 30 * MIN}ms AND time <= ${START + 22 * MIN}ms ORDER BY time ASC`)));
+  assert.ok(sent.includes(`SELECT "end_time","source","attempts","minutes" FROM "incident_explanation" WHERE "job" = 'sample-service' AND time >= ${START - 2 * MIN}ms AND time <= ${START + 2 * MIN}ms ORDER BY time ASC`));
+  assert.ok(sent.includes(`SELECT "tier","peak_score" FROM "incident_open" WHERE "job" = 'sample-service' AND time >= ${START - 60 * MIN}ms AND time <= ${sixHours}ms ORDER BY time ASC`));
+  assert.ok(sent.includes(`SELECT "is_anomaly","warmup" FROM "anomaly_score" WHERE "job" = 'sample-service' AND "is_anomaly" = 1 AND time >= ${START}ms AND time <= ${sixHours}ms ORDER BY time ASC`));
+  assert.ok(sent.some((q) => q.includes(`FROM "anomaly_score" WHERE "job" = 'sample-service' AND time >= ${START - 30 * MIN}ms AND time <= ${START + 21 * MIN}ms ORDER BY time ASC`)));
   assert.ok(sent.some((q) => q.includes(`FROM "early_warning" WHERE "job" = 'sample-service' AND time >= ${START - 30 * MIN}ms AND time <= ${START}ms ORDER BY time DESC LIMIT 1`)));
-  assert.ok(sent.some((q) => q.includes(`FROM "remediation_action" WHERE "job" = 'sample-service' AND time >= ${START - 30 * MIN}ms AND time <= ${START + 22 * MIN}ms`)));
-  assert.ok(sent.some((q) => q.includes(`FROM "incident_explanation" WHERE "job" = 'sample-service' AND time >= ${START - 2 * MIN}ms AND time <= ${START + 2 * MIN}ms`)));
+  assert.ok(sent.some((q) => q.includes(`FROM "remediation_action" WHERE "job" = 'sample-service' AND time >= ${START - 30 * MIN}ms AND time <= ${START + 21 * MIN}ms`)));
+});
+
+test("a long incident with few flagged minutes gets its whole window", async (t) => {
+  // Two flagged minutes are counted, but the last flag comes 90 minutes after the start.
+  const rows = [flagged(0), score(1), score(45), flagged(90), score(91)];
+  const { query } = fakeInflux({ rows: { incident_open: [open({ minutes: 2 })], anomaly_score: rows } });
+  const { get } = await signedIn(t, query);
+  const body = await (await get(URL())).json();
+  assert.equal(body.to, START + 90 * MIN + 20 * MIN);
+  assert.deepEqual(body.points.map((p) => p.time), rows.map((p) => p.time));
+});
+
+test("the stored end_time sets the window end, capped at start plus 6 h", async (t) => {
+  const late = new Date(START + 7 * 60 * MIN).toISOString();
+  const { query } = fakeInflux({ rows: { incident_open: [open()], incident_explanation: [{ time: START, end_time: late, source: "llm", attempts: 1 }] } });
+  const { get } = await signedIn(t, query);
+  const body = await (await get(URL())).json();
+  assert.equal(body.to, START + 6 * 60 * MIN);
+});
+
+test("two incidents close together each show only their own actions and rollback state", async (t) => {
+  const B = START + 20 * MIN;
+  const { query } = fakeInflux({
+    rows: {
+      incident_open: [open(), open({ time: B, tier: "high", deployment: 1, action: "rollback" })],
+      anomaly_score: [flagged(0), flagged(1), score(5), flagged(20), flagged(21), score(30)],
+      remediation_action: [
+        { time: START + 5 * MIN, action: "restart", mode: "approved", outcome: "success", service_up: 1 },
+        { time: B + 3 * MIN, action: "rollback", mode: "skipped", outcome: "skipped_simulated" },
+        { time: B + 4 * MIN, action: "restart", mode: "expired", outcome: "expired" },
+      ],
+    },
+  });
+  const { get } = await signedIn(t, query);
+
+  const a = await (await get(URL())).json();
+  assert.equal(a.start, START);
+  // The last flag before the next incident ends incident A.
+  assert.equal(a.to, START + MIN + 20 * MIN);
+  const aActions = a.steps.filter((s) => s.kind === "action");
+  assert.deepEqual(aActions.map((s) => [s.time, s.title]), [[START + 5 * MIN, "Approved"]]);
+  // B's rollback row does not count for A.
+  assert.ok(a.steps.some((s) => s.kind === "rollback_not_run"));
+
+  const b = await (await get(URL(B))).json();
+  assert.equal(b.start, B);
+  const bActions = b.steps.filter((s) => s.kind === "action");
+  assert.deepEqual(bActions.map((s) => [s.time, s.title]), [[B + 3 * MIN, "Skipped, simulated incident"], [B + 4 * MIN, "Expired"]]);
+  assert.ok(!b.steps.some((s) => s.kind === "rollback_not_run"));
 });
 
 test("the open row is matched within 2 minutes, nearest first, and its stored start is used", async (t) => {
