@@ -141,11 +141,12 @@ function kindKey(e: EventItem): string {
   if (e.kind === 'action') return `action:${(e.detail.action ?? 'action').toLowerCase()}:${familyOf(e)}`
   return e.kind
 }
-function kindWords(key: string, n: number): string {
+// signals lists the early-warning signals of the pill, for example "memory".
+function kindWords(key: string, n: number, signals: string[] = []): string {
   const s = n === 1 ? '' : 's'
   if (key === 'deploy') return `${n} deployment${s}`
   if (key === 'retrain') return `${n} retraining run${s}`
-  if (key === 'early_warning') return `${n} early warning${s}`
+  if (key === 'early_warning') return `${n} early warning${s}${signals.length ? ` (${signals.join(', ')})` : ''}`
   if (key === 'incident') return `${n} incident${s}`
   const [, action, family] = key.split(':')
   return `${n} ${action}${s} ${FAMILY_WORDS[family as keyof typeof FAMILY_WORDS]}`
@@ -189,14 +190,15 @@ const markers = computed<Marker[]>(() => {
     list.sort((a, b) => a.event.time - b.event.time)
     const start = w.left + k * slot
     const items = list.map(i => i.event)
-    // One event: centred on its true x. Only on a side whose neighbouring slot is taken is it kept
-    // inside its own slot; next to an empty slot it may reach into it, which still leaves at
-    // least the gap to any marker beyond. More events: one pill centred on the slot.
+    // A marker or pill is centred on the true x of its lead event (the only event, or the most
+    // important one). Only on a side whose neighbouring slot is taken is it kept inside its own
+    // slot; next to an empty slot it may reach into it, which still leaves at least the gap to any
+    // marker beyond.
+    const leadAt = list.reduce((best, i) => (rank(i.event) < rank(best.event) ? i : best), list[0])
     const lo = bySlot.has(k - 1) ? start + half + pad : -Infinity
     const hi = bySlot.has(k + 1) ? start + slot - half - pad : Infinity
-    const x = list.length === 1 ? Math.min(hi, Math.max(lo, list[0].x)) : start + slot / 2
-    const lead = items.reduce((best, e) => (rank(e) < rank(best) ? e : best), items[0])
-    out.push({ key: eventKey(items[0]), x, items, lead })
+    const x = Math.min(hi, Math.max(lo, leadAt.x))
+    out.push({ key: eventKey(items[0]), x, items, lead: leadAt.event })
   }
   return out
 })
@@ -214,7 +216,8 @@ function markerLabel(m: Marker): string {
       counts.set(k, { n: 1, rank: rank(e) })
     }
   }
-  const kinds = [...counts.entries()].sort((a, b) => a[1].rank - b[1].rank).map(([k, c]) => kindWords(k, c.n))
+  const signals = [...new Set(m.items.filter(e => e.kind === 'early_warning').map(e => signalName(e.detail.signal)))]
+  const kinds = [...counts.entries()].sort((a, b) => a[1].rank - b[1].rank).map(([k, c]) => kindWords(k, c.n, signals))
   return `${m.items.length} events: ${kinds.join(', ')}, ${stamp(m.items[0].time)} to ${stamp(m.items[m.items.length - 1].time)}`
 }
 
@@ -351,9 +354,14 @@ Shape.props = { event: { type: Object, required: true }, small: { type: Boolean,
       >
         <span
           v-if="m.items.length > 1"
-          class="flex size-full flex-col items-center justify-center gap-px rounded-md bg-card ring-1 ring-border"
+          class="relative flex size-full flex-col items-center justify-center gap-px rounded-md bg-card ring-1 ring-border"
           aria-hidden="true"
         >
+          <!-- The pill holds an early warning but shows another kind: a 6 px warn dot at the top right. -->
+          <span
+            v-if="m.lead.kind !== 'early_warning' && m.items.some(e => e.kind === 'early_warning')"
+            class="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-warn ring-[1.5px] ring-card"
+          />
           <Shape :event="m.lead" small />
           <span class="font-mono text-[9px] leading-none text-foreground pointer-coarse:text-[11px]">{{ countText(m.items.length) }}</span>
         </span>
