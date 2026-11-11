@@ -294,7 +294,7 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
         <p v-if="events.failed.value && !events.loaded.value" class="mt-2 text-xs text-muted-foreground" role="status">
           Events could not be loaded. Retrying in 30 s.
         </p>
-        <EventLane v-else class="mt-2" :events="events.data.value.events" :window="laneWindow" :unavailable="events.data.value.unavailable" />
+        <EventLane v-else class="mt-2" :events="events.data.value.events" :window="laneWindow" :unavailable="events.data.value.unavailable" :truncated="events.data.value.truncated === true" />
         <div class="mt-3 flex justify-end">
           <ChartToolbar
             v-model="chartHours"

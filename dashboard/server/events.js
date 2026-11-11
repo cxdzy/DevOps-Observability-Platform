@@ -2,7 +2,10 @@
 // remediation actions. Each source is queried on its own, so one failing source leaves only its
 // own events out. buildEvents is a pure function so it can be unit tested without HTTP.
 
-const MAX_EVENTS = 200;
+// The most events one response holds. Over it, the oldest incidents and actions go first, so the
+// rare deployments, retrains and early warnings stay on the lane.
+const MAX_EVENTS = 2000;
+const KEPT_KINDS = new Set(["deploy", "retrain", "early_warning"]);
 
 function num(value) {
   if (value === null || value === undefined || value === "") return null;
@@ -107,8 +110,20 @@ function actionEvent(r) {
 
 const valid = (r) => r && num(r.time) !== null;
 
+// Keeps at most max events. Incidents and actions are dropped oldest first; deployments, retrains
+// and early warnings are dropped (oldest first) only when they alone are more than max.
+// events must be sorted by time. Returns { events, truncated }.
+function capEvents(events, max = MAX_EVENTS) {
+  if (events.length <= max) return { events, truncated: false };
+  const kept = events.filter((e) => KEPT_KINDS.has(e.kind));
+  const rest = events.filter((e) => !KEPT_KINDS.has(e.kind));
+  const chosen = kept.length >= max ? kept.slice(kept.length - max) : [...kept, ...rest.slice(rest.length - (max - kept.length))];
+  chosen.sort((a, b) => a.time - b.time);
+  return { events: chosen, truncated: true };
+}
+
 // rows: { deploy, retrain, warning, incident, action }, each an array of rows or missing.
-// Returns the events sorted by time, newest 200 kept.
+// Returns { events, truncated }: the events sorted by time, capped by capEvents.
 function buildEvents(rows) {
   const events = [
     ...(rows.deploy || []).filter(valid).filter((r) => r.source === "ci").map(deployEvent),
@@ -118,7 +133,7 @@ function buildEvents(rows) {
     ...(rows.action || []).filter(valid).map(actionEvent),
   ];
   events.sort((a, b) => a.time - b.time);
-  return events.length > MAX_EVENTS ? events.slice(events.length - MAX_EVENTS) : events;
+  return capEvents(events);
 }
 
 // hours is a validated integer from the route, never request text.
@@ -140,7 +155,8 @@ async function loadEvents(query, hours) {
     else unavailable.push(sources[i][1]);
   });
   if (unavailable.length === sources.length) return null;
-  return { events: buildEvents(rows), unavailable };
+  const { events, truncated } = buildEvents(rows);
+  return truncated ? { events, unavailable, truncated } : { events, unavailable };
 }
 
-module.exports = { loadEvents, buildEvents, outcomeOf, familyOf, MAX_EVENTS };
+module.exports = { loadEvents, buildEvents, capEvents, outcomeOf, familyOf, MAX_EVENTS };

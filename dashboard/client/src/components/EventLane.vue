@@ -2,10 +2,15 @@
 // A thin lane under a time-series chart with one marker per event (deployment, retraining, early
 // warning, incident, automatic action). The chart reports its visible time range and the insets
 // of its plot area, so the lane follows the chart's zoom without a second time scale. The lane
-// must sit in a container as wide as the chart canvas. Markers closer than 8 px merge into one
-// "+n" button. Each marker is a real button that opens a small dialog with the details.
+// must sit in a container as wide as the chart canvas.
+//
+// The plot width is cut into equal slots, each one marker wide plus a 4 px gap (28 px with a
+// mouse, 48 px on a touch screen). Every event goes into the slot that holds its x position. A
+// slot with one event draws that event's marker; a slot with more draws one "+n" pill. A marker
+// always fits inside its own slot, so no two markers overlap at any width, and the slots are cut
+// again on every zoom, pan, resize and poll, so zooming in splits the pills.
 import type { EventItem, ChartWindow } from '@/types'
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, h, nextTick, onMounted, onUnmounted, ref, watch, type FunctionalComponent } from 'vue'
 import { clockTime, localDateTime, shortDate } from '@/lib/format'
 import { TIER_SHAPE, toTier } from '@/lib/tier'
 
@@ -14,15 +19,27 @@ const props = defineProps<{
   window: ChartWindow | null
   // Sources the server could not read; shown as a muted note under the lane.
   unavailable?: string[]
+  // The server dropped the oldest incidents and actions to stay under its cap.
+  truncated?: boolean
 }>()
 
-const GROUP_PX = 8
+const GAP_PX = 4
+const MARKER_FINE_PX = 24
+const MARKER_COARSE_PX = 44
 const POPOVER_PX = 288
+const GROUP_LIST_MAX = 20
 
 const root = ref<HTMLElement | null>(null)
 const lane = ref<HTMLElement | null>(null)
 const width = ref(0)
 let observer: ResizeObserver | undefined
+
+// The slot size follows the main pointer, the same rule as the pointer-coarse classes below.
+const coarseQuery = typeof window !== 'undefined' ? window.matchMedia('(pointer: coarse)') : null
+const coarse = ref(coarseQuery?.matches ?? false)
+function onPointerChange(e: MediaQueryListEvent) { coarse.value = e.matches }
+const markerPx = computed(() => (coarse.value ? MARKER_COARSE_PX : MARKER_FINE_PX))
+const slotPx = computed(() => markerPx.value + GAP_PX)
 
 onMounted(() => {
   if (lane.value) {
@@ -30,10 +47,12 @@ onMounted(() => {
     observer = new ResizeObserver(() => { width.value = lane.value?.clientWidth ?? 0 })
     observer.observe(lane.value)
   }
+  coarseQuery?.addEventListener('change', onPointerChange)
   document.addEventListener('pointerdown', onOutside)
 })
 onUnmounted(() => {
   observer?.disconnect()
+  coarseQuery?.removeEventListener('change', onPointerChange)
   document.removeEventListener('pointerdown', onOutside)
 })
 
@@ -103,45 +122,115 @@ function describe(e: EventItem): { title: string, lines: string[] } {
   return { title, lines }
 }
 
-interface Item { event: EventItem, x: number }
-interface Marker { key: string, x: number, items: Item[] }
+// How important an event is for a pill's look, lowest first: deployment, ran-and-failed action,
+// early warning, high, medium and low incident (then an incident without a tier), retraining,
+// other actions.
+function rank(e: EventItem): number {
+  if (e.kind === 'deploy') return 0
+  if (e.kind === 'action' && familyOf(e) === 'failed') return 1
+  if (e.kind === 'early_warning') return 2
+  if (e.kind === 'incident') return { high: 3, medium: 4, low: 5, none: 6 }[toTier(e.detail.tier)]
+  if (e.kind === 'retrain') return 7
+  return 8
+}
+
+// The words for one kind in a pill's label, singular and plural. Actions are named with their
+// outcome family, for example "restart not run".
+function kindKey(e: EventItem): string {
+  if (e.kind === 'action') return `action:${(e.detail.action ?? 'action').toLowerCase()}:${familyOf(e)}`
+  return e.kind
+}
+function kindWords(key: string, n: number): string {
+  const s = n === 1 ? '' : 's'
+  if (key === 'deploy') return `${n} deployment${s}`
+  if (key === 'retrain') return `${n} retraining run${s}`
+  if (key === 'early_warning') return `${n} early warning${s}`
+  if (key === 'incident') return `${n} incident${s}`
+  const [, action, family] = key.split(':')
+  return `${n} ${action}${s} ${FAMILY_WORDS[family as keyof typeof FAMILY_WORDS]}`
+}
+
+const eventKey = (e: EventItem) => `${e.kind}-${e.time}`
+
+interface Marker {
+  // The key of the slot's oldest event, so a marker keeps its identity while that event stays.
+  key: string
+  x: number
+  // Oldest first.
+  items: EventItem[]
+  // The event whose shape and colour a pill shows.
+  lead: EventItem
+}
 
 const markers = computed<Marker[]>(() => {
   const w = props.window
   if (!w || w.end <= w.start) return []
   const plot = width.value - w.left - w.right
   if (plot <= 0) return []
-  const items: Item[] = props.events
-    .filter(e => e.time >= w.start && e.time <= w.end)
-    .sort((a, b) => a.time - b.time)
-    .map(event => ({ event, x: w.left + ((event.time - w.start) / (w.end - w.start)) * plot }))
-  // Left to right: an event joins the open group while it is under 8 px from the group's last
-  // event, so two neighbouring markers always end up at least 8 px apart. The key is the group's
-  // first event, so an open dialog stays open when a poll or a zoom does not change that event.
+  // Equal slots, each at least one marker plus the gap wide, so a marker fits inside its slot.
+  const count = Math.max(1, Math.floor(plot / slotPx.value))
+  const slot = plot / count
+  const half = Math.min(markerPx.value, slot) / 2
+  // Half the gap stays free on each side of a slot, so markers in neighbouring slots never touch.
+  const pad = Math.min(GAP_PX / 2, slot / 2 - half)
+  const span = w.end - w.start
+  const bySlot = new Map<number, { x: number, event: EventItem }[]>()
+  for (const event of props.events) {
+    if (event.time < w.start || event.time > w.end) continue
+    const x = w.left + ((event.time - w.start) / span) * plot
+    const k = Math.min(count - 1, Math.max(0, Math.floor((x - w.left) / slot)))
+    const list = bySlot.get(k)
+    if (list) list.push({ x, event })
+    else bySlot.set(k, [{ x, event }])
+  }
   const out: Marker[] = []
-  for (const item of items) {
-    const last = out[out.length - 1]
-    if (last && item.x - last.items[last.items.length - 1].x < GROUP_PX) {
-      last.items.push(item)
-      last.x = last.items.reduce((sum, i) => sum + i.x, 0) / last.items.length
-    } else {
-      out.push({ key: `${item.event.kind}-${item.event.time}`, x: item.x, items: [item] })
-    }
+  for (const [k, list] of [...bySlot.entries()].sort((a, b) => a[0] - b[0])) {
+    list.sort((a, b) => a.event.time - b.event.time)
+    const start = w.left + k * slot
+    const items = list.map(i => i.event)
+    // One event: centred on its true x, kept inside its slot. More: centred on the slot.
+    const x = list.length === 1
+      ? Math.min(start + slot - half - pad, Math.max(start + half + pad, list[0].x))
+      : start + slot / 2
+    const lead = items.reduce((best, e) => (rank(e) < rank(best) ? e : best), items[0])
+    out.push({ key: eventKey(items[0]), x, items, lead })
   }
   return out
 })
 
 function markerLabel(m: Marker): string {
-  if (m.items.length === 1) return ariaLabel(m.items[0].event)
-  return `${m.items.length} events from ${stamp(m.items[0].event.time)} to ${stamp(m.items[m.items.length - 1].event.time)}`
+  if (m.items.length === 1) return ariaLabel(m.items[0])
+  const counts = new Map<string, { n: number, rank: number }>()
+  for (const e of m.items) {
+    const k = kindKey(e)
+    const c = counts.get(k)
+    if (c) {
+      c.n++
+      c.rank = Math.min(c.rank, rank(e))
+    } else {
+      counts.set(k, { n: 1, rank: rank(e) })
+    }
+  }
+  const kinds = [...counts.entries()].sort((a, b) => a[1].rank - b[1].rank).map(([k, c]) => kindWords(k, c.n))
+  return `${m.items.length} events: ${kinds.join(', ')}, ${stamp(m.items[0].time)} to ${stamp(m.items[m.items.length - 1].time)}`
 }
 
-// The open dialog: which marker, and the button to give focus back to.
-const openKey = ref<string | null>(null)
-let opener: HTMLElement | null = null
+// The count on a pill, shortened so it fits the pill: the exact number is in its label.
+function countText(n: number): string {
+  const max = coarse.value ? 999 : 99
+  return n > max ? `${max}+` : `+${n}`
+}
+
+// The open dialog is tied to one event (the oldest event of the marker that opened it), not to a
+// slot, so it stays open while that event is visible even when a poll or a zoom regroups the slots.
+const openEvent = ref<string | null>(null)
 const dialog = ref<HTMLElement | null>(null)
 
-const openMarker = computed(() => markers.value.find(m => m.key === openKey.value) ?? null)
+const openMarker = computed(() => {
+  const key = openEvent.value
+  if (key === null) return null
+  return markers.value.find(m => m.items.some(e => eventKey(e) === key)) ?? null
+})
 const dialogLeft = computed(() => {
   const m = openMarker.value
   if (!m) return 0
@@ -149,40 +238,53 @@ const dialogLeft = computed(() => {
   return Math.max(0, Math.min(width.value - w, m.x - w / 2))
 })
 const dialogWidth = computed(() => Math.min(POPOVER_PX, width.value))
+// A group lists its newest events first, at most GROUP_LIST_MAX of them.
+const groupList = computed(() => (openMarker.value ? openMarker.value.items.slice().reverse().slice(0, GROUP_LIST_MAX) : []))
+const groupMore = computed(() => (openMarker.value ? Math.max(0, openMarker.value.items.length - GROUP_LIST_MAX) : 0))
 
-function toggle(m: Marker, e: MouseEvent) {
-  if (openKey.value === m.key) {
+// The marker button that holds the open event; looked up each time, because a regrouping can
+// replace the button.
+function openButton(): HTMLElement | null {
+  const m = openMarker.value
+  if (!m || !root.value) return null
+  return root.value.querySelector<HTMLElement>(`[data-marker="${CSS.escape(m.key)}"]`)
+}
+
+function toggle(m: Marker) {
+  if (openMarker.value && openMarker.value.key === m.key) {
     close(false)
     return
   }
-  openKey.value = m.key
-  opener = e.currentTarget as HTMLElement
+  openEvent.value = eventKey(m.items[0])
   nextTick(() => dialog.value?.focus())
 }
 function close(refocus: boolean) {
-  openKey.value = null
-  if (refocus) opener?.focus()
+  const button = refocus ? openButton() : null
+  openEvent.value = null
+  button?.focus()
 }
-// The marker left the window (a zoom or a new poll): close its dialog, so it does not open again
-// by itself later, and give focus back to the marker button if it is still on the page.
+// The event left the window (a zoom or a new poll): close its dialog, so it does not open again
+// by itself later. If focus was in the lane, it goes back to the lane.
 watch(openMarker, (m) => {
-  if (openKey.value === null || m) return
+  if (openEvent.value === null || m) return
   const hadFocus = root.value?.contains(document.activeElement) ?? false
-  openKey.value = null
-  if (hadFocus) nextTick(() => { if (opener?.isConnected) opener.focus() })
+  openEvent.value = null
+  if (hadFocus) nextTick(() => lane.value?.querySelector<HTMLElement>('button')?.focus())
 })
+// A regrouping that replaces the open marker's button while the dialog has focus keeps focus in
+// the dialog; Escape then finds the new button through openButton.
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && openKey.value) {
+  if (e.key === 'Escape' && openEvent.value) {
     e.stopPropagation()
     close(true)
   }
 }
 function onOutside(e: Event) {
-  if (openKey.value && root.value && !root.value.contains(e.target as Node)) close(false)
+  if (openEvent.value && root.value && !root.value.contains(e.target as Node)) close(false)
 }
 function onFocusout(e: FocusEvent) {
   const next = e.relatedTarget as Node | null
-  if (openKey.value && next && root.value && !root.value.contains(next)) close(false)
+  if (openEvent.value && next && root.value && !root.value.contains(next)) close(false)
 }
 
 const TIER_TEXT = { none: 'text-idle', low: 'text-tier-low-marker', medium: 'text-tier-medium-marker', high: 'text-tier-high-marker' } as const
@@ -191,6 +293,37 @@ const PILL = {
   failed: 'border-solid border-red bg-tier-high-bg text-tier-high-fg',
   not_run: 'border-dashed border-faint bg-chip text-chipfg',
 } as const
+
+// The shape of one event (DESIGN.md 7.4). small is the reduced shape drawn inside a "+n" pill.
+const svgAttrs = { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' }
+const Shape: FunctionalComponent<{ event: EventItem, small?: boolean }> = ({ event, small }) => {
+  const size = small ? 'size-2.5 pointer-coarse:size-3' : 'size-3.5'
+  if (event.kind === 'deploy') {
+    return h('svg', { ...svgAttrs, class: `${size} text-foreground`, 'stroke-width': '2.2' }, [
+      h('rect', { x: '3', y: '3', width: '18', height: '18', rx: '3' }),
+      h('path', { d: 'M12 17V8m-4 4 4-4 4 4' }),
+    ])
+  }
+  if (event.kind === 'retrain') {
+    return h('svg', { ...svgAttrs, class: `${size} text-foreground`, 'stroke-width': '2.2' }, [
+      h('path', { d: 'M12 2.5 20.5 7.25v9.5L12 21.5l-8.5-4.75v-9.5z' }),
+    ])
+  }
+  if (event.kind === 'early_warning') {
+    return h('svg', { ...svgAttrs, class: `${size} text-warn`, 'stroke-width': '3' }, [h('path', { d: 'm5 16 7-8 7 8' })])
+  }
+  if (event.kind === 'incident') {
+    const tier = toTier(event.detail.tier)
+    return h('svg', { viewBox: '0 0 12 12', fill: 'currentColor', 'aria-hidden': 'true', class: `${size} ${TIER_TEXT[tier]}` }, [h('path', { d: TIER_SHAPE[tier] })])
+  }
+  const family = familyOf(event)
+  const mark = family === 'worked' ? 'm5 12.5 4.5 4.5L19 7.5' : family === 'failed' ? 'm6 6 12 12M18 6 6 18' : 'M6 12h12'
+  const box = small ? 'h-3 min-w-3 pointer-coarse:h-3.5 pointer-coarse:min-w-3.5 px-px' : 'h-5 min-w-5 px-1'
+  return h('span', { class: `inline-flex items-center justify-center rounded-full border ${box} ${PILL[family]}`, 'aria-hidden': 'true' }, [
+    h('svg', { ...svgAttrs, class: small ? 'size-2' : 'size-3', 'stroke-width': '3' }, [h('path', { d: mark })]),
+  ])
+}
+Shape.props = ['event', 'small']
 </script>
 
 <template>
@@ -204,36 +337,23 @@ const PILL = {
         v-for="m in markers"
         :key="m.key"
         type="button"
-        class="absolute top-1/2 flex min-h-6 min-w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-md pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+        :data-marker="m.key"
+        class="absolute top-1/2 flex size-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-md pointer-coarse:size-11"
         :style="{ left: `${m.x}px` }"
         :aria-label="markerLabel(m)"
-        :aria-expanded="openKey === m.key"
+        :aria-expanded="openMarker?.key === m.key"
         aria-haspopup="dialog"
-        @click="toggle(m, $event)"
+        @click="toggle(m)"
       >
-        <span v-if="m.items.length > 1" class="inline-flex h-5 items-center rounded-full bg-card px-1.5 font-mono text-[11px] text-foreground ring-1 ring-border" aria-hidden="true">
-          +{{ m.items.length }}
+        <span
+          v-if="m.items.length > 1"
+          class="flex size-full flex-col items-center justify-center gap-px rounded-md bg-card ring-1 ring-border"
+          aria-hidden="true"
+        >
+          <Shape :event="m.lead" small />
+          <span class="font-mono text-[9px] leading-none text-foreground pointer-coarse:text-[11px]">{{ countText(m.items.length) }}</span>
         </span>
-        <svg v-else-if="m.items[0].event.kind === 'deploy'" class="size-3.5 text-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="3" y="3" width="18" height="18" rx="3" />
-          <path d="M12 17V8m-4 4 4-4 4 4" />
-        </svg>
-        <svg v-else-if="m.items[0].event.kind === 'retrain'" class="size-3.5 text-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" aria-hidden="true">
-          <path d="M12 2.5 20.5 7.25v9.5L12 21.5l-8.5-4.75v-9.5z" />
-        </svg>
-        <svg v-else-if="m.items[0].event.kind === 'early_warning'" class="size-3.5 text-warn" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="m5 16 7-8 7 8" />
-        </svg>
-        <svg v-else-if="m.items[0].event.kind === 'incident'" class="size-3.5" :class="TIER_TEXT[toTier(m.items[0].event.detail.tier)]" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-          <path :d="TIER_SHAPE[toTier(m.items[0].event.detail.tier)]" />
-        </svg>
-        <span v-else class="inline-flex h-5 min-w-5 items-center justify-center rounded-full border px-1" :class="PILL[familyOf(m.items[0].event)]" aria-hidden="true">
-          <svg class="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-            <path v-if="familyOf(m.items[0].event) === 'worked'" d="m5 12.5 4.5 4.5L19 7.5" />
-            <path v-else-if="familyOf(m.items[0].event) === 'failed'" d="m6 6 12 12M18 6 6 18" />
-            <path v-else d="M6 12h12" />
-          </svg>
-        </span>
+        <Shape v-else :event="m.items[0]" />
       </button>
 
       <div
@@ -241,22 +361,36 @@ const PILL = {
         ref="dialog"
         role="dialog"
         tabindex="-1"
-        :aria-label="openMarker.items.length > 1 ? `${openMarker.items.length} events` : describe(openMarker.items[0].event).title"
-        class="absolute top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-lg bg-card p-3 text-[13px] text-foreground shadow-sm ring-1 ring-border"
+        :aria-label="openMarker.items.length > 1 ? `${openMarker.items.length} events` : describe(openMarker.items[0]).title"
+        class="absolute top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-lg bg-card p-3 text-[13px] text-foreground shadow-sm ring-1 ring-border pointer-coarse:mt-3"
         :style="{ left: `${dialogLeft}px`, width: `${dialogWidth}px` }"
       >
-        <ul class="flex flex-col gap-2.5">
-          <li v-for="(it, i) in openMarker.items" :key="i">
-            <div class="font-semibold">{{ describe(it.event).title }}</div>
-            <div class="font-mono text-xs text-muted-foreground">{{ localDateTime(it.event.time) }}</div>
-            <ul v-if="describe(it.event).lines.length" class="mt-0.5 text-xs text-muted-foreground">
-              <li v-for="line in describe(it.event).lines" :key="line">{{ line }}</li>
-            </ul>
-          </li>
-        </ul>
+        <template v-if="openMarker.items.length === 1">
+          <div class="font-semibold">{{ describe(openMarker.items[0]).title }}</div>
+          <div class="font-mono text-xs text-muted-foreground">{{ localDateTime(openMarker.items[0].time) }}</div>
+          <ul v-if="describe(openMarker.items[0]).lines.length" class="mt-0.5 text-xs text-muted-foreground">
+            <li v-for="line in describe(openMarker.items[0]).lines" :key="line">{{ line }}</li>
+          </ul>
+        </template>
+        <template v-else>
+          <div class="mb-1.5 font-semibold">{{ openMarker.items.length }} events, newest first</div>
+          <ul class="flex flex-col gap-1">
+            <li v-for="e in groupList" :key="eventKey(e)" class="flex items-center gap-2 text-xs">
+              <span class="flex w-5 shrink-0 justify-center"><Shape :event="e" small /></span>
+              <span class="shrink-0 font-mono text-muted-foreground">{{ stamp(e.time) }}</span>
+              <span class="min-w-0 truncate">{{ e.label }}</span>
+            </li>
+          </ul>
+          <p v-if="groupMore > 0" class="mt-1.5 text-xs text-muted-foreground">
+            and {{ groupMore }} more, zoom in to see them
+          </p>
+        </template>
       </div>
     </div>
 
+    <p v-if="truncated" class="text-xs text-muted-foreground">
+      Showing the newest {{ events.length }} events; zoom in or pick a shorter range
+    </p>
     <p v-if="unavailable && unavailable.length" class="text-xs text-muted-foreground" role="status">
       Some events could not be loaded: {{ unavailable.join(', ') }}.
     </p>

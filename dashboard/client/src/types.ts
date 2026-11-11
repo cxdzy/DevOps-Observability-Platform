@@ -222,10 +222,12 @@ export interface EventItem {
 }
 
 // GET /api/events?hours=N. unavailable names the sources that could not be read, for example
-// "deployments" or "retraining".
+// "deployments" or "retraining". truncated is true when the server dropped the oldest incidents
+// and actions to stay under its 2000-event cap.
 export interface EventsResponse {
   events: EventItem[]
   unavailable: string[]
+  truncated?: boolean
 }
 
 // The visible time range of a chart and the pixel insets of its plot area from the left and

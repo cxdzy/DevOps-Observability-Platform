@@ -52,6 +52,7 @@ const status = ref<StatusInfo | null>(null)
 const statusFailed = ref(false)
 const events = ref<EventItem[]>([])
 const unavailable = ref<string[]>([])
+const truncated = ref(false)
 const eventsFailed = ref(false)
 const eventsLoaded = ref(false)
 
@@ -72,6 +73,7 @@ async function load() {
   if (e.status === 'fulfilled' && Array.isArray(e.value.data?.events)) {
     events.value = e.value.data.events
     unavailable.value = Array.isArray(e.value.data.unavailable) ? e.value.data.unavailable : []
+    truncated.value = e.value.data.truncated === true
     eventsFailed.value = false
     eventsLoaded.value = true
   } else {
@@ -89,6 +91,7 @@ watch(hours, () => {
   zoom.value = { ...FULL }
   events.value = []
   unavailable.value = []
+  truncated.value = false
   eventsFailed.value = false
   eventsLoaded.value = false
   laneWindow.value = null
@@ -195,7 +198,7 @@ const warning = 'rounded-lg bg-tier-medium-bg p-2.5 text-[13px] text-tier-medium
           <p v-if="eventsFailed && !eventsLoaded" class="mt-2 text-xs text-muted-foreground" role="status">
             Events could not be loaded. Retrying in 30 s.
           </p>
-          <EventLane v-else class="mt-2" :events="events" :window="laneWindow" :unavailable="unavailable" />
+          <EventLane v-else class="mt-2" :events="events" :window="laneWindow" :unavailable="unavailable" :truncated="truncated" />
         </template>
       </section>
       <PointDetail class="min-w-0 flex-[1_1_280px]" :point="point" :incident="incident" />

@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startApp } = require("./helpers");
 const { matchRestarts } = require("../remediation");
-const { outcomeOf, familyOf, buildEvents } = require("../events");
+const { outcomeOf, familyOf, buildEvents, MAX_EVENTS } = require("../events");
 
 const NOW = Date.UTC(2026, 9, 30, 8, 0, 0);
 const MIN = 60000;
@@ -88,7 +88,7 @@ test("a mixed response is sorted by time with kinds, labels and details", async 
 });
 
 test("missing values are null, never guessed", () => {
-  const events = buildEvents({
+  const { events } = buildEvents({
     deploy: [{ time: NOW, source: "ci" }],
     warning: [{ time: NOW + 1 }],
     incident: [{ time: NOW + 2 }],
@@ -99,7 +99,7 @@ test("missing values are null, never guessed", () => {
 });
 
 test("simulated deployments are never returned", () => {
-  const events = buildEvents({
+  const { events } = buildEvents({
     deploy: [
       { time: NOW - MIN, commit_sha: "aaaaaaa1", source: "simulated" },
       { time: NOW, commit_sha: "bbbbbbb2", source: "ci" },
@@ -109,13 +109,63 @@ test("simulated deployments are never returned", () => {
   assert.equal(events[0].detail.shortCommit, "bbbbbbb");
 });
 
-test("the 200 cap keeps the newest events", () => {
-  const rows = [];
-  for (let i = 0; i < 250; i++) rows.push({ time: NOW + i * MIN, signal: "cpu" });
-  const events = buildEvents({ warning: rows });
-  assert.equal(events.length, 200);
+test("the cap is 2000 events", () => {
+  assert.equal(MAX_EVENTS, 2000);
+});
+
+test("at the cap nothing is dropped and truncated is false", () => {
+  const incident = [];
+  for (let i = 0; i < MAX_EVENTS; i++) incident.push({ time: NOW + i * MIN, tier: "low" });
+  const { events, truncated } = buildEvents({ incident });
+  assert.equal(events.length, MAX_EVENTS);
+  assert.equal(truncated, false);
+});
+
+test("over the cap the newest are kept and truncated is true", () => {
+  const incident = [];
+  for (let i = 0; i < MAX_EVENTS + 50; i++) incident.push({ time: NOW + i * MIN, tier: "low" });
+  const { events, truncated } = buildEvents({ incident });
+  assert.equal(truncated, true);
+  assert.equal(events.length, MAX_EVENTS);
   assert.equal(events[0].time, NOW + 50 * MIN);
-  assert.equal(events[199].time, NOW + 249 * MIN);
+  assert.equal(events[MAX_EVENTS - 1].time, NOW + (MAX_EVENTS + 49) * MIN);
+});
+
+test("over the cap the oldest incidents and actions go first, never deployments, retrains or warnings", () => {
+  // The rare kinds are the oldest rows, so a plain newest-first cut would drop them.
+  const deploy = [{ time: NOW, commit_sha: "aaaaaaa1", source: "ci" }];
+  const retrain = [{ time: NOW + MIN, promoted: 0, champion_version: "3" }];
+  const warning = [{ time: NOW + 2 * MIN, signal: "memory" }];
+  const incident = [];
+  const action = [];
+  for (let i = 0; i < 1500; i++) {
+    incident.push({ time: NOW + (10 + 2 * i) * MIN, tier: "medium" });
+    action.push({ time: NOW + (11 + 2 * i) * MIN, mode: "skipped", outcome: "skipped_cooldown" });
+  }
+  const { events, truncated } = buildEvents({ deploy, retrain, warning, incident, action });
+  assert.equal(truncated, true);
+  assert.equal(events.length, MAX_EVENTS);
+  assert.deepEqual(events.slice(0, 3).map((e) => e.kind), ["deploy", "retrain", "early_warning"]);
+  // 3000 incidents and actions compete for the 1997 places left: the newest 1997 stay.
+  const rest = events.slice(3);
+  assert.equal(rest.length, 1997);
+  assert.equal(rest[rest.length - 1].time, NOW + (11 + 2 * 1499) * MIN);
+  assert.equal(rest[0].time, NOW + (10 + 3000 - 1997) * MIN);
+  for (let i = 1; i < events.length; i++) assert.ok(events[i].time >= events[i - 1].time);
+});
+
+test("the response has truncated: true only when events were dropped", async (t) => {
+  const incident_open = [];
+  for (let i = 0; i < MAX_EVENTS + 1; i++) incident_open.push({ time: NOW - i * 1000, tier: "low" });
+  let get = await signedIn(t, fakeInflux({ rows: { incident_open } }).query);
+  let body = await (await get("/api/events")).json();
+  assert.equal(body.truncated, true);
+  assert.equal(body.events.length, MAX_EVENTS);
+
+  get = await signedIn(t, fakeInflux({ rows: { incident_open: incident_open.slice(0, 5) } }).query);
+  body = await (await get("/api/events")).json();
+  assert.equal(body.truncated, undefined);
+  assert.equal(body.events.length, 5);
 });
 
 test("one failed source leaves its events out and is named in unavailable", async (t) => {
