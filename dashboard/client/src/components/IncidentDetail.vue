@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Incident, IncidentStatus } from '@/types'
 import { computed } from 'vue'
+import IncidentTimeline from '@/components/IncidentTimeline.vue'
 import TierBadge from '@/components/TierBadge.vue'
 import { clockTime, fixed, localDateTime, orDash } from '@/lib/format'
 import { explanationFallback, STATUS_STYLE } from '@/lib/incident'
@@ -12,6 +13,9 @@ const STATUS_CLASS: Record<IncidentStatus, string> = {
   closed: 'bg-chip text-chipfg',
   awaiting_explanation: 'bg-chip text-chipfg',
 }
+// The incident list does not carry the job, and the pipeline monitors one service, the explainer's
+// and worker's default JOB. The timeline route needs it, so it is set here until the list returns it.
+const JOB = 'sample-service'
 const SOURCE_LABEL: Record<string, string> = { llm: 'LLM', template: 'Template' }
 
 // The explainer writes three labelled lines. When all three are there they get their own
@@ -64,6 +68,8 @@ const facts = computed(() => {
           <dd class="mt-0.5 break-words" :class="mono ? 'font-mono' : ''">{{ value }}</dd>
         </div>
       </dl>
+
+      <IncidentTimeline :start="incident.start" :job="JOB" :tier="incident.tier" />
 
       <div v-if="sections" class="flex flex-col gap-3.5">
         <div>

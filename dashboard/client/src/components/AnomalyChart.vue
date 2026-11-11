@@ -12,7 +12,7 @@ import {
 import { graphic, use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { useElementSize, useMediaQuery } from '@vueuse/core'
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, shallowRef, watch } from 'vue'
 import VChart from 'vue-echarts'
 import { findEpisodes, isFlagged, MINUTE_MS, restartTimes, warmupRuns } from '@/components/MinuteStrip.vue'
 import { useWheelScrollsPage } from '@/components/ResourceChart.vue'
@@ -30,6 +30,8 @@ const props = defineProps<{
   zoom: ZoomWindow
   // Times (ms) of early warnings, drawn as dashed vertical lines in the warn colour.
   warnings: number[]
+  // A short chart for the incident detail: no slider or zoom, and it keeps the window it is given.
+  compact?: boolean
 }>()
 const emit = defineEmits<{ select: [time: number], zoom: [window: ZoomWindow], window: [window: ChartWindow] }>()
 
@@ -96,7 +98,7 @@ const gridTop = computed(() => 40 + 24 * (legendRows.value - 1))
 // The chart is 300 px tall (360 px from md), sized for one legend row (two on phones). Each extra
 // row makes it taller by that row, so the plot keeps its height.
 const wide = useMediaQuery('(min-width: 768px)')
-const boxHeight = computed(() => `${(wide.value ? 360 : 300) + 24 * Math.max(0, legendRows.value - (narrow.value ? 2 : 1))}px`)
+const boxHeight = computed(() => `${(props.compact ? 240 : wide.value ? 360 : 300) + 24 * Math.max(0, legendRows.value - (narrow.value ? 2 : 1))}px`)
 
 // The window the chart was last drawn with. Not reactive on purpose: the option is rebuilt for new
 // data or a theme change and then takes the current window, but a zoom alone does not rebuild it.
@@ -140,6 +142,49 @@ const episodes = computed(() => findEpisodes(props.points))
 const restarts = computed(() => restartTimes(props.points))
 const warmups = computed(() => warmupRuns(props.points))
 
+// Restart labels. A line is labelled only when its label is at least its own width plus 8 px from
+// the previous drawn label; otherwise the line has no label and the legend explains it. The
+// distance is in pixels, so the set is worked out again after every zoom, pan and resize.
+const RESTART_LABEL_FAMILY = 'sans-serif'
+const RESTART_LABEL_GAP_PX = 8
+const labelled = shallowRef<Set<number>>(new Set())
+let labelMeasure: CanvasRenderingContext2D | null = null
+
+function updateRestartLabels() {
+  const instance = chart.value
+  const times = restarts.value
+  let next = new Set<number>()
+  if (instance && times.length > 0 && box.value && box.value.clientWidth > 0) {
+    labelMeasure ??= document.createElement('canvas').getContext('2d')
+    try {
+      const { min, max } = axisRange.value
+      const span = max - min
+      const left = Number(instance.convertToPixel({ xAxisIndex: 0 }, min + (span * drawn.start) / 100))
+      const right = Number(instance.convertToPixel({ xAxisIndex: 0 }, min + (span * drawn.end) / 100))
+      if (labelMeasure && Number.isFinite(left) && Number.isFinite(right)) {
+        labelMeasure.font = `11px ${RESTART_LABEL_FAMILY}`
+        const room = Math.ceil(labelMeasure.measureText(RESTART_NAME).width) + RESTART_LABEL_GAP_PX
+        let previous = Number.NEGATIVE_INFINITY
+        for (const t of times) {
+          const x = Number(instance.convertToPixel({ xAxisIndex: 0 }, t))
+          // A line outside the visible window is not drawn, so it takes no room.
+          if (!Number.isFinite(x) || x < left || x > right) continue
+          if (x - previous >= room) {
+            next.add(t)
+            previous = x
+          }
+        }
+      }
+    }
+    catch {
+      // Not drawn yet: no labels until the next render.
+      next = new Set<number>()
+    }
+  }
+  const now = labelled.value
+  if (next.size !== now.size || [...next].some(t => !now.has(t))) labelled.value = next
+}
+
 interface Rect { x: number, y: number, width: number, height: number }
 interface CustomApi { value: (dim: number) => number, coord: (v: number[]) => number[] }
 interface CustomParams { coordSys: Rect }
@@ -182,7 +227,7 @@ const option = computed(() => {
   return {
     animation: false,
     // The bottom leaves room for the two-line time labels and the slider.
-    grid: { left: GRID_LEFT, right: GRID_RIGHT, top: gridTop.value, bottom: 80 },
+    grid: { left: GRID_LEFT, right: GRID_RIGHT, top: gridTop.value, bottom: props.compact ? 32 : 80 },
     legend: {
       top: 0,
       // Plain line icons for the two lines. The default line icon draws a symbol on top, which
@@ -208,7 +253,7 @@ const option = computed(() => {
       textStyle: { color: c.ink, fontSize: 12 },
       axisPointer: { lineStyle: { color: c.thresh } },
     },
-    dataZoom: [
+    dataZoom: props.compact ? [] : [
       {
         id: 'zi',
         type: 'inside',
@@ -355,8 +400,9 @@ const option = computed(() => {
           symbol: 'none',
           animation: false,
           lineStyle: { color: c.primary, type: 'dashed', width: 1 },
-          label: { show: true, formatter: RESTART_NAME, color: c.primary, fontSize: 11, position: 'insideEndTop' },
-          data: restarts.value.map(t => ({ xAxis: t })),
+          label: { show: true, formatter: RESTART_NAME, color: c.primary, fontSize: 11, fontFamily: RESTART_LABEL_FAMILY, position: 'insideEndTop' },
+          // A line gets its label only when there is room for it (see updateRestartLabels).
+          data: restarts.value.map(t => ({ xAxis: t, label: { show: labelled.value.has(t) } })),
         },
       },
       {
@@ -386,6 +432,7 @@ function currentZoom(): ZoomWindow | null {
 // after every render (new data, zoom, resize, theme), but only when something changed.
 let sent: ChartWindow | null = null
 function emitWindow() {
+  updateRestartLabels()
   const { min, max } = axisRange.value
   const span = max - min
   const start = min + (span * drawn.start) / 100

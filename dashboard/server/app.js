@@ -9,6 +9,7 @@ const { createResources, HOURS: RESOURCE_HOURS } = require("./resources");
 const { loadRemediation } = require("./remediation");
 const { loadEvents } = require("./events");
 const { loadStatus } = require("./status");
+const { loadTimeline, parseParams: parseTimelineParams } = require("./timeline");
 const { createModel } = require("./model");
 const { createChatRouter } = require("./routes/chat");
 
@@ -156,6 +157,20 @@ function createApp(deps) {
     if (hours === null) return;
     try {
       res.json(await loadIncidents(query, hours, now()));
+    } catch (err) {
+      res.status(502).json({ error: "influxdb unreachable" });
+    }
+  });
+
+  // One incident's timeline. start and job are validated first, so a bad request sends no query
+  // and only digits and [a-z0-9_-] can reach InfluxQL.
+  app.get("/api/incidents/timeline", async (req, res) => {
+    const params = parseTimelineParams(req.query, now());
+    if (params.error) return res.status(400).json({ error: params.error });
+    try {
+      const result = await loadTimeline(query, params.start, params.job);
+      if (!result) return res.status(404).json({ error: "incident not found" });
+      res.json(result);
     } catch (err) {
       res.status(502).json({ error: "influxdb unreachable" });
     }

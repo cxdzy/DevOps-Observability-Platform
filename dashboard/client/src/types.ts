@@ -243,3 +243,36 @@ export interface ChartWindow {
   left: number
   right: number
 }
+
+// How a timeline step is drawn. warn is the early warning, flag a flagged minute or the opened
+// incident (coloured by tier), worked and failed are actions that ran (failed is the only red),
+// not_run is an action that did not run (grey, dashed), warmup is the hatch, info is the rest.
+export type TimelineFamily = 'warn' | 'flag' | 'worked' | 'failed' | 'not_run' | 'warmup' | 'info'
+
+// The kinds of step the server builds (dashboard/server/timeline.js).
+export type TimelineKind = 'early_warning' | 'first_flag' | 'incident_open' | 'action' | 'warmup' | 'incident_closed' | 'explanation' | 'rollback_not_run'
+
+// One step of GET /api/incidents/timeline. time is null for a step with no stored time (the
+// explanation and the rollback that did not run); those come last.
+export interface TimelineStep {
+  time: number | null
+  kind: TimelineKind
+  title: string
+  detail: string
+  // The stored measurement the step came from, or "rule".
+  source: string
+  family: TimelineFamily
+}
+
+// GET /api/incidents/timeline?start=<ms>&job=<job>: the minutes around one incident and its steps.
+export interface IncidentTimeline {
+  start: number
+  job: string
+  from: number
+  to: number
+  tier: string | null
+  minutes: number
+  deployment: boolean
+  points: AnomalyPoint[]
+  steps: TimelineStep[]
+}
