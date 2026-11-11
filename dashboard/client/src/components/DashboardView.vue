@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, defineComponent, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import AnomalyView from '@/components/AnomalyView.vue'
 import AppHeader from '@/components/AppHeader.vue'
 import AppSidebar from '@/components/AppSidebar.vue'
@@ -33,10 +33,50 @@ const DriftView = defineAsyncComponent({
 
 // Exhibition mode is the full-screen view for the hall screen; it draws its own page and the
 // sidebar and top bar are not shown. It also has ECharts, so it is downloaded only when opened.
+// While its code downloads, or if the download fails, the same dark full-screen frame is shown with
+// the project name, so the hall screen never shows a bare page. The frame sets the dark class on
+// itself, which gives it the dark colours without touching the page theme. Esc returns to Overview.
+function exhibitionFrame(text: string, role: 'status' | 'alert') {
+  return defineComponent({
+    setup() {
+      const u = `${Math.max(0.5, Math.min(window.innerWidth / 1920, window.innerHeight / 1080))}px`
+      function onKey(event: KeyboardEvent) {
+        if (event.key === 'Escape') window.location.hash = '#overview'
+      }
+      onMounted(() => window.addEventListener('keydown', onKey))
+      onUnmounted(() => window.removeEventListener('keydown', onKey))
+      return () => h('div', {
+        class: 'dark fixed inset-0 z-50 flex flex-col overflow-hidden bg-background text-foreground',
+        style: { 'colorScheme': 'dark', '--u': u },
+      }, [
+        h('header', { class: 'flex shrink-0 items-center', style: { gap: 'calc(20 * var(--u))', padding: 'calc(28 * var(--u)) calc(36 * var(--u)) calc(16 * var(--u))' } }, [
+          h('span', {
+            'class': 'flex shrink-0 items-center justify-center bg-primary text-primary-foreground',
+            'style': { width: 'calc(64 * var(--u))', height: 'calc(64 * var(--u))', borderRadius: 'calc(16 * var(--u))' },
+            'aria-hidden': 'true',
+          }, [
+            h('svg', { 'class': 'size-1/2', 'viewBox': '0 0 24 24', 'fill': 'none', 'stroke': 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, [
+              h('path', { d: 'M3 12h4l3-8 4 16 3-8h4' }),
+            ]),
+          ]),
+          h('div', { class: 'min-w-0' }, [
+            h('h1', { class: 'm-0 font-semibold tracking-tight', style: { fontSize: 'calc(32 * var(--u))', lineHeight: '1.2' } }, 'Intelligent DevOps Observability Platform'),
+            h('p', { class: 'm-0 text-muted-foreground', style: { fontSize: 'calc(24 * var(--u))', lineHeight: '1.35' } }, 'Predicts failures, explains them in plain English, fixes them after approval'),
+          ]),
+        ]),
+        h('main', { class: 'flex min-h-0 flex-1 items-center justify-center text-center text-muted-foreground', style: { padding: '0 calc(36 * var(--u))', fontSize: 'calc(32 * var(--u))' }, role }, text),
+        h('footer', { class: 'shrink-0 text-muted-foreground', style: { padding: 'calc(16 * var(--u)) calc(36 * var(--u)) calc(24 * var(--u))', fontSize: 'calc(24 * var(--u))' } }, 'Press Esc to leave.'),
+      ])
+    },
+  })
+}
+const ExhibitionLoading = exhibitionFrame('Loading', 'status')
+const ExhibitionLoadError = exhibitionFrame('The exhibition view could not be loaded. You may be offline, or the dashboard was updated since this page was opened. Reload the page to try again.', 'alert')
+
 const ExhibitionView = defineAsyncComponent({
   loader: () => import('@/components/ExhibitionView.vue'),
-  loadingComponent: ChartSkeleton,
-  errorComponent: ChartLoadError,
+  loadingComponent: ExhibitionLoading,
+  errorComponent: ExhibitionLoadError,
   delay: 0,
   timeout: 30000,
 })

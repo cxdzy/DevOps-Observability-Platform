@@ -47,8 +47,17 @@ const selectedMinute = ref<number | null>(null)
 // and the previous request is cancelled, so a quick switch between incidents never shows old data.
 let sequence = 0
 let controller: AbortController | null = null
+// Read-only (the exhibition screen) has nobody to press Try again, so a failed load retries by
+// itself after this delay.
+const RETRY_MS = 30_000
+let retryTimer: ReturnType<typeof setTimeout> | null = null
+function clearRetry() {
+  if (retryTimer !== null) clearTimeout(retryTimer)
+  retryTimer = null
+}
 
 async function load() {
+  clearRetry()
   controller?.abort()
   const mine = ++sequence
   const current = new AbortController()
@@ -70,6 +79,7 @@ async function load() {
     if (mine !== sequence) return
     const status = (error as { response?: { status?: number } }).response?.status
     problem.value = status === 404 ? 'missing' : 'failed'
+    if (problem.value === 'failed' && props.readonly) retryTimer = setTimeout(load, RETRY_MS)
   }
   finally {
     if (mine === sequence) loading.value = false
@@ -79,6 +89,7 @@ async function load() {
 watch(() => [props.start, props.job], load, { immediate: true })
 onBeforeUnmount(() => {
   sequence++
+  clearRetry()
   controller?.abort()
 })
 
@@ -189,8 +200,9 @@ const rangeText = computed(() => (timeline.value ? `${clockTime(timeline.value.f
     </div>
 
     <div v-else-if="problem === 'failed'" class="tl-body flex flex-col items-start gap-2 text-[13px]" role="alert">
-      <p class="text-muted-foreground">The timeline could not be loaded. InfluxDB did not answer.</p>
-      <Button variant="outline" class="min-h-9 border-border bg-transparent px-3.5 text-[13px] dark:border-border dark:bg-transparent" @click="load">
+      <p v-if="readonly" class="text-muted-foreground">Could not be loaded, retrying in 30 s</p>
+      <p v-else class="text-muted-foreground">The timeline could not be loaded. InfluxDB did not answer.</p>
+      <Button v-if="!readonly" variant="outline" class="min-h-9 border-border bg-transparent px-3.5 text-[13px] dark:border-border dark:bg-transparent" @click="load">
         Try again
       </Button>
     </div>
