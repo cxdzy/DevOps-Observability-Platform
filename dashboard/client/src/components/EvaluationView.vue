@@ -268,7 +268,14 @@ const cards = computed<Card[]>(() => {
       }
     : { key: 'mttr', label: 'MTTR, Medium and High', value: null, unit: '', context: m ? 'No restart or rollback brought a Medium or High incident back in this period.' : 'The action data could not be read. Try Refresh.' }
 
-  return [detection, falseAlarms, margin, lead, mttr]
+  // E5 counts the restarts and rollbacks inside this report's period only, so it can differ from the
+  // success rate on the Remediation page, which uses that page's own range.
+  const rem = d.remediation
+  const success: Card = rem && rem.ran > 0
+    ? { key: 'success', label: 'Remediation success', value: percent(rem.worked / rem.ran, 0), unit: '', context: `${rem.worked} of ${rem.ran} ${plural(rem.ran, 'action', 'actions')} that ran brought the service back, target above ${percent(TARGETS.remediationSuccess, 0)}`, extra: "For this report's period." }
+    : { key: 'success', label: 'Remediation success', value: null, unit: '', context: rem ? 'No restart or rollback ran in this period.' : 'The action data could not be read. Try Refresh.', extra: "For this report's period." }
+
+  return [detection, falseAlarms, margin, lead, mttr, success]
 })
 
 const FAULT_NAMES: Record<string, string> = { 'cpu-spike': 'CPU spike', 'memory-leak': 'Memory leak', 'latency-spike': 'Latency spike' }
@@ -404,7 +411,9 @@ function targetsText(keys: TargetRow['key'][]): string {
   return `${met} of ${linked.length} Chapter 3 targets met, ${stored} measured`
 }
 const OBJECTIVE_3_TARGETS: TargetRow['key'][] = ['precision', 'recall', 'f1', 'e1', 'e2']
-const OBJECTIVE_5_TARGETS: TargetRow['key'][] = ['e3', 'e5']
+// Objective 5 links E3, E5 and E6, as in the traceability table. E6 is not stored yet, so objective
+// 5 is In progress at best until it is.
+const OBJECTIVE_5_TARGETS: TargetRow['key'][] = ['e3', 'e5', 'e6']
 
 // Objectives and their status, each only from stored data, never from a typed-in result.
 const objectives = computed<Objective[]>(() => {
@@ -452,11 +461,12 @@ const objectives = computed<Objective[]>(() => {
     status: explanations > 0 ? 'In progress' : 'Not tested',
   })
 
-  // 5. Three-tier remediation, linked to MTTR (E3) and remediation success (E5).
+  // 5. Three-tier remediation, linked to MTTR (E3), remediation success (E5) and end-to-end alert
+  // latency (E6).
   list.push({
     no: 5,
     text: 'Implement three-tier remediation',
-    by: `MTTR and remediation success rate: ${targetsText(OBJECTIVE_5_TARGETS)}`,
+    by: `MTTR, remediation success rate and alert latency: ${targetsText(OBJECTIVE_5_TARGETS)}`,
     status: statusFromTargets(OBJECTIVE_5_TARGETS),
   })
 
@@ -523,7 +533,7 @@ const buttonClass = 'inline-flex min-h-9 items-center gap-2 rounded-lg border bo
 
   <template v-if="loading">
     <div class="grid grid-cols-[repeat(auto-fit,minmax(min(200px,100%),1fr))] gap-4">
-      <Skeleton v-for="n in 5" :key="n" class="h-[116px] rounded-xl" />
+      <Skeleton v-for="n in 6" :key="n" class="h-[116px] rounded-xl" />
     </div>
     <Skeleton class="h-48 rounded-xl" />
     <Skeleton class="h-56 rounded-xl" />
