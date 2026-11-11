@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { startApp } = require("./helpers");
-const { QUERIES, ALLOWED, UP_QUERY, ROOT_FS } = require("../resources");
+const { QUERIES, CONTAINER_QUERIES, ALLOWED, UP_QUERY, ROOT_FS, CELLS } = require("../resources");
 const { QUERIES: OVERVIEW_QUERIES } = require("../overview");
 const { PROMETHEUS_URL } = require("../prometheus");
 
@@ -304,7 +304,10 @@ test("the allow list is fixed: one string per server, preset and query, plus the
   // has no rate and is the same string in every preset.
   const range = new Set(Object.values(QUERIES).flatMap((q) => Object.values(q.range).flatMap((p) => Object.values(p))));
   assert.equal(range.size, 2 * (5 * 3 + 1));
-  assert.equal(new Set(ALLOWED).size, 1 + instant + range.size);
+  // The Containers tab adds 5 instant and 3 range strings per server; its memoryTotal is the node
+  // string that is already counted above.
+  const containerOwn = 2 * (5 + 3);
+  assert.equal(new Set(ALLOWED).size, 1 + instant + range.size + containerOwn);
   assert.ok(Object.isFrozen(QUERIES.main.range[168]));
 });
 
@@ -313,4 +316,254 @@ test("the root filter and the container count match overview.js", () => {
   assert.ok(OVERVIEW_QUERIES.containers.includes('container_memory_working_set_bytes{'));
   assert.ok(QUERIES.main.instant.containers.includes('job="cadvisor",name!=""'));
   assert.ok(QUERIES.old.instant.containers.includes('job="cadvisor-old",name!=""'));
+});
+
+// ---- Containers tab ----
+
+const MB = 1024 ** 2;
+const STEP = 900;
+const START = NOW_SEC - 24 * 3600;
+// The second a cell ends at, for cell index i from 0 to 95.
+const cellEnd = (i) => START + (i + 1) * STEP;
+
+// One fixture per container: instant values, and range values as functions of the cell index
+// (undefined means no sample in that cell).
+function containerFixture() {
+  const steady = () => 1;
+  return {
+    ollama: {
+      cpu: 0.2, memory: 1200 * MB, limit: 1600 * MB, restarts: 0,
+      present: steady, started: () => START - 5000, share: (i) => (i >= 60 && i <= 63 ? 0.75 : 0.4),
+    },
+    mlflow: {
+      cpu: 0.4, memory: 400 * MB, limit: 0, restarts: 0,
+      present: steady, started: () => START - 5000, share: () => undefined,
+    },
+    "sample-service": {
+      cpu: 0.3, memory: 135 * MB, limit: 512 * MB, restarts: 1,
+      present: steady, started: (i) => (i < 66 ? START - 5000 : cellEnd(65) + 300), share: () => 0.26,
+    },
+    late: {
+      // Appeared during the day: first seen in cell 40, started inside that cell.
+      cpu: 1.5, memory: 50 * MB, limit: 256 * MB, restarts: 0,
+      present: (i) => (i >= 40 ? 1 : undefined), started: () => cellEnd(39) + 200, share: () => 0.2,
+    },
+    hugelimit: {
+      // cAdvisor can report a huge number for "no limit".
+      cpu: 0, memory: 10 * MB, limit: 9223372036854771712, restarts: 0,
+      present: steady, started: () => START - 5000, share: () => undefined,
+    },
+  };
+}
+
+// Answers the Containers queries of both servers from the fixture; everything else goes to fetch.
+// A name in skipInstant is left out of the instant answers (a container that is gone now).
+function stubContainers(t, { fixture = containerFixture(), down = false, memTotal = 8 * GB, skipInstant = [] } = {}) {
+  const sent = [];
+  const original = globalThis.fetch;
+  const lookup = new Map();
+  for (const [key, q] of Object.entries(CONTAINER_QUERIES)) {
+    for (const [name, text] of Object.entries(q.instant)) lookup.set(text, { key, name, kind: "instant" });
+    for (const [name, text] of Object.entries(q.range)) lookup.set(text, { key, name, kind: "range" });
+  }
+  const json = (data) => new Response(JSON.stringify({ status: "success", data }), { headers: { "content-type": "application/json" } });
+  globalThis.fetch = async (url, init) => {
+    const href = String(url);
+    if (!href.startsWith(PROMETHEUS_URL)) return original(url, init);
+    const u = new URL(href);
+    const q = u.searchParams.get("query");
+    sent.push({ path: u.pathname, query: q, params: Object.fromEntries(u.searchParams), method: init && init.method });
+    if (down) throw new TypeError("fetch failed");
+    const hit = lookup.get(q);
+    if (u.pathname === "/api/v1/query_range") {
+      const result = [];
+      for (const [name, c] of Object.entries(fixture)) {
+        const f = c[hit.name];
+        // A point at the start of the window, before the first cell, which the server ignores.
+        const values = hit.name === "present" && c.present(0) !== undefined ? [[START, "1"]] : [];
+        for (let i = 0; i < CELLS; i++) {
+          const v = f(i);
+          if (v !== undefined) values.push([cellEnd(i), String(v)]);
+        }
+        result.push({ metric: { name }, values });
+      }
+      return json({ resultType: "matrix", result });
+    }
+    if (hit.name === "memoryTotal") return json({ resultType: "vector", result: [{ metric: { job: "x" }, value: [NOW_SEC, String(memTotal)] }] });
+    if (hit.name === "memoryUsedBytes") return json({ resultType: "vector", result: [{ metric: {}, value: [NOW_SEC, String(3.9 * GB)] }] });
+    const result = Object.entries(fixture)
+      .filter(([name]) => !skipInstant.includes(name))
+      .map(([name, c]) => ({ metric: { name }, value: [NOW_SEC, String(c[hit.name])] }));
+    return json({ resultType: "vector", result });
+  };
+  t.after(() => { globalThis.fetch = original; });
+  return sent;
+}
+
+const stateOf = (c) => c.cells.map((x) => x.state);
+const indexesOf = (c, state) => stateOf(c).map((s, i) => (s === state ? i : -1)).filter((i) => i >= 0);
+
+test("GET /api/resources/containers needs a session", async (t) => {
+  const sent = stubContainers(t);
+  const app = await startApp();
+  t.after(app.close);
+  assert.equal((await app.request("/api/resources/containers")).status, 401);
+  assert.equal(sent.length, 0);
+});
+
+test("a normal response has node memory, rows by memory and 96 cells of 15 minutes", async (t) => {
+  stubContainers(t);
+  const get = await signedIn(t);
+  const res = await get("/api/resources/containers?node=main");
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.node, "main");
+  assert.equal(body.displayName, "fyp-main");
+  assert.equal(body.memTotalBytes, 8 * GB);
+  assert.equal(body.memUsedBytes, 3.9 * GB);
+  assert.equal(body.stepSeconds, 900);
+  assert.equal(body.end, NOW_SEC * 1000);
+  assert.equal(body.start, START * 1000);
+  assert.deepEqual(body.containers.map((c) => c.name), ["ollama", "mlflow", "sample-service", "late", "hugelimit"]);
+  const ollama = body.containers[0];
+  assert.equal(ollama.cpuPct, 0.2);
+  assert.equal(ollama.memBytes, 1200 * MB);
+  assert.equal(ollama.limitBytes, 1600 * MB);
+  assert.equal(ollama.restarts24h, 0);
+  assert.equal(ollama.cells.length, 96);
+  assert.equal(ollama.cells[0].t, cellEnd(0) * 1000);
+  assert.equal(ollama.cells[95].t, NOW_SEC * 1000);
+  // A share of the limit at or above 70 percent only in those four cells.
+  assert.deepEqual(indexesOf(ollama, "over70"), [60, 61, 62, 63]);
+  assert.equal(stateOf(ollama).filter((s) => s === "up").length, 92);
+});
+
+test("a container without a limit has a null limit and never shows over70", async (t) => {
+  stubContainers(t);
+  const get = await signedIn(t);
+  const body = await (await get("/api/resources/containers")).json();
+  const mlflow = body.containers.find((c) => c.name === "mlflow");
+  assert.equal(mlflow.limitBytes, null);
+  assert.ok(stateOf(mlflow).every((s) => s === "up"));
+  // A limit at or above the node's memory total is the "no limit" value on some setups.
+  const huge = body.containers.find((c) => c.name === "hugelimit");
+  assert.equal(huge.limitBytes, null);
+});
+
+test("a restart inside a cell marks that cell as restarted", async (t) => {
+  stubContainers(t);
+  const get = await signedIn(t);
+  const body = await (await get("/api/resources/containers")).json();
+  const svc = body.containers.find((c) => c.name === "sample-service");
+  assert.equal(svc.restarts24h, 1);
+  assert.deepEqual(indexesOf(svc, "restarted"), [66]);
+  assert.equal(svc.cells[66].t, cellEnd(66) * 1000);
+});
+
+test("a gap followed by a new start time is a restart, not just up", async (t) => {
+  const fixture = containerFixture();
+  fixture.recreated = {
+    cpu: 0.1, memory: 20 * MB, limit: 0, restarts: 1,
+    present: (i) => (i >= 20 && i < 30 ? undefined : 1),
+    started: (i) => (i >= 20 && i < 30 ? undefined : i < 20 ? START - 100 : cellEnd(29) + 60),
+    share: () => undefined,
+  };
+  stubContainers(t, { fixture });
+  const get = await signedIn(t);
+  const body = await (await get("/api/resources/containers")).json();
+  const states = stateOf(body.containers.find((c) => c.name === "recreated"));
+  assert.ok(states.slice(20, 30).every((s) => s === "nodata"));
+  assert.deepEqual(indexesOf(body.containers.find((c) => c.name === "recreated"), "restarted"), [30]);
+});
+
+test("a container that appeared during the day has no data before and is not a restart", async (t) => {
+  stubContainers(t);
+  const get = await signedIn(t);
+  const body = await (await get("/api/resources/containers")).json();
+  const states = stateOf(body.containers.find((c) => c.name === "late"));
+  assert.ok(states.slice(0, 40).every((s) => s === "nodata"));
+  assert.ok(states.slice(40).every((s) => s === "up"));
+});
+
+test("a container that is gone now still appears, with no current values", async (t) => {
+  const fixture = containerFixture();
+  fixture.gone = {
+    cpu: 0, memory: 0, limit: 0, restarts: 0,
+    present: (i) => (i < 10 ? 1 : undefined), started: () => START - 100, share: () => undefined,
+  };
+  stubContainers(t, { fixture, skipInstant: ["gone"] });
+  const get = await signedIn(t);
+  const body = await (await get("/api/resources/containers")).json();
+  const g = body.containers.find((c) => c.name === "gone");
+  assert.equal(g.memBytes, null);
+  assert.equal(g.cpuPct, null);
+  assert.equal(g.restarts24h, null);
+  assert.equal(stateOf(g)[5], "up");
+  assert.equal(stateOf(g)[50], "nodata");
+  // Rows without a current memory value come last.
+  assert.equal(body.containers[body.containers.length - 1].name, "gone");
+});
+
+test("a bad node gives 400 and sends no query", async (t) => {
+  const sent = stubContainers(t);
+  const get = await signedIn(t);
+  for (const path of [
+    "/api/resources/containers?node=other",
+    "/api/resources/containers?node=MAIN",
+    "/api/resources/containers?node=",
+    "/api/resources/containers?node=main&node=old",
+    "/api/resources/containers?node=main%22%7D%20or%20vector(1)",
+  ]) {
+    assert.equal((await get(path)).status, 400, path);
+  }
+  assert.equal(sent.length, 0);
+});
+
+test("Prometheus down gives 502 for the containers", async (t) => {
+  stubContainers(t, { down: true });
+  const get = await signedIn(t);
+  const res = await get("/api/resources/containers?node=old");
+  assert.equal(res.status, 502);
+  assert.deepEqual(await res.json(), { error: "prometheus unreachable" });
+});
+
+test("only allow-listed container strings for the chosen server are sent, all with GET", async (t) => {
+  const sent = stubContainers(t);
+  const get = await signedIn(t);
+  for (const node of ["main", "old"]) {
+    sent.length = 0;
+    assert.equal((await get(`/api/resources/containers?node=${node}`)).status, 200);
+    const allowed = new Set(ALLOWED);
+    for (const s of sent) {
+      assert.ok(allowed.has(s.query), s.query);
+      assert.equal(s.method, "GET");
+    }
+    const q = CONTAINER_QUERIES[node];
+    assert.deepEqual(new Set(sent.map((s) => s.query)), new Set([...Object.values(q.instant), ...Object.values(q.range)]));
+    const ranges = sent.filter((s) => s.path === "/api/v1/query_range");
+    assert.equal(ranges.length, 3);
+    for (const r of ranges) {
+      assert.equal(Number(r.params.step), 900);
+      assert.equal(Number(r.params.end) - Number(r.params.start), 24 * 3600);
+    }
+    const otherJob = node === "main" ? "cadvisor-old" : 'job="cadvisor"';
+    for (const s of sent) assert.ok(!s.query.includes(otherJob), s.query);
+  }
+});
+
+test("the container strings are written out for the main server", () => {
+  const q = CONTAINER_QUERIES.main;
+  assert.equal(q.instant.cpu, '100 * sum by (name) (rate(container_cpu_usage_seconds_total{job="cadvisor",name!=""}[5m]))');
+  assert.equal(q.instant.memory, 'sum by (name) (container_memory_working_set_bytes{job="cadvisor",name!=""})');
+  assert.equal(q.instant.limit, 'max by (name) (container_spec_memory_limit_bytes{job="cadvisor",name!=""})');
+  assert.equal(q.instant.restarts, 'changes(max by (name) (container_start_time_seconds{job="cadvisor",name!=""})[24h:1m])');
+  assert.equal(q.instant.memoryTotal, 'node_memory_MemTotal_bytes{job="node-exporter"}');
+  assert.equal(q.range.present, 'count by (name) (count_over_time(container_memory_working_set_bytes{job="cadvisor",name!=""}[15m]))');
+  assert.equal(q.range.started, 'max by (name) (max_over_time(container_start_time_seconds{job="cadvisor",name!=""}[15m]))');
+  // on() must list name too, or the one-to-one division drops it and max by (name) has nothing.
+  assert.equal(
+    q.range.share,
+    'max by (name) (max_over_time(container_memory_working_set_bytes{job="cadvisor",name!=""}[15m]) / on (id, name) (max_over_time(container_spec_memory_limit_bytes{job="cadvisor",name!=""}[15m]) > 0 < scalar(node_memory_MemTotal_bytes{job="node-exporter"})))'
+  );
+  assert.ok(Object.isFrozen(q.instant) && Object.isFrozen(q.range));
 });

@@ -85,12 +85,64 @@ const QUERIES = Object.freeze(
   )
 );
 
+// The Containers tab: per container name, from the server's cAdvisor job. Containers are summed or
+// maxed by name so a container that was recreated (new id, same name) is one row. CPU and memory
+// are summed over any duplicate series; the limit, the start time and the restart count take the
+// largest, because adding them up would multiply one limit by the number of series.
+// Restarts use a subquery over the largest start time per name, because a recreated container
+// gets a new series and changes() on the raw series would then see no change at all.
+// cAdvisor can report a very large limit (or the host memory) for "no limit" on some setups, so
+// the code treats a limit at or above the node's memory total as no limit. The share query does
+// the same with scalar(node memory total).
+// The range queries look back over the whole 15 minute cell ([15m], the same as CONTAINER_STEP),
+// so a cell counts what happened anywhere inside it, not only the sample at its end. The share
+// divides "on (id, name)": one-to-one matching with on() keeps only the listed labels, so name
+// has to be listed for the max by (name) around it to see it.
+const CONTAINER_INSTANT_TEMPLATES = Object.freeze({
+  cpu: '100 * sum by (name) (rate(container_cpu_usage_seconds_total{job="%C",name!=""}[5m]))',
+  memory: 'sum by (name) (container_memory_working_set_bytes{job="%C",name!=""})',
+  limit: 'max by (name) (container_spec_memory_limit_bytes{job="%C",name!=""})',
+  restarts: 'changes(max by (name) (container_start_time_seconds{job="%C",name!=""})[24h:1m])',
+  memoryUsedBytes: 'node_memory_MemTotal_bytes{job="%J"} - node_memory_MemAvailable_bytes{job="%J"}',
+});
+const CONTAINER_RANGE_TEMPLATES = Object.freeze({
+  present: 'count by (name) (count_over_time(container_memory_working_set_bytes{job="%C",name!=""}[15m]))',
+  started: 'max by (name) (max_over_time(container_start_time_seconds{job="%C",name!=""}[15m]))',
+  share:
+    'max by (name) (max_over_time(container_memory_working_set_bytes{job="%C",name!=""}[15m]) / on (id, name) (max_over_time(container_spec_memory_limit_bytes{job="%C",name!=""}[15m]) > 0 < scalar(node_memory_MemTotal_bytes{job="%J"})))',
+});
+
+// The strip covers the last 24 hours with one cell per 15 minutes.
+const CONTAINER_HOURS = 24;
+const CONTAINER_STEP = 900;
+const CELLS = (CONTAINER_HOURS * 3600) / CONTAINER_STEP;
+// A cell is "over70" from this share of the limit.
+const OVER_SHARE = 0.7;
+
+// Query strings per server key for the Containers tab. memoryTotal is the node total from the
+// node queries above, so the tab has no extra string for it.
+const CONTAINER_QUERIES = Object.freeze(
+  Object.fromEntries(
+    SERVERS.map((s) => [
+      s.key,
+      Object.freeze({
+        instant: Object.freeze({
+          ...Object.fromEntries(Object.entries(CONTAINER_INSTANT_TEMPLATES).map(([k, t]) => [k, fill(t, s)])),
+          memoryTotal: QUERIES[s.key].instant.memoryTotal,
+        }),
+        range: Object.freeze(Object.fromEntries(Object.entries(CONTAINER_RANGE_TEMPLATES).map(([k, t]) => [k, fill(t, s)]))),
+      }),
+    ])
+  )
+);
+
 const ALLOWED = Object.freeze([
   UP_QUERY,
   ...Object.values(QUERIES).flatMap((q) => [
     ...Object.values(q.instant),
     ...Object.values(q.range).flatMap((preset) => Object.values(preset)),
   ]),
+  ...Object.values(CONTAINER_QUERIES).flatMap((q) => [...Object.values(q.instant), ...Object.values(q.range)]),
 ]);
 
 function numberOrNull(value) {
@@ -176,7 +228,119 @@ function createResources({ prometheus, now = Date.now } = {}) {
     };
   }
 
-  return { load };
+  // Values of an instant result by container name.
+  function byName(rows) {
+    const map = new Map();
+    for (const row of rows) {
+      const name = row.labels && typeof row.labels.name === "string" ? row.labels.name : "";
+      if (name !== "") map.set(name, numberOrNull(row.value));
+    }
+    return map;
+  }
+
+  // A range result as name -> Map(second -> number), NaN and gaps left out.
+  function seriesByName(matrix) {
+    const map = new Map();
+    for (const item of matrix) {
+      const name = item.labels && typeof item.labels.name === "string" ? item.labels.name : "";
+      if (name === "") continue;
+      const points = map.get(name) || new Map();
+      for (const [ms, value] of item.values) {
+        if (value !== null) points.set(Math.round(ms / 1000), value);
+      }
+      map.set(name, points);
+    }
+    return map;
+  }
+
+  // The state of every 15 minute cell of one container. A cell ending at time t covers the 15
+  // minutes before t. nodata: the container did not exist in that cell. restarted: its start time
+  // is later than the last start time seen before, so it was restarted since the previous cell
+  // (the first cell a container is seen in is never a restart). over70: the memory share of the
+  // limit reached 70 percent in that cell (only when a limit exists). Otherwise up.
+  function cellsFor(times, present, started, share) {
+    let lastStart = null;
+    return times.map((sec) => {
+      if (!present || !present.has(sec)) return { t: sec * 1000, state: "nodata" };
+      const start = started && started.has(sec) ? started.get(sec) : null;
+      let restarted = false;
+      if (start !== null) {
+        restarted = lastStart !== null && start > lastStart + 1;
+        lastStart = start;
+      }
+      if (restarted) return { t: sec * 1000, state: "restarted" };
+      const s = share && share.has(sec) ? share.get(sec) : null;
+      return { t: sec * 1000, state: s !== null && s >= OVER_SHARE ? "over70" : "up" };
+    });
+  }
+
+  // Containers of one server (key must already be validated) with the last 24 hours as cells.
+  async function containers(key) {
+    const server = SERVERS.find((s) => s.key === key);
+    if (!server) throw new Error("unknown server");
+    const q = CONTAINER_QUERIES[key];
+    const end = Math.floor(now() / 1000);
+    const start = end - CONTAINER_HOURS * 3600;
+    const times = Array.from({ length: CELLS }, (_, i) => start + (i + 1) * CONTAINER_STEP);
+
+    const instantNames = Object.keys(q.instant);
+    const rangeNames = Object.keys(q.range);
+    const [instant, range] = await Promise.all([
+      Promise.all(instantNames.map((n) => prom.query(q.instant[n]))),
+      Promise.all(rangeNames.map((n) => prom.queryRange(q.range[n], start, end, CONTAINER_STEP))),
+    ]);
+    const r = Object.fromEntries(instantNames.map((n, i) => [n, instant[i]]));
+    const g = Object.fromEntries(rangeNames.map((n, i) => [n, seriesByName(range[i])]));
+    const memTotalBytes = first(r.memoryTotal);
+    const memUsedBytes = first(r.memoryUsedBytes);
+    const cpu = byName(r.cpu);
+    const memory = byName(r.memory);
+    const limit = byName(r.limit);
+    const restarts = byName(r.restarts);
+
+    // Containers that are present now, plus any that were present earlier in the day.
+    const names = [...new Set([...memory.keys(), ...g.present.keys()])];
+    const rows = names.map((name) => {
+      const lim = limit.get(name);
+      // 0 means no limit; so does a limit at or above the node's memory total.
+      const hasLimit = typeof lim === "number" && lim > 0 && (memTotalBytes === null || lim < memTotalBytes);
+      const restartCount = restarts.get(name);
+      return {
+        name,
+        cpuPct: cpu.has(name) ? cpu.get(name) : null,
+        memBytes: memory.has(name) ? memory.get(name) : null,
+        limitBytes: hasLimit ? lim : null,
+        restarts24h: typeof restartCount === "number" ? Math.round(restartCount) : null,
+        cells: cellsFor(times, g.present.get(name), g.started.get(name), g.share.get(name)),
+      };
+    });
+    rows.sort((a, b) => (b.memBytes ?? -1) - (a.memBytes ?? -1) || (a.name < b.name ? -1 : 1));
+
+    return {
+      node: server.key,
+      displayName: server.displayName,
+      memTotalBytes,
+      memUsedBytes,
+      stepSeconds: CONTAINER_STEP,
+      start: start * 1000,
+      end: end * 1000,
+      containers: rows,
+    };
+  }
+
+  return { load, containers };
 }
 
-module.exports = { createResources, QUERIES, ALLOWED, UP_QUERY, HOURS, POINTS, stepFor, rateWindow, ROOT_FS };
+module.exports = {
+  createResources,
+  QUERIES,
+  CONTAINER_QUERIES,
+  ALLOWED,
+  UP_QUERY,
+  HOURS,
+  POINTS,
+  CELLS,
+  stepFor,
+  rateWindow,
+  ROOT_FS,
+};

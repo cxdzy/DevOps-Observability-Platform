@@ -4,6 +4,7 @@ import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import ChartLoadError from '@/components/ChartLoadError.vue'
 import ChartSkeleton from '@/components/ChartSkeleton.vue'
 import ChartToolbar from '@/components/ChartToolbar.vue'
+import ContainersTab from '@/components/ContainersTab.vue'
 import ResourceGauge from '@/components/ResourceGauge.vue'
 import { Skeleton } from '@/components/ui/skeleton'
 import { api, usePoll } from '@/composables/useApi'
@@ -35,6 +36,15 @@ const GROUP = 'resources-history'
 // The narrowest zoom, in percent of the window (about 10 of the 360 points).
 const MIN_SPAN = 3
 const FULL: ZoomWindow = { start: 0, end: 100 }
+
+// Node is the node gauges and history; Containers is the cAdvisor tab. Kept only in this component.
+const TABS = [
+  { key: 'node', label: 'Node' },
+  { key: 'containers', label: 'Containers' },
+] as const
+const tab = ref<'node' | 'containers'>('node')
+const containersTab = ref<InstanceType<typeof ContainersTab> | null>(null)
+const containersBusy = ref(false)
 
 const node = ref<NodeKey>('main')
 const hours = ref(6)
@@ -76,7 +86,8 @@ async function load() {
 }
 
 // Every 30 seconds; a tick is skipped while the previous load is still running.
-const { refresh } = usePoll(load, 30000)
+// The node view only polls while it is shown; the Containers tab polls for itself.
+const { refresh } = usePoll(load, 30000, computed(() => tab.value === 'node'))
 
 // Another server shows nothing of the old one while it loads. A new window keeps the gauges and
 // starts the charts at the whole window.
@@ -92,7 +103,12 @@ watch(hours, () => {
 })
 
 // The Refresh button spins while a load runs, including the 30 second ones.
-const spinning = computed(() => loading.value)
+const spinning = computed(() => (tab.value === 'node' ? loading.value : containersBusy.value))
+// Refresh runs the load of whichever tab is shown.
+function refreshShown() {
+  if (tab.value === 'node') refresh()
+  else containersTab.value?.refresh()
+}
 
 // Zoom controls. Each one computes the next window from the current one.
 function setZoom(start: number, end: number) {
@@ -145,6 +161,10 @@ function rangeLabel(from: number, to: number): string {
 }
 
 const nodeLine = computed(() => {
+  if (tab.value === 'containers') {
+    const name = nodes.value.find(n => n.key === node.value)?.displayName
+    return name ? `${name}, containers from cAdvisor` : ''
+  }
   const d = data.value
   if (!d) return ''
   const place = [d.provider, d.location].filter(Boolean).join(' ')
@@ -245,6 +265,19 @@ function upText(up: boolean | null) {
     <div>
       <h1 class="text-2xl font-semibold tracking-[-0.02em]">Resources</h1>
       <p class="mt-0.5 min-h-5 font-mono text-[13px] text-muted-foreground">{{ nodeLine }}</p>
+      <div role="group" aria-label="Resources view" class="mt-2 inline-flex gap-0.5 rounded-lg bg-chip p-[3px]">
+        <button
+          v-for="t in TABS"
+          :key="t.key"
+          type="button"
+          class="inline-flex min-h-[30px] items-center rounded-md px-3 text-[13px] pointer-coarse:min-h-11"
+          :class="tab === t.key ? 'bg-card font-medium text-foreground ring-1 ring-border' : 'text-muted-foreground hover:text-foreground'"
+          :aria-pressed="tab === t.key"
+          @click="tab = t.key"
+        >
+          {{ t.label }}
+        </button>
+      </div>
     </div>
     <div class="flex flex-wrap items-center gap-2">
       <div role="group" aria-label="Server" class="flex gap-0.5 rounded-lg bg-chip p-[3px]">
@@ -267,7 +300,7 @@ function upText(up: boolean | null) {
         type="button"
         class="inline-flex min-h-9 items-center gap-2 rounded-lg border border-border px-3.5 text-[13px] font-medium hover:bg-chip pointer-coarse:min-h-11"
         :aria-busy="spinning"
-        @click="refresh"
+        @click="refreshShown"
       >
         <svg class="size-3.5" :class="spinning ? 'animate-spin' : ''" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7" /><path d="M21 3v6h-6" /></svg>
         {{ spinning ? 'Refreshing' : 'Refresh' }}
@@ -275,7 +308,15 @@ function upText(up: boolean | null) {
     </div>
   </div>
 
-  <div v-if="failed && !data" class="flex flex-col items-start gap-3 rounded-xl border border-border p-4" role="alert">
+  <ContainersTab
+    v-if="tab === 'containers'"
+    ref="containersTab"
+    :node="node"
+    @refreshed="ok => emit('refreshed', ok)"
+    @busy="b => (containersBusy = b)"
+  />
+
+  <div v-else-if="failed && !data" class="flex flex-col items-start gap-3 rounded-xl border border-border p-4" role="alert">
     <p class="text-[13px] text-muted-foreground">Prometheus did not answer. Retrying in 30 s.</p>
     <button type="button" class="min-h-9 rounded-lg border border-border px-3.5 text-[13px] font-medium hover:bg-chip pointer-coarse:min-h-11" @click="refresh">
       Retry now

@@ -215,6 +215,20 @@ function createApp(deps) {
     }
   });
 
+  // Containers of one server from its cAdvisor job, with a 24 hour strip each. node must be
+  // exactly main or old (main when left out), the same rule as /api/resources.
+  app.get("/api/resources/containers", async (req, res) => {
+    const node = req.query.node === undefined ? "main" : req.query.node;
+    if (typeof node !== "string" || !SERVERS.some((s) => s.key === node)) {
+      return res.status(400).json({ error: "node must be main or old" });
+    }
+    try {
+      res.json(await resources.containers(node));
+    } catch (err) {
+      res.status(502).json({ error: "prometheus unreachable" });
+    }
+  });
+
   app.get("/api/activity", async (req, res) => {
     try {
       res.json(await overview.activity(now()));

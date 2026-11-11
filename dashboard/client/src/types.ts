@@ -180,6 +180,31 @@ export interface ResourcesInfo {
   history: Record<'cpu' | 'memory' | 'networkIn' | 'networkOut' | 'diskRead' | 'diskWrite', ResourceSeries>
 }
 
+// GET /api/resources/containers?node=main|old: containers of one server from cAdvisor. Null means
+// Prometheus returned no value. limitBytes is null for a container without a memory limit. Each
+// container has one cell per 15 minutes for the last 24 hours, oldest first; t is the end of the cell.
+export type ContainerCellState = 'up' | 'restarted' | 'over70' | 'nodata'
+export interface ContainerRow {
+  name: string
+  // Percent of one core.
+  cpuPct: number | null
+  memBytes: number | null
+  limitBytes: number | null
+  restarts24h: number | null
+  cells: { t: number, state: ContainerCellState }[]
+}
+export interface ContainersInfo {
+  node: 'main' | 'old'
+  displayName: string
+  // Whole-node memory for the "Where the memory goes" header.
+  memTotalBytes: number | null
+  memUsedBytes: number | null
+  stepSeconds: number
+  start: number
+  end: number
+  containers: ContainerRow[]
+}
+
 // Zoom window of a chart in percent of its loaded window, 0 to 100.
 export interface ZoomWindow { start: number, end: number }
 
