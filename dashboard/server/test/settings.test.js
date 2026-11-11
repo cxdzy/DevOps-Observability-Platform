@@ -493,14 +493,14 @@ test("containers: what cAdvisor sees, with the reason when one cannot be picked"
     { name: "sample-service", available: false, reason: "Already in sample-service" },
     { name: "worker", available: false, reason: "Used by the platform" },
   ]);
-  // On another server the platform names are ordinary names.
+  // The platform names are refused on every server, not only on main.
   await addActiveServer(s.app);
   assert.equal((await s.post("/api/settings/projects", { name: "shop", server_key: "shop-node", containers: ["shop-web"] })).status, 201);
   const shop = await (await s.get("/api/settings/servers/shop-node/containers")).json();
   assert.deepEqual(shop, [
     { name: "shop-db", available: true, reason: null },
     { name: "shop-web", available: false, reason: "Already in shop" },
-    { name: "worker", available: true, reason: null },
+    { name: "worker", available: false, reason: "Used by the platform" },
   ]);
   assert.ok(sent.includes(`sum by (name) (container_memory_working_set_bytes{${CADVISOR_SEL},name!=""})`));
   // A pending server and an unknown one have nothing to list.
@@ -628,14 +628,16 @@ test("project container conflicts and a duplicate name are 409", async (t) => {
   const taken = await s.post("/api/settings/projects", { name: "p2", server_key: "main", containers: ["sample-service"] });
   assert.equal(taken.status, 409);
   assert.match((await taken.json()).error, /sample-service/);
-  assert.equal((await s.post("/api/settings/projects", { name: "p3", server_key: "shop-node", containers: ["grafana"] })).status, 201);
+  // A platform name is refused on every server, not only on main.
+  assert.equal((await s.post("/api/settings/projects", { name: "p3", server_key: "shop-node", containers: ["grafana"] })).status, 409);
+  assert.equal((await s.post("/api/settings/projects", { name: "p3", server_key: "shop-node", containers: ["shop-web"] })).status, 201);
   const dup = await s.post("/api/settings/projects", { name: "p3", server_key: "shop-node", containers: ["other"] });
   assert.equal(dup.status, 409);
   assert.equal((await dup.json()).field, "name");
   const dupBuiltin = await s.post("/api/settings/projects", { name: "sample-service", server_key: "shop-node", containers: ["other"] });
   assert.equal(dupBuiltin.status, 409);
   // The same container name on another server is a different container.
-  assert.equal((await s.post("/api/settings/projects", { name: "p4", server_key: "old", containers: ["grafana"] })).status, 201);
+  assert.equal((await s.post("/api/settings/projects", { name: "p4", server_key: "old", containers: ["shop-web"] })).status, 201);
 });
 
 test("editing a project: repository and containers, and the built-in limits", async (t) => {
@@ -693,6 +695,48 @@ test("archiving a project: not for built-ins; it frees the containers and keeps 
   const entry = log.find((l) => l.action === "Archived project");
   assert.equal(entry.target, "shop");
   assert.match(entry.detail, /Released containers: a/);
+  // The archived project's link is kept, with the time it was released, next to the new live one.
+  const kept = await s.app.db.transaction((ops) => ops.listContainerLinks("shop"));
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].container_name, "a");
+  assert.ok(kept[0].released_at instanceof Date);
+  const live = await s.app.db.transaction((ops) => ops.listContainerLinks("shop-2"));
+  assert.deepEqual(live.map((l) => [l.container_name, l.released_at]), [["a", null]]);
+});
+
+test("editing containers releases the dropped ones and takes a re-added one back", async (t) => {
+  const s = await setup(t);
+  await addActiveServer(s.app);
+  await s.post("/api/settings/projects", { name: "shop", server_key: "shop-node", containers: ["a", "b"] });
+  assert.equal((await s.patch("/api/settings/projects/shop", { containers: ["a"] })).status, 200);
+  let links = await s.app.db.transaction((ops) => ops.listContainerLinks("shop"));
+  assert.deepEqual(links.map((l) => [l.container_name, l.released_at === null]), [["a", true], ["b", false]]);
+  // b is free for another project while released, and back in shop once re-added.
+  assert.equal((await s.patch("/api/settings/projects/shop", { containers: ["a", "b"] })).status, 200);
+  links = await s.app.db.transaction((ops) => ops.listContainerLinks("shop"));
+  assert.deepEqual(links.map((l) => [l.container_name, l.released_at === null]), [["a", true], ["b", true]]);
+  const row = (await s.app.db.listProjects()).find((p) => p.key === "shop");
+  assert.deepEqual(row.containers, ["a", "b"]);
+});
+
+test("staging's copies of the platform containers are refused like on main", async (t) => {
+  // The container names cAdvisor reported on staging in the browser check of 12 Nov 2026.
+  const STAGING = ["cadvisor", "fyp-postgres", "grafana", "influxdb", "kotone-bot", "mlflow", "node-exporter", "sample-service", "ts-proxy-cadvisor", "ts-proxy-node"];
+  stubProm(t, (q) =>
+    q === 'sum by (name) (container_memory_working_set_bytes{job="cadvisor-old",name!=""})' ? STAGING.map((name) => ({ metric: { name }, value: 1 })) : []
+  );
+  const s = await setup(t);
+  const list = await (await s.get("/api/settings/servers/old/containers")).json();
+  const platform = new Set(["cadvisor", "fyp-postgres", "grafana", "influxdb", "mlflow", "node-exporter"]);
+  assert.deepEqual(list.map((c) => c.name), STAGING);
+  for (const c of list) {
+    if (platform.has(c.name)) assert.deepEqual(c, { name: c.name, available: false, reason: "Used by the platform" });
+    else assert.deepEqual(c, { name: c.name, available: true, reason: null });
+  }
+  const res = await s.post("/api/settings/projects", { name: "grab", server_key: "old", containers: ["influxdb"] });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).field, "containers");
+  assert.equal((await s.post("/api/settings/projects", { name: "kotone", server_key: "old", containers: ["kotone-bot"] })).status, 201);
 });
 
 test("the log: default 50, 200 allowed, newest first, other limits refused", async (t) => {

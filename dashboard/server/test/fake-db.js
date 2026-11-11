@@ -14,7 +14,7 @@ function seedRegistry() {
   const at = new Date(Date.UTC(2026, 9, 1));
   return {
     servers: SEED_SERVERS.map((s) => ({ ...s, created_at: at, updated_at: at })),
-    projects: SEED_PROJECTS.map((p) => ({ ...p, containers: [...p.containers], created_at: at, updated_at: at })),
+    projects: SEED_PROJECTS.map((p) => ({ ...p, containers: [...p.containers], released: [], created_at: at, updated_at: at })),
     log: [{ id: 1, at, user_email: SEED_USER, action: "Imported", target: "registry", detail: "Built-in records added: server main, server old, project sample-service" }],
     nextLogId: 2,
   };
@@ -23,17 +23,18 @@ function seedRegistry() {
 function cloneRegistry(r) {
   return {
     servers: r.servers.map((s) => ({ ...s })),
-    projects: r.projects.map((p) => ({ ...p, containers: [...p.containers] })),
+    projects: r.projects.map((p) => ({ ...p, containers: [...p.containers], released: p.released.map((x) => ({ ...x })) })),
     log: r.log.map((l) => ({ ...l })),
     nextLogId: r.nextLogId,
   };
 }
 
-// Same unique rule as the project_containers table: a container name belongs to one project per server.
+// Same unique rule as the project_containers table: a container name belongs to one project per
+// server while its link is not released (released links are in p.released, not p.containers).
 function checkContainers(r, projectKey, serverKey, names) {
   for (const name of names) {
     const taken = r.projects.some((x) => x.key !== projectKey && x.server_key === serverKey && x.containers.includes(name));
-    if (taken) throw uniqueViolation("project_containers_server_key_container_name_key");
+    if (taken) throw uniqueViolation("project_containers_live_idx");
   }
 }
 
@@ -46,7 +47,7 @@ function registryOps(r, now) {
       return r.servers.map((s) => ({ ...s }));
     },
     async listProjects() {
-      return r.projects.map((p) => ({ ...p, containers: [...p.containers].sort() }));
+      return r.projects.map(({ released, ...p }) => ({ ...p, containers: [...p.containers].sort() }));
     },
     async insertServer(s) {
       if (r.servers.some((x) => x.key === s.key)) throw uniqueViolation("servers_pkey");
@@ -70,7 +71,7 @@ function registryOps(r, now) {
       if (r.projects.some((x) => x.key === p.key || x.name === p.name)) throw uniqueViolation("projects_pkey");
       checkContainers(r, p.key, p.server_key, p.containers || []);
       const { containers, ...row } = p;
-      r.projects.push({ builtin: false, ...row, containers: [...(containers || [])], created_at: now(), updated_at: now() });
+      r.projects.push({ builtin: false, ...row, containers: [...(containers || [])], released: [], created_at: now(), updated_at: now() });
     },
     async updateProject(key, patch) {
       const p = r.projects.find((x) => x.key === key);
@@ -82,7 +83,18 @@ function registryOps(r, now) {
       const p = r.projects.find((x) => x.key === projectKey);
       if (!p) return;
       checkContainers(r, projectKey, serverKey, names);
+      // Like the table: dropped links are released, not deleted; a re-added name is taken back.
+      const at = now();
+      for (const name of p.containers) if (!names.includes(name)) p.released.push({ container_name: name, server_key: serverKey, released_at: at });
+      p.released = p.released.filter((x) => !names.includes(x.container_name));
       p.containers = [...names];
+    },
+    async listContainerLinks(projectKey) {
+      const p = r.projects.find((x) => x.key === projectKey);
+      if (!p) return [];
+      const live = p.containers.map((name) => ({ project_key: p.key, container_name: name, server_key: p.server_key, released_at: null }));
+      const gone = p.released.map((x) => ({ project_key: p.key, ...x }));
+      return [...live, ...gone].sort((a, b) => a.container_name.localeCompare(b.container_name));
     },
     async insertLog({ userEmail, action, target, detail }) {
       r.log.push({ id: r.nextLogId++, at: now(), user_email: userEmail, action, target, detail: detail || "" });

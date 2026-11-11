@@ -41,10 +41,12 @@ const PLATFORM_CONTAINERS = Object.freeze([
   "dashboard",
 ]);
 
-// The names a project cannot take on this server. The platform runs on main, so main keeps the
-// list even if its role is edited, and any other server with the platform role gets it too.
-function platformNames(server) {
-  return server.key === "main" || server.role === "platform" ? new Set(PLATFORM_CONTAINERS) : new Set();
+// The names a project cannot take, on every server. The platform runs on main, and other servers
+// such as staging run copies of the same containers (cadvisor, node-exporter, influxdb and so on),
+// so the list applies everywhere, whatever the server's role.
+const PLATFORM_SET = new Set(PLATFORM_CONTAINERS);
+function platformNames() {
+  return PLATFORM_SET;
 }
 
 const LOG_LIMITS = Object.freeze([50, 200]);
@@ -399,7 +401,7 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin }) {
     for (const p of projects) {
       if (p.server_key === row.key && p.status === "active") for (const c of p.containers) owner.set(c, p.name);
     }
-    const platform = platformNames(row);
+    const platform = platformNames();
     res.json(
       seen.map((name) => {
         if (platform.has(name)) return { name, available: false, reason: "Used by the platform" };
@@ -414,7 +416,7 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin }) {
   // Checks that every container is free for this project on this server. projects is the current
   // list, ownKey the project being edited (its own containers do not count as taken).
   function checkFree(server, projects, containers, ownKey) {
-    const platform = platformNames(server);
+    const platform = platformNames();
     for (const name of containers) {
       if (platform.has(name)) throw new ApiError(409, `${name} is used by the platform and cannot be added to a project.`, "containers");
       const other = projects.find((p) => p.key !== ownKey && p.server_key === server.key && p.status === "active" && p.containers.includes(name));
@@ -519,8 +521,8 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin }) {
     res.json(updated);
   }));
 
-  // Archiving frees the project's containers so another project can use them. The project record
-  // and its log entries stay.
+  // Archiving releases the project's containers so another project can use them. The link rows
+  // are kept with released_at set, and the project record and its log entries stay.
   router.post("/projects/:key/archive", ...write, route(async (req, res) => {
     const archived = await commit(req, async (ops) => {
       const [servers, projects] = await Promise.all([ops.listServers(), ops.listProjects()]);

@@ -52,9 +52,26 @@ CREATE TABLE IF NOT EXISTS project_containers (
   project_key text NOT NULL REFERENCES projects(key),
   container_name text NOT NULL CHECK (container_name ~ '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$'),
   server_key text NOT NULL REFERENCES servers(key),
-  PRIMARY KEY (project_key, container_name),
-  UNIQUE (server_key, container_name)
+  released_at timestamptz,
+  PRIMARY KEY (project_key, container_name)
 );
+-- Links are never deleted: archiving a project sets released_at. A container belongs to one
+-- project per server only while its link is not released. Databases made before this change had
+-- UNIQUE (server_key, container_name); it is dropped once, only if it exists.
+ALTER TABLE project_containers ADD COLUMN IF NOT EXISTS released_at timestamptz;
+DO $
+DECLARE c record;
+BEGIN
+  FOR c IN
+    SELECT conname FROM pg_constraint
+     WHERE conrelid = 'project_containers'::regclass AND contype = 'u'
+  LOOP
+    EXECUTE format('ALTER TABLE project_containers DROP CONSTRAINT %I', c.conname);
+  END LOOP;
+END
+$;
+CREATE UNIQUE INDEX IF NOT EXISTS project_containers_live_idx
+  ON project_containers (server_key, container_name) WHERE released_at IS NULL;
 CREATE TABLE IF NOT EXISTS settings_log (
   id bigserial PRIMARY KEY,
   at timestamptz NOT NULL DEFAULT now(),
@@ -111,9 +128,14 @@ function registryOps(runner) {
     return q(`UPDATE ${table} SET ${sets.join(", ")}, updated_at = now() WHERE key = $1`, [key, ...columns.map((c) => patch[c])]);
   }
 
+  // Links a container to a project. A link released earlier for the same project is taken back.
   async function addContainers(projectKey, serverKey, names) {
     for (const name of names) {
-      await q("INSERT INTO project_containers (project_key, container_name, server_key) VALUES ($1, $2, $3)", [projectKey, name, serverKey]);
+      await q(
+        `INSERT INTO project_containers (project_key, container_name, server_key) VALUES ($1, $2, $3)
+         ON CONFLICT (project_key, container_name) DO UPDATE SET server_key = EXCLUDED.server_key, released_at = NULL`,
+        [projectKey, name, serverKey]
+      );
     }
   }
 
@@ -126,7 +148,7 @@ function registryOps(runner) {
         await q(
           `SELECT p.key, p.name, p.server_key, p.repo_url, p.deploy_source, p.automation, p.builtin, p.status, p.created_at, p.updated_at,
                   COALESCE(array_agg(c.container_name ORDER BY c.container_name) FILTER (WHERE c.container_name IS NOT NULL), '{}') AS containers
-             FROM projects p LEFT JOIN project_containers c ON c.project_key = p.key
+             FROM projects p LEFT JOIN project_containers c ON c.project_key = p.key AND c.released_at IS NULL
             GROUP BY p.key ORDER BY p.created_at, p.key`
         )
       ).rows;
@@ -152,10 +174,20 @@ function registryOps(runner) {
     updateProject(key, patch) {
       return update("projects", key, patch, PROJECT_EDITABLE);
     },
-    // Replaces the container links of a project. An empty list releases them all.
+    // Sets the live container links of a project. Links that are no longer wanted are released
+    // (released_at set), never deleted, so an empty list releases them all.
     async setContainers(projectKey, serverKey, names) {
-      await q("DELETE FROM project_containers WHERE project_key = $1", [projectKey]);
+      await q(
+        "UPDATE project_containers SET released_at = now() WHERE project_key = $1 AND released_at IS NULL AND NOT (container_name = ANY($2::text[]))",
+        [projectKey, names]
+      );
       await addContainers(projectKey, serverKey, names);
+    },
+    // Every link of a project, released ones included, oldest first. For tests and audits.
+    async listContainerLinks(projectKey) {
+      return (
+        await q("SELECT project_key, container_name, server_key, released_at FROM project_containers WHERE project_key = $1 ORDER BY container_name", [projectKey])
+      ).rows;
     },
     // The only write to settings_log is this insert. There is no update or delete anywhere.
     async insertLog({ userEmail, action, target, detail }) {

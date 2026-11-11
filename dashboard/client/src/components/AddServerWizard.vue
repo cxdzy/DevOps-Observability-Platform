@@ -206,7 +206,8 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
 </script>
 
 <template>
-  <section ref="root" tabindex="-1" :aria-label="resumed ? `Continue setup of ${resumed.name}` : 'Add server'" class="flex flex-col gap-[18px] rounded-xl border border-border p-[18px]">
+  <!-- Escape anywhere in the wizard closes it; the parent puts focus back on the button that opened it. -->
+  <section ref="root" tabindex="-1" :aria-label="resumed ? `Continue setup of ${resumed.name}` : 'Add server'" class="flex flex-col gap-[18px] rounded-xl border border-border p-[18px]" @keydown.esc.stop="emit('close')">
     <div class="flex flex-wrap items-baseline justify-between gap-2.5">
       <span class="text-[15px] font-semibold">{{ resumed ? `Continue setup of ${resumed.name}` : 'Add server' }}</span>
       <span class="flex items-center gap-3 text-xs text-muted-foreground">

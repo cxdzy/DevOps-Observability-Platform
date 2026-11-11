@@ -63,7 +63,8 @@ const canShowMore = computed(() => limit.value === 50 && rows.value.length >= 50
 
 <template>
   <section aria-label="Change log" class="overflow-hidden rounded-xl border border-border">
-    <div class="overflow-x-auto">
+    <!-- relative: the sr-only labels inside are position absolute and must stay inside this scroll box -->
+    <div class="relative overflow-x-auto">
       <div class="min-w-[760px]">
         <div class="grid grid-cols-[140px_120px_150px_minmax(0,1fr)] gap-3 bg-chip px-[18px] py-2 text-xs font-medium text-muted-foreground">
           <span>Time</span><span>Who</span><span>Change</span><span>What</span>
@@ -86,7 +87,8 @@ const canShowMore = computed(() => limit.value === 50 && rows.value.length >= 50
             class="grid grid-cols-[140px_120px_150px_minmax(0,1fr)] items-center gap-3 border-t border-border px-[18px] py-[11px]"
           >
             <span class="font-mono text-[13px]">{{ when(r.at) }}</span>
-            <span class="truncate" :title="r.userEmail">{{ who(r.userEmail) }}</span>
+            <!-- The part before the @ is shown; the full email is in the title and the accessible name. -->
+            <span class="truncate" :title="r.userEmail"><span aria-hidden="true">{{ who(r.userEmail) }}</span><span class="sr-only">{{ r.userEmail.toLowerCase() === 'system' ? 'System' : r.userEmail }}</span></span>
             <span class="w-max rounded-full px-2.5 py-0.5 text-xs font-semibold" :class="kindClass(r.action)">{{ r.action }}</span>
             <span class="min-w-0 text-[13px] text-chipfg">
               <span v-if="r.target" class="font-mono font-medium text-foreground">{{ r.target }}</span>

@@ -151,11 +151,22 @@ const confirming = ref<SettingsProject | null>(null)
 const archiveError = ref<string | null>(null)
 const archiving = ref(false)
 const confirmCancel = ref<HTMLButtonElement | null>(null)
+// The Archive button that opened the confirmation; focus goes back to it on Cancel or Escape.
+let opener: HTMLElement | null = null
 function askArchive(p: SettingsProject) {
+  const el = document.activeElement
+  opener = el instanceof HTMLElement && el !== document.body ? el : null
   confirming.value = p
   archiveError.value = null
   // Focus goes to Cancel in the confirmation, the safe choice.
   nextTick(() => confirmCancel.value?.focus())
+}
+function closeConfirm() {
+  const el = opener
+  opener = null
+  confirming.value = null
+  archiveError.value = null
+  nextTick(() => { if (el && el.isConnected) el.focus() })
 }
 async function archive() {
   if (!confirming.value) return
@@ -164,6 +175,7 @@ async function archive() {
   try {
     await api.post(`/api/settings/projects/${encodeURIComponent(confirming.value.key)}/archive`, {})
     confirming.value = null
+    opener = null
     refresh()
     loadContainers()
   } catch (err) {
@@ -193,7 +205,8 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
         {{ shown.length }} project{{ shown.length === 1 ? '' : 's' }} on {{ serverCount }} server{{ serverCount === 1 ? '' : 's' }}
       </span>
     </div>
-    <div class="overflow-x-auto">
+    <!-- relative: the sr-only labels inside are position absolute and must stay inside this scroll box -->
+    <div class="relative overflow-x-auto">
       <div class="min-w-[900px]">
         <div :class="GRID" class="bg-chip px-[18px] py-2 text-xs font-medium text-muted-foreground">
           <span>Project</span><span>Server</span><span>Deployments from</span><span>Automation</span><span>Rollback</span><span><span class="sr-only">Actions</span></span>
@@ -211,19 +224,19 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
         </p>
         <div v-for="p in shown" :key="p.key" :class="GRID" class="items-center border-t border-border px-[18px] py-3">
           <span class="flex min-w-0 flex-col">
-            <span class="flex items-center gap-2">
-              <span class="truncate font-mono text-[13px] font-medium">{{ p.name }}</span>
+            <span class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <span class="min-w-0 font-mono text-[13px] font-medium [overflow-wrap:anywhere]">{{ p.name }}</span>
               <a v-if="p.repoUrl" :href="p.repoUrl" target="_blank" rel="noopener noreferrer" class="shrink-0 text-xs text-muted-foreground underline">Repository<span class="sr-only"> of {{ p.name }}, opens in a new tab</span></a>
             </span>
             <span class="truncate text-xs text-muted-foreground" :title="containersText(p)">{{ containersText(p) }}</span>
           </span>
-          <span class="truncate font-mono text-[13px]">{{ p.serverName }}</span>
+          <span class="min-w-0 font-mono text-[13px] [overflow-wrap:anywhere]">{{ p.serverName }}</span>
           <span
-            class="w-max rounded-full px-2.5 py-0.5 text-xs font-semibold"
+            class="w-fit max-w-full rounded-[10px] px-2.5 py-0.5 text-xs leading-snug font-semibold"
             :class="p.deploySource === 'ci' ? 'bg-foreground text-card' : 'bg-chip text-chipfg'"
           >{{ p.deploySource === 'ci' ? 'CI events (verified)' : 'Image changes (detected)' }}</span>
           <span
-            class="w-max rounded-full px-2.5 py-0.5 text-xs font-semibold"
+            class="w-fit max-w-full rounded-[10px] px-2.5 py-0.5 text-xs leading-snug font-semibold"
             :class="p.automation === 'approval' ? 'bg-okbg text-ok' : 'border border-dashed border-input text-chipfg'"
           >{{ p.automation === 'approval' ? 'Restart and rollback with approval' : 'Monitored only' }}</span>
           <span class="text-[13px] text-chipfg">{{ p.automation === 'approval' ? 'By n8n, after approval on Telegram' : 'Handled by its own pipeline' }}</span>
@@ -235,14 +248,14 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
     </div>
   </section>
 
-  <div v-if="confirming" class="flex flex-col gap-3 rounded-xl border border-dashed border-input p-[18px]" role="alertdialog" :aria-label="`Archive ${confirming.name}`">
+  <div v-if="confirming" class="flex flex-col gap-3 rounded-xl border border-dashed border-input p-[18px]" role="alertdialog" :aria-label="`Archive ${confirming.name}`" @keydown.esc.stop="closeConfirm">
     <span class="text-[15px] font-semibold">Archive <span class="font-mono">{{ confirming.name }}</span>?</span>
     <p class="text-[13px] text-chipfg">
       This stops monitoring and deployment detection for the project and frees its containers to be picked again. Its history, incidents and name are kept, and the containers keep running. Nothing is deleted.
     </p>
     <p v-if="archiveError" class="text-[13px] text-destructive" role="alert">{{ archiveError }}</p>
     <div class="flex justify-end gap-2">
-      <button ref="confirmCancel" type="button" :class="btn" class="border border-border hover:bg-chip" @click="confirming = null">Cancel</button>
+      <button ref="confirmCancel" type="button" :class="btn" class="border border-border hover:bg-chip" @click="closeConfirm">Cancel</button>
       <button type="button" :class="btn" class="bg-primary text-primary-foreground disabled:opacity-50" :disabled="archiving" @click="archive">{{ archiving ? 'Archiving' : 'Archive project' }}</button>
     </div>
   </div>

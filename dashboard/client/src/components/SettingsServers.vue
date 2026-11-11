@@ -40,13 +40,35 @@ async function load() {
 // Every 15 s, so the dots and a pending server's state stay current.
 const { refresh } = usePoll(load, 15000)
 
+// The control that opened the wizard or the confirmation. Closing either puts focus back on it,
+// or on Add server when that control is gone (for example the row of an archived server).
+const addButton = ref<HTMLButtonElement | null>(null)
+let opener: HTMLElement | null = null
+function rememberOpener() {
+  const el = document.activeElement
+  opener = el instanceof HTMLElement && el !== document.body ? el : null
+}
+function returnFocus() {
+  const el = opener
+  opener = null
+  nextTick(() => {
+    if (el && el.isConnected) el.focus()
+    else addButton.value?.focus()
+  })
+}
+
 // The wizard: closed, or open for a new server (server null) or for a pending one.
 const wizard = ref<{ server: SettingsServer | null, id: number } | null>(null)
 let wizardId = 0
 function openWizard(server: SettingsServer | null) {
+  rememberOpener()
   closeEdit()
   confirming.value = null
   wizard.value = { server, id: ++wizardId }
+}
+function closeWizard() {
+  wizard.value = null
+  returnFocus()
 }
 
 // Editing role and location.
@@ -98,12 +120,19 @@ const archiveError = ref<string | null>(null)
 const archiving = ref(false)
 const confirmCancel = ref<HTMLButtonElement | null>(null)
 function askArchive(s: SettingsServer) {
+  rememberOpener()
   wizard.value = null
   closeEdit()
   confirming.value = s
   archiveError.value = null
   // Focus goes to Cancel in the confirmation, the safe choice.
   nextTick(() => confirmCancel.value?.focus())
+}
+// Cancel and Escape close the confirmation and return focus to the Archive button.
+function closeConfirm() {
+  confirming.value = null
+  archiveError.value = null
+  returnFocus()
 }
 async function archive() {
   if (!confirming.value) return
@@ -112,6 +141,9 @@ async function archive() {
   try {
     await api.post(`/api/settings/servers/${encodeURIComponent(confirming.value.key)}/archive`, {})
     confirming.value = null
+    // The row's Archive button goes away, so focus goes to Add server.
+    opener = null
+    returnFocus()
     refresh()
   } catch (err) {
     archiveError.value = apiError(err).message
@@ -151,12 +183,13 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
   <section aria-label="Servers" class="overflow-hidden rounded-xl border border-border">
     <div class="flex items-center justify-between gap-3 px-[18px] py-3.5">
       <span class="text-[15px] font-semibold">Servers</span>
-      <button type="button" :class="btn" class="gap-2 bg-primary text-primary-foreground" @click="openWizard(null)">
+      <button ref="addButton" type="button" :class="btn" class="gap-2 bg-primary text-primary-foreground" @click="openWizard(null)">
         <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
         Add server
       </button>
     </div>
-    <div class="overflow-x-auto">
+    <!-- relative: the sr-only labels inside are position absolute and must stay inside this scroll box -->
+    <div class="relative overflow-x-auto">
       <div class="min-w-[900px]">
         <div :class="GRID" class="bg-chip px-[18px] py-2 text-xs font-medium text-muted-foreground">
           <span>Server</span><span>Role</span><span>Location</span><span>node-exporter</span><span>cAdvisor</span><span>Status</span><span><span class="sr-only">Actions</span></span>
@@ -179,14 +212,14 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
           class="items-center border-t border-border px-[18px] py-3"
         >
           <span class="flex min-w-0 flex-col">
-            <span class="flex items-center gap-2">
-              <span class="truncate font-mono text-[13px] font-medium">{{ s.name }}</span>
-              <span v-if="tag(s)" class="rounded-md bg-chip px-1.5 text-[11px] font-semibold text-chipfg">{{ tag(s) }}</span>
+            <span class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <span class="min-w-0 font-mono text-[13px] font-medium [overflow-wrap:anywhere]">{{ s.name }}</span>
+              <span v-if="tag(s)" class="whitespace-nowrap rounded-md bg-chip px-1.5 text-[11px] font-semibold text-chipfg">{{ tag(s) }}</span>
             </span>
-            <span class="truncate font-mono text-xs text-muted-foreground">{{ s.address ?? (s.key === 'main' ? 'local' : 'Tailscale') }}</span>
+            <span class="font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">{{ s.address ?? (s.key === 'main' ? 'local' : 'Tailscale') }}</span>
           </span>
           <span>{{ ROLE_LABEL[s.role] ?? s.role }}</span>
-          <span class="truncate text-muted-foreground">{{ s.location }}</span>
+          <span class="min-w-0 text-muted-foreground [overflow-wrap:anywhere]">{{ s.location }}</span>
           <span class="inline-flex items-center gap-1.5 text-[13px]">
             <span class="size-2 shrink-0 rounded-full" :class="dotClass(s.status === 'archived' ? null : s.nodeUp)" aria-hidden="true" />
             {{ s.status === 'archived' ? 'Not scraped' : exporterText(s, s.nodeUp) }}
@@ -236,14 +269,14 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
     </div>
   </form>
 
-  <div v-if="confirming" class="flex flex-col gap-3 rounded-xl border border-dashed border-input p-[18px]" role="alertdialog" :aria-label="`Archive ${confirming.name}`">
+  <div v-if="confirming" class="flex flex-col gap-3 rounded-xl border border-dashed border-input p-[18px]" role="alertdialog" :aria-label="`Archive ${confirming.name}`" @keydown.esc.stop="closeConfirm">
     <span class="text-[15px] font-semibold">Archive <span class="font-mono">{{ confirming.name }}</span>?</span>
     <p class="text-[13px] text-chipfg">
       This stops scraping the server and hides it from Overview, Resources and Containers. Its history, incidents and name are kept, and nothing is deleted.
     </p>
     <p v-if="archiveError" class="text-[13px] text-destructive" role="alert">{{ archiveError }}</p>
     <div class="flex justify-end gap-2">
-      <button ref="confirmCancel" type="button" :class="btn" class="border border-border hover:bg-chip" @click="confirming = null">Cancel</button>
+      <button ref="confirmCancel" type="button" :class="btn" class="border border-border hover:bg-chip" @click="closeConfirm">Cancel</button>
       <button type="button" :class="btn" class="bg-primary text-primary-foreground disabled:opacity-50" :disabled="archiving" @click="archive">{{ archiving ? 'Archiving' : 'Archive server' }}</button>
     </div>
   </div>
@@ -253,6 +286,6 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
     :key="wizard.id"
     :server="wizard.server"
     @changed="refresh"
-    @close="wizard = null"
+    @close="closeWizard"
   />
 </template>
