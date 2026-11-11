@@ -13,7 +13,7 @@ const MAX_REPO_URL = 200;
 const MAX_CONTAINERS = 50;
 
 // Servers added in the dashboard are scraped by these two jobs and told apart by a server label.
-// The targets file that Prometheus reads is written by a later change.
+// The targets files that Prometheus reads are written by targets.js after every registry change.
 const REGISTRY_NODE_JOB = "node-registry";
 const REGISTRY_CADVISOR_JOB = "cadvisor-registry";
 
@@ -87,9 +87,23 @@ function seedSnapshot() {
   return buildSnapshot(SEED_SERVERS, SEED_PROJECTS, 0);
 }
 
+// The writer for the folder targetsDir() names, or null. targets.js is loaded here, not at the top,
+// because it uses the input checks from this file.
+function defaultWriter(log) {
+  const { createTargetsWriter, targetsDir } = require("./targets");
+  const dir = targetsDir();
+  return dir ? createTargetsWriter({ dir, log }) : null;
+}
+
 // db may be left out (tests and scripts); the registry then holds only the built-in servers.
-function createRegistry({ db = null, now = Date.now, log = console.log } = {}) {
+// targets is a writer from targets.js (null for none). When it is left out, one is made only when
+// there is a database and targetsDir() names a folder: TARGETS_DIR, or /app/targets in the
+// production container. Tests and local runs therefore never write files by accident. The writer
+// runs once at start and after every successful read of the database, and skips a write when
+// the files would not change.
+function createRegistry({ db = null, now = Date.now, log = console.log, targets } = {}) {
   let snapshot = seedSnapshot();
+  const writer = targets !== undefined ? targets : db ? defaultWriter(log) : null;
   let loadedAt = db ? -Infinity : Infinity;
   let version = 0;
   let inflight = null;
@@ -100,6 +114,7 @@ function createRegistry({ db = null, now = Date.now, log = console.log } = {}) {
       version += 1;
       snapshot = buildSnapshot(serverRows, projectRows, version);
       loadedAt = now();
+      if (writer) await writer.write(snapshot.servers);
     } catch (err) {
       // Keep the last good data and try again soon, so a database hiccup does not take the
       // Overview and Resources pages down.
@@ -141,6 +156,21 @@ function createRegistry({ db = null, now = Date.now, log = console.log } = {}) {
     return load({ force: true });
   }
 
+  // { ok, error } for the Prometheus targets files. The error is a sentence for the check route.
+  function targetsStatus() {
+    return writer ? writer.status() : { ok: true, error: null };
+  }
+
+  // Writes the targets files once at start. The database may not be ready yet, so a failed first
+  // read is tried again every few seconds until one works.
+  if (writer && db) {
+    const startup = async () => {
+      await reload();
+      if (version === 0) setTimeout(startup, RETRY_MS).unref();
+    };
+    startup();
+  }
+
   // Memoises fn(snapshot) until the registry changes. Allow lists use it so the list is rebuilt
   // only when the servers change, and the same array object is returned in between.
   function derived(fn) {
@@ -156,7 +186,7 @@ function createRegistry({ db = null, now = Date.now, log = console.log } = {}) {
     };
   }
 
-  return { load, current, reload, derived };
+  return { load, current, reload, derived, targetsStatus };
 }
 
 // ---- Input checks used by the settings routes. Each returns null or { error, field }.

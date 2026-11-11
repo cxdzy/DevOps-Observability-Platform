@@ -166,3 +166,35 @@ test("a function allow list is read on each query but the set is built only when
   assert.equal(reads, 3);
   assert.equal(iterations, 1);
 });
+
+test("targets() sends one fixed GET to /api/v1/targets?state=active and returns health and error per job and server", async (t) => {
+  const calls = stubFetch(t, () =>
+    json({
+      status: "success",
+      data: {
+        activeTargets: [
+          { labels: { job: "node-registry", server: "shop-node" }, health: "down", lastError: "connection refused", lastScrape: "2026-11-12T08:00:00Z" },
+          { labels: { job: "cadvisor" }, health: "up", lastError: "" },
+        ],
+      },
+    })
+  );
+  const prom = createPrometheus({ allowed: [ALLOWED], url: URL_BASE });
+  const rows = await prom.targets();
+  assert.deepEqual(rows, [
+    { job: "node-registry", server: "shop-node", health: "down", lastError: "connection refused", lastScrape: "2026-11-12T08:00:00Z" },
+    { job: "cadvisor", server: "", health: "up", lastError: "", lastScrape: null },
+  ]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, `${URL_BASE}/api/v1/targets?state=active`);
+  assert.equal(calls[0].init.method, "GET");
+  assert.ok(calls[0].init.signal);
+});
+
+test("targets() refuses an error status and an unexpected body", async (t) => {
+  stubFetch(t, () => json({}, 500));
+  const prom = createPrometheus({ allowed: [ALLOWED], url: URL_BASE });
+  await assert.rejects(() => prom.targets(), /returned 500/);
+  globalThis.fetch = async () => json({ status: "success", data: {} });
+  await assert.rejects(() => prom.targets(), /unexpected/);
+});

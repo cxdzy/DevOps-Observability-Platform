@@ -13,3 +13,8 @@ scripts/injector.log
 *.env.bak*
 
 bench/chat_model_test/results/
+
+# Prometheus target files written by the dashboard. They hold Tailscale addresses, so only the
+# folder (its .gitkeep) is committed.
+prometheus/targets/*.json
+prometheus/targets/*.tmp

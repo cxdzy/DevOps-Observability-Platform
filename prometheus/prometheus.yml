@@ -36,10 +36,25 @@ scrape_configs:
           server: old
           instance: naqib-emqx-vps-1
 
-# Long-term copy of every metric into InfluxDB (ML training dataset)
+  # Servers added in the dashboard. The dashboard writes the two files below (one entry per
+  # pending or active server, each with server and instance labels). Prometheus rereads them every
+  # 30 seconds, so a new server needs no restart.
+  - job_name: node-registry
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/node.json']
+        refresh_interval: 30s
+
+  - job_name: cadvisor-registry
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/cadvisor.json']
+        refresh_interval: 30s
+
+# Long-term copy of every metric into InfluxDB (ML training dataset). Anything that carries a
+# server label (the old server and every server added in the dashboard) is dropped, so only the
+# fyp-main jobs, which have no server label, reach the training data.
 remote_write:
   - url: http://influxdb:8086/api/v1/prom/write?db=prometheus
     write_relabel_configs:
       - source_labels: [server]
-        regex: old
+        regex: .+
         action: drop

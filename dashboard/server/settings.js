@@ -51,6 +51,26 @@ function platformNames() {
 
 const LOG_LIMITS = Object.freeze([50, 200]);
 const NOT_REACHABLE = "Prometheus is not reachable.";
+// Prometheus reads the targets file every 30 seconds and scrapes within 15 more, so a server saved
+// less than this long ago may simply not be picked up yet.
+const PICKUP_GRACE_MS = 60 * 1000;
+const NOT_PICKED_UP = "Prometheus has not picked it up yet";
+const UNREACHABLE_DEFAULT = "Prometheus cannot reach the exporter. Check that the command was run and that the address is right.";
+
+// Prometheus's lastError for a failed scrape in plain words, or null when it is not a known kind.
+function explainScrapeError(raw) {
+  const text = String(raw || "");
+  if (!text) return null;
+  if (/connection refused/i.test(text)) return "Connection refused";
+  if (/deadline exceeded|timed? ?out/i.test(text)) return "No answer within 10 s";
+  if (/no route to host/i.test(text)) return "No route to the server";
+  if (/network is unreachable/i.test(text)) return "The network is unreachable";
+  if (/no such host/i.test(text)) return "The address was not found";
+  if (/connection reset|EOF/i.test(text)) return "The exporter closed the connection";
+  const http = /HTTP status (\d{3})/i.exec(text);
+  if (http) return `The exporter answered with HTTP ${http[1]}`;
+  return null;
+}
 
 // A failed request check, sent as a JSON error body.
 class ApiError extends Error {
@@ -132,7 +152,7 @@ function projectView(row, serversByKey) {
 
 // deps: { auth, db, registry, prometheus, appOrigin, now }. prometheus is optional and lets tests
 // pass a client; the default one follows the registry.
-function createSettingsRouter({ auth, db, registry, prometheus, appOrigin }) {
+function createSettingsRouter({ auth, db, registry, prometheus, appOrigin, now = Date.now }) {
   const allowed = registry.derived((snap) =>
     snap.servers.filter((s) => s.status !== "archived").flatMap((s) => Object.values(queriesFor(s)))
   );
@@ -194,28 +214,50 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin }) {
     return project;
   }
 
-  // The result of up{} and timestamp(up{}) for one selector pair, never throws.
-  async function exporterState(upQuery, seenQuery) {
+  // The result of up{} and timestamp(up{}) for one selector pair, never throws. ctx says what is
+  // known about the target: its job, the Prometheus target list (or null when it could not be
+  // read), whether the server was saved a moment ago, and the targets file problem if there is one.
+  // up always comes from up{}, so the activate rule (both up) is unchanged. A targets file problem
+  // is the error whenever there is one, because no other answer can be trusted while it lasts.
+  async function exporterState(upQuery, seenQuery, ctx) {
     try {
       const [upRows, seenRows] = await Promise.all([prom.query(upQuery), prom.query(seenQuery)]);
-      if (!upRows.length) return { up: false, lastScrape: null, error: "Not added to Prometheus yet" };
-      const up = upRows[0].value === 1;
-      const seen = seenRows.length && Number.isFinite(seenRows[0].value) ? new Date(seenRows[0].value * 1000).toISOString() : null;
-      return {
-        up,
-        lastScrape: seen,
-        error: up ? null : "Prometheus cannot reach the exporter. Check that the command was run and that the address is right.",
-      };
+      const target = ctx.targets ? ctx.targets.find((t) => t.job === ctx.job && (ctx.server === "" || t.server === ctx.server)) : null;
+      const up = upRows.length > 0 && upRows[0].value === 1;
+      const seen = upRows.length && seenRows.length && Number.isFinite(seenRows[0].value) ? new Date(seenRows[0].value * 1000).toISOString() : null;
+      let error = null;
+      if (ctx.fileError) error = ctx.fileError;
+      else if (up) error = null;
+      // A failed scrape is real news, so its error is shown even right after saving.
+      else if (target && target.health === "down") error = explainScrapeError(target.lastError) || UNREACHABLE_DEFAULT;
+      else if (upRows.length) error = UNREACHABLE_DEFAULT;
+      // No series yet. Saved less than a minute ago, or listed by Prometheus but not scraped yet:
+      // Prometheus may still be reading the file or waiting for its first scrape.
+      else if (ctx.recent || target) error = NOT_PICKED_UP;
+      else error = "Not added to Prometheus yet";
+      return { up, lastScrape: seen, error };
     } catch {
       return { up: false, lastScrape: null, error: "Prometheus is not reachable" };
     }
   }
 
-  async function checkServer(server) {
+  // row is the database row (for the time it was saved). Built-in servers have static jobs, so the
+  // targets file and the grace period do not apply to them.
+  async function checkServer(server, row) {
     const q = queriesFor(server);
+    let targets = null;
+    try {
+      if (typeof prom.targets === "function") targets = await prom.targets();
+    } catch {
+      targets = null;
+    }
+    const fileError = server.builtin ? null : registry.targetsStatus().error;
+    const saved = row && row.updated_at ? new Date(row.updated_at).getTime() : NaN;
+    const recent = !server.builtin && Number.isFinite(saved) && now() - saved < PICKUP_GRACE_MS;
+    const shared = { targets, recent, fileError, server: server.builtin ? "" : server.key };
     const [node, cadvisor] = await Promise.all([
-      exporterState(q.nodeUp, q.nodeSeen),
-      exporterState(q.cadvisorUp, q.cadvisorSeen),
+      exporterState(q.nodeUp, q.nodeSeen, { ...shared, job: server.nodeJob }),
+      exporterState(q.cadvisorUp, q.cadvisorSeen, { ...shared, job: server.cadvisorJob }),
     ]);
     return { node, cadvisor };
   }
@@ -353,7 +395,7 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin }) {
     if (row.status === "archived") throw new ApiError(409, "An archived server cannot be checked.");
     const server = registry.current().servers.find((s) => s.key === row.key);
     if (!server) throw new ApiError(409, "The server record is not valid.");
-    res.json(await checkServer(server));
+    res.json(await checkServer(server, row));
   }));
 
   router.post("/servers/:key/activate", ...write, route(async (req, res) => {
@@ -363,7 +405,7 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin }) {
     if (first.status !== "pending") throw new ApiError(409, first.status === "active" ? "This server is already active." : "An archived server cannot be activated.");
     const server = registry.current().servers.find((s) => s.key === first.key);
     if (!server) throw new ApiError(409, "The server record is not valid.");
-    const check = await checkServer(server);
+    const check = await checkServer(server, first);
     if (!check.node.up || !check.cadvisor.up) {
       const parts = [];
       if (!check.node.up) parts.push(`node exporter: ${check.node.error}`);
@@ -558,4 +600,4 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin }) {
   return router;
 }
 
-module.exports = { createSettingsRouter, commandFor, queriesFor, PLATFORM_CONTAINERS, NODE_EXPORTER_IMAGE, CADVISOR_IMAGE };
+module.exports = { createSettingsRouter, commandFor, queriesFor, explainScrapeError, PLATFORM_CONTAINERS, NODE_EXPORTER_IMAGE, CADVISOR_IMAGE };

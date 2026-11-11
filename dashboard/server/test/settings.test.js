@@ -14,12 +14,17 @@ const CADVISOR_SEL = 'job="cadvisor-registry",server="shop-node"';
 
 // Answers requests to the Prometheus URL from answer(query), which returns [{ metric, value }] or
 // throws; everything else goes to the real fetch. Returns the queries that were sent.
-function stubProm(t, answer = () => []) {
+function stubProm(t, answer = () => [], activeTargets = () => []) {
   const sent = [];
   const original = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
     const href = String(url);
     if (!href.startsWith(PROMETHEUS_URL)) return original(url, init);
+    if (href.startsWith(`${PROMETHEUS_URL}/api/v1/targets`)) {
+      return new Response(JSON.stringify({ status: "success", data: { activeTargets: activeTargets() } }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
     const q = new URL(href).searchParams.get("query");
     sent.push(q);
     const rows = answer(q);
@@ -391,10 +396,17 @@ test("the platform container list matches docker-compose.yml", () => {
   assert.deepEqual([...PLATFORM_CONTAINERS].sort(), names.sort());
 });
 
-test("check reports Not added to Prometheus yet when there are no series", async (t) => {
+// Pretends the server was saved a while ago, so the 60 second grace period is over.
+function ageServer(s, key = "shop-node") {
+  const row = s.app.db.registry.servers.find((r) => r.key === key);
+  row.updated_at = new Date(Date.now() - 10 * 60 * 1000);
+}
+
+test("check reports Not added to Prometheus yet when there are no series and Prometheus lists no target", async (t) => {
   const sent = stubProm(t, () => []);
   const s = await setup(t);
   await createServer(s);
+  ageServer(s);
   const res = await s.get("/api/settings/servers/shop-node/check");
   assert.equal(res.status, 200);
   const body = await res.json();
@@ -432,6 +444,7 @@ test("check says so in words when Prometheus is down", async (t) => {
   t.after(() => { globalThis.fetch = original; });
   const s = await setup(t);
   await createServer(s);
+  ageServer(s);
   const body = await (await s.get("/api/settings/servers/shop-node/check")).json();
   assert.equal(body.node.up, false);
   assert.equal(body.node.error, "Prometheus is not reachable");
@@ -852,4 +865,102 @@ test("PATCH refuses an address with spaces instead of trimming it", async (t) =>
     assert.equal((await res.json()).field, "address");
   }
   assert.equal((await s.app.db.listServers()).find((r) => r.key === "shop-node").address, "100.64.0.12");
+});
+
+// Runs fn with TARGETS_DIR set to dir, then puts the old value back.
+function withTargetsDir(t, dir, cleanupDir) {
+  const before = process.env.TARGETS_DIR;
+  process.env.TARGETS_DIR = dir;
+  t.after(() => {
+    if (before === undefined) delete process.env.TARGETS_DIR;
+    else process.env.TARGETS_DIR = before;
+    fs.rmSync(cleanupDir, { recursive: true, force: true });
+  });
+}
+
+test("check says Prometheus has not picked it up yet for the first 60 seconds after saving", async (t) => {
+  stubProm(t, () => []);
+  const s = await setup(t);
+  await createServer(s);
+  let body = await (await s.get("/api/settings/servers/shop-node/check")).json();
+  assert.deepEqual(body, {
+    node: { up: false, lastScrape: null, error: "Prometheus has not picked it up yet" },
+    cadvisor: { up: false, lastScrape: null, error: "Prometheus has not picked it up yet" },
+  });
+  ageServer(s);
+  body = await (await s.get("/api/settings/servers/shop-node/check")).json();
+  assert.equal(body.node.error, "Not added to Prometheus yet");
+});
+
+test("a down exporter gets Prometheus's last error in plain words", async (t) => {
+  stubProm(
+    t,
+    (q) => (q === `up{${NODE_SEL}}` || q === `up{${CADVISOR_SEL}}` ? [{ value: 0 }] : []),
+    () => [
+      { labels: { job: "node-registry", server: "shop-node" }, health: "down", lastError: 'Get "http://100.64.0.12:9100/metrics": dial tcp 100.64.0.12:9100: connect: connection refused' },
+      { labels: { job: "cadvisor-registry", server: "shop-node" }, health: "down", lastError: 'Get "http://100.64.0.12:8080/metrics": context deadline exceeded' },
+      { labels: { job: "node-registry", server: "other" }, health: "down", lastError: "server returned HTTP status 404 Not Found" },
+    ]
+  );
+  const s = await setup(t);
+  await createServer(s);
+  const body = await (await s.get("/api/settings/servers/shop-node/check")).json();
+  assert.equal(body.node.error, "Connection refused");
+  assert.equal(body.cadvisor.error, "No answer within 10 s");
+});
+
+test("explainScrapeError knows the common scrape errors", () => {
+  const { explainScrapeError } = require("../settings");
+  assert.equal(explainScrapeError("dial tcp 1.2.3.4:9100: i/o timeout"), "No answer within 10 s");
+  assert.equal(explainScrapeError("dial tcp: connect: no route to host"), "No route to the server");
+  assert.equal(explainScrapeError("server returned HTTP status 503 Service Unavailable"), "The exporter answered with HTTP 503");
+  assert.equal(explainScrapeError("something new"), null);
+  assert.equal(explainScrapeError(""), null);
+});
+
+test("check reports that the dashboard cannot write the targets file", async (t) => {
+  const parent = fs.mkdtempSync(path.join(require("os").tmpdir(), "settings-targets-"));
+  withTargetsDir(t, path.join(parent, "missing"), parent);
+  stubProm(t, () => []);
+  const s = await setup(t);
+  await createServer(s);
+  const body = await (await s.get("/api/settings/servers/shop-node/check")).json();
+  assert.equal(body.node.error, "The dashboard cannot write the Prometheus targets file");
+  assert.equal(body.cadvisor.error, "The dashboard cannot write the Prometheus targets file");
+  assert.equal(body.node.up, false);
+});
+
+test("the targets files follow the server: written when added, emptied when archived", async (t) => {
+  const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "settings-targets-"));
+  withTargetsDir(t, dir, dir);
+  stubProm(t, (q) => (q.startsWith("up{") ? [{ value: 1 }] : []));
+  const s = await setup(t);
+  await createServer(s);
+  const nodeFile = () => JSON.parse(fs.readFileSync(path.join(dir, "node.json"), "utf8"));
+  assert.deepEqual(nodeFile().map((g) => g.labels.server), ["shop-node"]);
+  assert.equal((await s.post("/api/settings/servers/shop-node/activate")).status, 200);
+  assert.deepEqual(nodeFile().map((g) => g.labels.server), ["shop-node"]);
+  assert.equal((await s.post("/api/settings/servers/shop-node/archive")).status, 200);
+  assert.deepEqual(nodeFile(), []);
+});
+
+test("a target Prometheus lists but has not scraped is not called missing, even after the first minute", async (t) => {
+  stubProm(t, () => [], () => [{ labels: { job: "node-registry", server: "shop-node" }, health: "unknown", lastError: "" }]);
+  const s = await setup(t);
+  await createServer(s);
+  ageServer(s);
+  const body = await (await s.get("/api/settings/servers/shop-node/check")).json();
+  assert.equal(body.node.error, "Prometheus has not picked it up yet");
+  assert.equal(body.cadvisor.error, "Not added to Prometheus yet");
+});
+
+test("a targets file problem is reported while up still comes from up{}", async (t) => {
+  const parent = fs.mkdtempSync(path.join(require("os").tmpdir(), "settings-targets-"));
+  withTargetsDir(t, path.join(parent, "missing"), parent);
+  stubProm(t, (q) => (q.startsWith("up{") ? [{ value: 1 }] : []));
+  const s = await setup(t);
+  await createServer(s);
+  const body = await (await s.get("/api/settings/servers/shop-node/check")).json();
+  assert.equal(body.node.up, true);
+  assert.equal(body.node.error, "The dashboard cannot write the Prometheus targets file");
 });

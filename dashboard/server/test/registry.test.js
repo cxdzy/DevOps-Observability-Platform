@@ -198,3 +198,25 @@ test("a reload during a slow read reads again, so it sees the write", async () =
   assert.equal(calls, 2);
   assert.deepEqual(registry.current().activeServers.map((s) => s.key), ["main", "old", "shop-node"]);
 });
+
+test("with TARGETS_DIR set the registry writes the targets files at start without any request", async (t) => {
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "registry-targets-"));
+  const before = process.env.TARGETS_DIR;
+  process.env.TARGETS_DIR = dir;
+  t.after(() => {
+    if (before === undefined) delete process.env.TARGETS_DIR;
+    else process.env.TARGETS_DIR = before;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const db = createFakeDb();
+  await db.transaction(async (ops) => ops.insertServer(SERVER_ROW));
+  const registry = createRegistry({ db, log: () => {} });
+  await registry.load();
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "node.json"), "utf8")), [
+    { targets: ["100.64.0.12:9100"], labels: { server: "shop-node", instance: "shop-node" } },
+  ]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "cadvisor.json"), "utf8"))[0].targets, ["100.64.0.12:8080"]);
+});

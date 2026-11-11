@@ -167,6 +167,8 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Target files written by the dashboard for servers added in Settings (read only here).
+      - ./prometheus/targets:/etc/prometheus/targets:ro
       - prometheus-data:/prometheus
     depends_on:
       - influxdb
@@ -292,6 +294,9 @@ services:
     mem_limit: 256m
     memswap_limit: 256m
     cpus: 1.0
+    # Prometheus target files for servers added in Settings (written here, read by prometheus).
+    volumes:
+      - ./prometheus/targets:/app/targets
     # postgres has no healthcheck, so the dashboard retries the database connection itself.
     depends_on:
       - influxdb

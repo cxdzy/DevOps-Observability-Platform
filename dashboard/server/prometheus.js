@@ -1,8 +1,10 @@
 // Read-only Prometheus helper. Only instant queries (/api/v1/query) and range queries
 // (/api/v1/query_range) are sent, with GET, and only query strings from an allow list (the
-// constants in overview.js and resources.js), never text from a request.
+// constants in overview.js and resources.js), never text from a request. The one other request is
+// the fixed address /api/v1/targets?state=active, which has no input at all.
 const PROMETHEUS_URL = process.env.PROMETHEUS_URL || "http://prometheus:9090";
 const TIMEOUT_MS = 5000;
+const TARGETS_PATH = "/api/v1/targets?state=active";
 
 // allowed: the query strings this client may send, as an array, or a function that returns the
 // current array (the registry adds and removes servers). The function must return the same array
@@ -83,7 +85,34 @@ function createPrometheus({ allowed, url = PROMETHEUS_URL }) {
     }));
   }
 
-  return { query, queryRange };
+  // The active scrape targets as [{ job, server, health, lastError, lastScrape }]. server is the
+  // server label or "" when the target has none. The address is a constant; nothing from a
+  // request is added to it.
+  async function targets() {
+    const res = await fetch(`${url}${TARGETS_PATH}`, {
+      method: "GET",
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      throw new Error(`prometheus returned ${res.status}`);
+    }
+    const body = await res.json();
+    if (!body || body.status !== "success" || !body.data || !Array.isArray(body.data.activeTargets)) {
+      throw new Error("prometheus returned an unexpected response");
+    }
+    return body.data.activeTargets.map((t) => {
+      const labels = (t && t.labels) || {};
+      return {
+        job: String(labels.job || ""),
+        server: String(labels.server || ""),
+        health: String((t && t.health) || "unknown"),
+        lastError: String((t && t.lastError) || ""),
+        lastScrape: t && t.lastScrape ? String(t.lastScrape) : null,
+      };
+    });
+  }
+
+  return { query, queryRange, targets };
 }
 
 module.exports = { createPrometheus, PROMETHEUS_URL };
