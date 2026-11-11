@@ -160,7 +160,10 @@ test("MTTR is the median minutes from incident_open to a restart that worked, wi
   });
   const get = await signedIn(t, query);
   const body = await (await get("/api/evaluation")).json();
-  assert.deepEqual(body.mttr, { median_minutes: 5, count: 2 });
+  // One approved (4 min) and one automatic (6 min) restart worked: the median is 5 min, 300 s.
+  assert.deepEqual(body.mttr, { median_minutes: 5, median_seconds: 300, count: 2, approved: 1, automatic: 1 });
+  // Of the four actions that ran in the period, two brought the service back.
+  assert.deepEqual(body.remediation, { ran: 4, worked: 2 });
   // The queries cover the run period; actions may follow their incident by up to 30 minutes.
   assert.ok(sent.some((q) => q.includes('FROM "incident_open"') && q.includes(`time >= '${SINCE.replace("Z", ".000Z")}'`) && q.includes(`time <= '${UNTIL.replace("Z", ".000Z")}'`)));
   assert.ok(sent.some((q) => q.includes('FROM "remediation_action"') && q.includes("2026-11-11T02:29:00.000Z")));
@@ -169,7 +172,8 @@ test("MTTR is the median minutes from incident_open to a restart that worked, wi
 test("MTTR has no value and a count of 0 when nothing worked", async (t) => {
   const get = await signedIn(t, fakeInflux().query);
   const body = await (await get("/api/evaluation")).json();
-  assert.deepEqual(body.mttr, { median_minutes: null, count: 0 });
+  assert.deepEqual(body.mttr, { median_minutes: null, median_seconds: null, count: 0, approved: 0, automatic: 0 });
+  assert.deepEqual(body.remediation, { ran: 0, worked: 0 });
 });
 
 test("the saved report still comes back when the MTTR and objectives queries fail", async (t) => {
@@ -179,7 +183,31 @@ test("the saved report still comes back when the MTTR and objectives queries fai
   const body = await res.json();
   assert.equal(body.run_id, RUN_NEW);
   assert.equal(body.mttr, null);
+  assert.equal(body.remediation, null);
   assert.equal(body.evidence, null);
+});
+
+test("MTTR counts only medium and high incidents, and remediation success leaves out skips and actions after the period", async (t) => {
+  const { query } = fakeInflux({
+    opens: [
+      { time: T0 + 10 * MIN, job: "sample-service", tier: "low", peak_score: 0.66 },
+      { time: T0 + 60 * MIN, job: "sample-service", tier: "high", peak_score: 0.7 },
+    ],
+    restarts: [
+      // A low incident never counts for MTTR (Chapter 3, E3: Medium and High tiers).
+      { time: T0 + 11 * MIN, action: "restart", mode: "auto", outcome: "success", job: "sample-service", service_up: 1 },
+      { time: T0 + 61 * MIN, action: "rollback", mode: "approved", outcome: "success", job: "sample-service", service_up: 1 },
+      // Skipped and expired requests did not run.
+      { time: T0 + 62 * MIN, action: "rollback", mode: "skipped", outcome: "skipped_cooldown", job: "sample-service", service_up: 0 },
+      { time: T0 + 63 * MIN, action: "restart", mode: "expired", outcome: "expired", job: "sample-service", service_up: 0 },
+      // After the period ends: matched for MTTR but not counted for the success rate.
+      { time: Date.parse(UNTIL) + 5 * MIN, action: "restart", mode: "auto", outcome: "failed", job: "sample-service", service_up: 0 },
+    ],
+  });
+  const get = await signedIn(t, query);
+  const body = await (await get("/api/evaluation")).json();
+  assert.deepEqual(body.mttr, { median_minutes: 1, median_seconds: 60, count: 1, approved: 1, automatic: 0 });
+  assert.deepEqual(body.remediation, { ran: 2, worked: 2 });
 });
 
 test("evidence counts CI deployments, explanations and the actions that ran", async (t) => {
@@ -218,13 +246,15 @@ test("validRunId accepts the script's format only", () => {
 });
 
 test("computeMttr counts an incident once, by its first action that worked", () => {
-  const opens = [{ time: 0, job: "j" }];
+  const opens = [{ time: 0, job: "j", tier: "medium" }];
   const rows = [
-    { time: 6 * MIN, outcome: "success", service_up: 1, job: "j" },
-    { time: 4 * MIN, outcome: "success", service_up: 1, job: "j" },
+    { time: 6 * MIN, mode: "auto", outcome: "success", service_up: 1, job: "j" },
+    { time: 4 * MIN, mode: "approved", outcome: "success", service_up: 1, job: "j" },
   ];
-  assert.deepEqual(computeMttr(rows, opens), { median_minutes: 4, count: 1 });
-  assert.deepEqual(computeMttr([], []), { median_minutes: null, count: 0 });
+  assert.deepEqual(computeMttr(rows, opens), { median_minutes: 4, median_seconds: 240, count: 1, approved: 1, automatic: 0 });
+  assert.deepEqual(computeMttr([], []), { median_minutes: null, median_seconds: null, count: 0, approved: 0, automatic: 0 });
+  // An incident without a tier is not Medium or High, so it is not counted.
+  assert.equal(computeMttr(rows, [{ time: 0, job: "j" }]).count, 0);
 });
 
 test("the objectives queries are counts or bounded", () => {

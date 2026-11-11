@@ -107,6 +107,15 @@ const thresholdText = computed(() => `${Math.round(threshold.value * 1000) / 10}
 function utcDate(ms: number): string {
   return new Date(ms).toLocaleDateString([], { day: 'numeric', month: 'short', timeZone: 'UTC' })
 }
+// "Episode n, <first day> to <last day>", the same on the chart band and in the list. end is the end
+// of the last day, so the last day starts one day earlier.
+function episodeLabel(n: number): string {
+  const e = episodes.value[n - 1]
+  if (!e) return `Episode ${n}`
+  const first = utcDate(e.start)
+  const last = utcDate(e.end - DAY_MS)
+  return first === last ? `Episode ${n}, ${first}` : `Episode ${n}, ${first} to ${last}`
+}
 function version(v: string | null): string {
   return v ?? 'unknown'
 }
@@ -224,7 +233,7 @@ function bandRenderItem(fill: string, ink: string) {
       type: 'group',
       children: [
         { type: 'rect', shape: rect, style: { fill } },
-        { type: 'text', x: rect.x + 4, y: rect.y + 4, style: { text: `Episode ${a.value(2)}`, fill: ink, font: `11px "Geist", system-ui, sans-serif`, textVerticalAlign: 'top' } },
+        { type: 'text', x: rect.x + 4, y: rect.y + 4, style: { text: episodeLabel(Number(a.value(2))), fill: ink, font: `11px "Geist", system-ui, sans-serif`, textVerticalAlign: 'top' } },
       ],
     }
   }
@@ -653,8 +662,7 @@ const note = 'rounded-lg bg-chip p-3 text-[13px] text-chipfg'
         <p v-else-if="episodes.length === 0" class="py-4 text-[13px] text-muted-foreground">No episode in this range.</p>
         <ul v-else class="flex flex-col divide-y divide-border">
           <li v-for="(e, i) in episodes" :key="e.start" class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 py-2 text-[13px]">
-            <span class="font-medium">Episode {{ i + 1 }}</span>
-            <span class="font-mono text-xs text-muted-foreground">{{ utcDate(e.start) }} to {{ utcDate(e.end - DAY_MS) }}</span>
+            <span class="font-medium">{{ episodeLabel(i + 1) }}</span>
             <span class="w-full text-xs text-muted-foreground">{{ e.days }} {{ e.days === 1 ? 'day' : 'days' }}, peak {{ percent(e.peak_rate) }}, {{ e.false_alarms }} false alarms</span>
           </li>
         </ul>

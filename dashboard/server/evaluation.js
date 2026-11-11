@@ -109,19 +109,42 @@ function median(values) {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-// Median minutes from the start of an incident (incident_open) to the action that answered it, for
-// actions that worked: outcome success and service_up 1. An incident counts once, by its first such
-// action. restarts and opens are the rows of remediation_action and incident_open.
+// MTTR as Chapter 3 defines it (E3, mean time to resolution, for the Medium and High tiers): from
+// the start of an incident (incident_open) to the action that brought the service back, outcome
+// success and service_up 1. n8n writes the action row after its 60 s health check, so the row's time
+// is the confirmed health check. An incident counts once, by its first such action. The median is
+// returned in minutes and seconds, with how many of the counted actions were approved on Telegram
+// (their time includes the wait for an answer) and how many ran automatically. restarts and opens
+// are the rows of remediation_action and incident_open.
+const MTTR_TIERS = new Set(["medium", "high"]);
 function computeMttr(restarts, opens) {
   const matched = matchRestarts(restarts, opens);
   const firstByIncident = new Map();
   for (const a of matched) {
     if (a.outcome !== "success" || a.service_up !== 1 || !a.incident) continue;
+    if (!MTTR_TIERS.has(String(a.incident.tier || "").toLowerCase())) continue;
     const key = a.incident.start;
-    if (!firstByIncident.has(key) || a.time < firstByIncident.get(key)) firstByIncident.set(key, a.time);
+    const seen = firstByIncident.get(key);
+    if (!seen || a.time < seen.time) firstByIncident.set(key, a);
   }
-  const minutes = [...firstByIncident].map(([start, time]) => (time - start) / MIN);
-  return { median_minutes: median(minutes), count: minutes.length };
+  const counted = [...firstByIncident].map(([start, a]) => ({ minutes: (a.time - start) / MIN, mode: a.mode }));
+  const minutes = median(counted.map((c) => c.minutes));
+  return {
+    median_minutes: minutes,
+    median_seconds: minutes === null ? null : Math.round(minutes * 60),
+    count: counted.length,
+    approved: counted.filter((c) => c.mode === "approved").length,
+    automatic: counted.filter((c) => c.mode === "auto").length,
+  };
+}
+
+// Remediation success for the run's period (E5): of the restarts and rollbacks that ran (outcome
+// success or failed; skips, rejections and expired requests did not run), how many brought the
+// service back (success with service_up 1).
+function computeRemediation(restarts) {
+  const matched = matchRestarts(restarts, []);
+  const ran = matched.filter((a) => a.outcome === "success" || a.outcome === "failed");
+  return { ran: ran.length, worked: ran.filter((a) => a.outcome === "success" && a.service_up === 1).length };
 }
 
 // The count from a SELECT COUNT(...) answer: one row with a count column, or no row when nothing
@@ -174,6 +197,7 @@ async function loadEvaluation(query, run) {
 
   // MTTR covers the run's period; an action can follow its incident by up to 30 minutes.
   let mttr = null;
+  let remediation = null;
   const since = validRunId(chosen.since) ? Date.parse(chosen.since) : null;
   const until = validRunId(chosen.until) ? Date.parse(chosen.until) : null;
   if (since !== null && until !== null) {
@@ -190,8 +214,11 @@ async function loadEvaluation(query, run) {
         ),
       ]);
       mttr = computeMttr(restarts, opens);
+      // The success rate counts actions inside the period itself, not the 30 minutes after it.
+      remediation = computeRemediation(restarts.filter((r) => num(r.time) !== null && num(r.time) <= until));
     } catch (err) {
       mttr = null;
+      remediation = null;
     }
   }
 
@@ -214,6 +241,7 @@ async function loadEvaluation(query, run) {
     faults: faults.map(faultRow).sort((a, b) => (b.injections || 0) - (a.injections || 0) || String(a.fault).localeCompare(String(b.fault))),
     days: days.map(dayRow),
     mttr,
+    remediation,
     evidence,
   };
 }
@@ -223,6 +251,7 @@ module.exports = {
   parseParams,
   validRunId,
   computeMttr,
+  computeRemediation,
   computeEvidence,
   RUNS_QUERY,
   DEPLOYMENTS_QUERY,

@@ -370,9 +370,13 @@ export interface Evaluation {
   runs: EvaluationRunSummary[]
   faults: EvaluationFault[]
   days: EvaluationDay[]
-  // Median minutes from the start of an incident to the action that brought the service back, for
-  // the run's period. null when the data could not be read.
-  mttr: { median_minutes: number | null, count: number } | null
+  // Median time from the start of a Medium or High incident to the action that brought the service
+  // back, for the run's period (Chapter 3, E3). approved and automatic count how the counted actions
+  // ran; an approved one includes the wait for an answer on Telegram. null when it could not be read.
+  mttr: { median_minutes: number | null, median_seconds: number | null, count: number, approved: number, automatic: number } | null
+  // Restarts and rollbacks in the run's period that ran, and how many brought the service back
+  // (Chapter 3, E5). null when the data could not be read.
+  remediation: { ran: number, worked: number } | null
   // Counts over everything stored, for the objectives table. null when they could not be read.
   evidence: { ci_deployments: number, explanations: number, actions: { ran: number, restart_worked: number, rollback_worked: number } } | null
 }

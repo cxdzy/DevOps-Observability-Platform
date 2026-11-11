@@ -55,7 +55,7 @@ async function load() {
   }
 }
 
-const { refresh } = usePoll(load, 60000)
+const { refresh } = usePoll(load, 30000)
 
 // The hash keeps the view and the run, so a copied link opens the same report. replaceState does
 // not fire hashchange, so the new query is also sent to the parent, which keeps its copy in step.
@@ -175,6 +175,39 @@ const summaryRest = computed(() => {
   return `${parts.length ? `, ${parts.join(', ')}` : ''}.${savedText}`
 })
 
+// Acceptance criteria from Chapter 3: the System Evaluation Metrics table (Table 3.23, E1 to E6) and
+// the ML Model Evaluation Metrics table (precision, recall, F1). Every criterion is strict: "above",
+// "below" or "greater than", so a value equal to the target does not meet it.
+const TARGETS = {
+  // ML model metrics: precision above 0.85, recall above 0.80, F1 score above 0.82.
+  precision: 0.85,
+  recall: 0.80,
+  f1: 0.82,
+  // E1 anomaly prediction lead time: greater than 3 minutes on average.
+  leadMinutes: 3,
+  // E2 false positive rate: alerts raised outside any injection divided by all alerts, below 10%.
+  falsePositiveRate: 0.10,
+  // E3 mean time to resolution: below 60 seconds for the Medium and High tiers.
+  mttrSeconds: 60,
+  // E5 remediation success rate: above 85% of the actions that ran.
+  remediationSuccess: 0.85,
+} as const
+
+// The figures the targets are judged on, all from stored data; null when it is not stored.
+// E2 counts per flagged minute: false_alarms (flagged minutes outside any injection) divided by all
+// flagged minutes. Precision is the same count from the other side, the flagged minutes that fell
+// inside an injection. Recall is the share of injections detected. F1 combines the two as Chapter 3
+// defines it, so it mixes a per-minute precision with a per-injection recall.
+const measured = computed(() => {
+  const r = data.value?.run
+  if (!r) return null
+  const recall = r.detection_rate !== null && (r.injections ?? 0) > 0 ? r.detection_rate : null
+  const fpr = r.false_alarms !== null && r.flagged_minutes !== null && r.flagged_minutes > 0 ? r.false_alarms / r.flagged_minutes : null
+  const precision = fpr === null ? null : 1 - fpr
+  const f1 = precision === null || recall === null ? null : precision + recall === 0 ? 0 : (2 * precision * recall) / (precision + recall)
+  return { recall, fpr, precision, f1 }
+})
+
 interface Card {
   key: string
   label: string
@@ -182,43 +215,58 @@ interface Card {
   value: string | null
   unit: string
   context: string
+  // A second line under the context, or empty.
+  extra?: string
 }
 
 const cards = computed<Card[]>(() => {
   const d = data.value
-  if (!d) return []
+  const mv = measured.value
+  if (!d || !mv) return []
   const r = d.run
 
-  const detection: Card = r.detection_rate !== null && (r.injections ?? 0) > 0
-    ? { key: 'detection', label: 'Faults detected', value: percent(r.detection_rate, 1), unit: '', context: `${count(r.detected)} of ${count(r.injections)} injections` }
-    : { key: 'detection', label: 'Faults detected', value: null, unit: '', context: 'No injections fall inside this period.' }
+  const detection: Card = mv.recall !== null
+    ? { key: 'detection', label: 'Recall, faults detected', value: percent(mv.recall, 1), unit: '', context: `${count(r.detected)} of ${count(r.injections)} injections, target above ${percent(TARGETS.recall, 0)}` }
+    : { key: 'detection', label: 'Recall, faults detected', value: null, unit: '', context: 'No injections fall inside this period.' }
 
-  let falseContext = 'No normal minutes in this period.'
+  // E2 is the main figure; the share of normal minutes flagged is the second line.
+  let perNormal = ''
   if (r.false_alarm_rate !== null) {
-    falseContext = `${count(r.false_alarms)} in ${count(r.normal_minutes)} normal minutes`
+    perNormal = `${percent(r.false_alarm_rate, 2)} per normal minute (${count(r.false_alarms)} in ${count(r.normal_minutes)})`
     // With no false alarm, the rule of three gives the most the true rate could be at 95 percent confidence.
-    if (r.false_alarms === 0 && r.normal_minutes) falseContext += `, below ${percent(3 / r.normal_minutes, 2)} at 95% confidence`
+    if (r.false_alarms === 0 && r.normal_minutes) perNormal += `, below ${percent(3 / r.normal_minutes, 2)} at 95% confidence`
   }
-  const falseAlarms: Card = { key: 'false', label: 'False alarms', value: r.false_alarm_rate !== null ? percent(r.false_alarm_rate, 2) : null, unit: '', context: falseContext }
+  const falseAlarms: Card = mv.fpr !== null
+    ? { key: 'false', label: 'False positive rate', value: percent(mv.fpr, 1), unit: '', context: `${count(r.false_alarms)} of ${count(r.flagged_minutes)} flagged minutes outside an injection, target below ${percent(TARGETS.falsePositiveRate, 0)}`, extra: perNormal }
+    : { key: 'false', label: 'False positive rate', value: null, unit: '', context: 'No minute was flagged in this period.', extra: perNormal }
 
   const margin: Card = r.margin !== null
     ? { key: 'margin', label: 'Safety margin', value: fixed(r.margin, 3), unit: '', context: `highest normal ${fixed(r.top_normal_score)} against threshold ${fixed(r.threshold)}` }
     : { key: 'margin', label: 'Safety margin', value: null, unit: '', context: 'The threshold or the normal scores were not stored.' }
 
+  // E1 asks for an average; the report stores only the median and the longest lead, so the median is
+  // shown and named as such.
   let lead: Card
   if (r.ramp_injections === null || r.ramp_injections === 0) {
-    lead = { key: 'lead', label: 'Warned ahead', value: null, unit: '', context: 'No ramp injections in this period, so there is no lead time to measure.' }
+    lead = { key: 'lead', label: 'Lead time, median', value: null, unit: '', context: 'No ramp injections in this period, so there is no lead time to measure.' }
   } else if (r.lead_median_min !== null) {
     const longest = r.lead_max_min === null ? '' : `, longest ${r.lead_max_min.toFixed(0)} min`
-    lead = { key: 'lead', label: 'Warned ahead', value: r.lead_median_min.toFixed(0), unit: ' min median', context: `${count(r.warned_before_flag)} of ${r.ramp_injections} ramp ${plural(r.ramp_injections, 'injection', 'injections')} warned before the first flag${longest}` }
+    lead = { key: 'lead', label: 'Lead time, median', value: r.lead_median_min.toFixed(1), unit: ' min median', context: `${count(r.warned_before_flag)} of ${r.ramp_injections} ramp ${plural(r.ramp_injections, 'injection', 'injections')} warned before the first flag${longest}`, extra: `Target greater than ${TARGETS.leadMinutes} min on average; only the median is stored.` }
   } else {
-    lead = { key: 'lead', label: 'Warned ahead', value: 'None', unit: '', context: `0 of ${r.ramp_injections} ramp ${plural(r.ramp_injections, 'injection', 'injections')} warned before the model flagged ${r.ramp_injections === 1 ? 'it' : 'them'}` }
+    lead = { key: 'lead', label: 'Lead time, median', value: 'None', unit: '', context: `0 of ${r.ramp_injections} ramp ${plural(r.ramp_injections, 'injection', 'injections')} warned before the model flagged ${r.ramp_injections === 1 ? 'it' : 'them'}` }
   }
 
   const m = d.mttr
-  const mttr: Card = m && m.median_minutes !== null
-    ? { key: 'mttr', label: 'Time to recover', value: m.median_minutes.toFixed(1), unit: ' min MTTR', context: `incident start to the action that worked, ${m.count} ${plural(m.count, 'incident', 'incidents')}` }
-    : { key: 'mttr', label: 'Time to recover', value: null, unit: '', context: m ? 'No restart or rollback brought the service back in this period.' : 'The action data could not be read. Try Refresh.' }
+  const mttr: Card = m && m.median_seconds !== null
+    ? {
+        key: 'mttr',
+        label: 'MTTR, Medium and High',
+        value: String(m.median_seconds),
+        unit: ' s median',
+        context: `incident start to the action that worked, ${m.count} ${plural(m.count, 'incident', 'incidents')}, target below ${TARGETS.mttrSeconds} s`,
+        extra: m.approved > 0 ? 'Includes the wait for approval on Telegram.' : '',
+      }
+    : { key: 'mttr', label: 'MTTR, Medium and High', value: null, unit: '', context: m ? 'No restart or rollback brought a Medium or High incident back in this period.' : 'The action data could not be read. Try Refresh.' }
 
   return [detection, falseAlarms, margin, lead, mttr]
 })
@@ -273,6 +321,65 @@ const bars = computed<Bar[]>(() => {
 })
 const totalFalseAlarms = computed(() => bars.value.reduce((sum, b) => sum + b.falseAlarms, 0))
 
+// One row per Chapter 3 target. Met and Not met need a stored figure; Not tested means nothing
+// stored answers it yet, and why says what is missing.
+type TargetStatus = 'Met' | 'Not met' | 'Not tested'
+interface TargetRow {
+  key: 'precision' | 'recall' | 'f1' | 'e1' | 'e2' | 'e3' | 'e4' | 'e5' | 'e6'
+  id: string
+  metric: string
+  target: string
+  measured: string
+  status: TargetStatus
+}
+const notStored = (key: TargetRow['key'], id: string, metric: string, target: string, why: string): TargetRow =>
+  ({ key, id, metric, target, measured: why, status: 'Not tested' })
+
+const targets = computed<TargetRow[]>(() => {
+  const d = data.value
+  const mv = measured.value
+  if (!d || !mv) return []
+  const r = d.run
+  const judge = (ok: boolean): TargetStatus => (ok ? 'Met' : 'Not met')
+  const rows: TargetRow[] = []
+
+  rows.push(mv.precision === null
+    ? notStored('precision', 'ML', 'Precision', `above ${TARGETS.precision.toFixed(2)}`, 'No flagged minutes in this report')
+    : { key: 'precision', id: 'ML', metric: 'Precision', target: `above ${TARGETS.precision.toFixed(2)}`, measured: `${mv.precision.toFixed(3)}, flagged minutes inside an injection`, status: judge(mv.precision > TARGETS.precision) })
+  rows.push(mv.recall === null
+    ? notStored('recall', 'ML', 'Recall', `above ${TARGETS.recall.toFixed(2)}`, 'No injections in this report')
+    : { key: 'recall', id: 'ML', metric: 'Recall', target: `above ${TARGETS.recall.toFixed(2)}`, measured: `${mv.recall.toFixed(3)}, ${count(r.detected)} of ${count(r.injections)} injections`, status: judge(mv.recall > TARGETS.recall) })
+  rows.push(mv.f1 === null
+    ? notStored('f1', 'ML', 'F1 score', `above ${TARGETS.f1.toFixed(2)}`, 'Needs precision and recall')
+    : { key: 'f1', id: 'ML', metric: 'F1 score', target: `above ${TARGETS.f1.toFixed(2)}`, measured: mv.f1.toFixed(3), status: judge(mv.f1 > TARGETS.f1) })
+
+  // E1. Only the median lead is stored, so the median is judged against the average target and the
+  // row says so. Ramp injections that were never warned before their first flag have no lead.
+  const leadTarget = `greater than ${TARGETS.leadMinutes} min on average`
+  if (!r.ramp_injections) rows.push(notStored('e1', 'E1', 'Anomaly prediction lead time', leadTarget, 'No ramp injections in this report'))
+  else if (r.lead_median_min === null) rows.push({ key: 'e1', id: 'E1', metric: 'Anomaly prediction lead time', target: leadTarget, measured: `No warning before the first flag (0 of ${r.ramp_injections})`, status: 'Not met' })
+  else rows.push({ key: 'e1', id: 'E1', metric: 'Anomaly prediction lead time', target: leadTarget, measured: `${r.lead_median_min.toFixed(1)} min median (the average is not stored)`, status: judge(r.lead_median_min > TARGETS.leadMinutes) })
+
+  rows.push(mv.fpr === null
+    ? notStored('e2', 'E2', 'False positive rate', `below ${percent(TARGETS.falsePositiveRate, 0)}`, 'No flagged minutes in this report')
+    : { key: 'e2', id: 'E2', metric: 'False positive rate', target: `below ${percent(TARGETS.falsePositiveRate, 0)}`, measured: `${percent(mv.fpr, 1)}, ${count(r.false_alarms)} of ${count(r.flagged_minutes)} flagged minutes`, status: judge(mv.fpr < TARGETS.falsePositiveRate) })
+
+  const m = d.mttr
+  const mttrTarget = `below ${TARGETS.mttrSeconds} s, Medium and High`
+  if (!m || m.median_seconds === null) rows.push(notStored('e3', 'E3', 'Mean time to resolution', mttrTarget, m ? 'No action brought a Medium or High incident back' : 'The action data could not be read'))
+  else rows.push({ key: 'e3', id: 'E3', metric: 'Mean time to resolution', target: mttrTarget, measured: `${m.median_seconds} s median, ${m.count} ${plural(m.count, 'incident', 'incidents')}${m.approved > 0 ? ', includes the wait for approval on Telegram' : ''}`, status: judge(m.median_seconds < TARGETS.mttrSeconds) })
+
+  rows.push(notStored('e4', 'E4', 'LLM explanation accuracy', 'at least 80% scored 2 or 3', 'Not stored yet'))
+
+  const rem = d.remediation
+  const remTarget = `above ${percent(TARGETS.remediationSuccess, 0)}`
+  if (!rem || rem.ran === 0) rows.push(notStored('e5', 'E5', 'Remediation success rate', remTarget, rem ? 'No restart or rollback ran in this period' : 'The action data could not be read'))
+  else rows.push({ key: 'e5', id: 'E5', metric: 'Remediation success rate', target: remTarget, measured: `${percent(rem.worked / rem.ran, 0)}, ${rem.worked} of ${rem.ran} that ran`, status: judge(rem.worked / rem.ran > TARGETS.remediationSuccess) })
+
+  rows.push(notStored('e6', 'E6', 'End-to-end alert latency', 'below 30 s', 'Not stored yet'))
+  return rows
+})
+
 type Status = 'Met' | 'In progress' | 'Not tested'
 interface Objective {
   no: number
@@ -281,13 +388,25 @@ interface Objective {
   status: Status
 }
 
-// Objectives and their status. Each status comes only from stored data, never from a typed-in
-// result. Two target values are set here and can be changed: a run meets objective 3 at or above
-// DETECTION_TARGET and at or below FALSE_ALARM_LIMIT. They are working targets chosen for this
-// view, not figures from the project documents, and the table says so next to the result.
-const DETECTION_TARGET = 0.9
-const FALSE_ALARM_LIMIT = 0.05
-const TARGETS_TEXT = `target ${percent(DETECTION_TARGET, 0)} detected, at most ${percent(FALSE_ALARM_LIMIT, 0)} false alarms (dashboard targets)`
+// An objective linked to Chapter 3 targets (the traceability table, Table 3.18): Met only when every
+// linked target is stored and met; In progress when at least one is stored but not every one is met;
+// Not tested when none is stored.
+function statusFromTargets(keys: TargetRow['key'][]): Status {
+  const linked = targets.value.filter(t => keys.includes(t.key))
+  const stored = linked.filter(t => t.status !== 'Not tested')
+  if (stored.length === 0) return 'Not tested'
+  return stored.length === linked.length && stored.every(t => t.status === 'Met') ? 'Met' : 'In progress'
+}
+function targetsText(keys: TargetRow['key'][]): string {
+  const linked = targets.value.filter(t => keys.includes(t.key))
+  const met = linked.filter(t => t.status === 'Met').length
+  const stored = linked.filter(t => t.status !== 'Not tested').length
+  return `${met} of ${linked.length} Chapter 3 targets met, ${stored} measured`
+}
+const OBJECTIVE_3_TARGETS: TargetRow['key'][] = ['precision', 'recall', 'f1', 'e1', 'e2']
+const OBJECTIVE_5_TARGETS: TargetRow['key'][] = ['e3', 'e5']
+
+// Objectives and their status, each only from stored data, never from a typed-in result.
 const objectives = computed<Objective[]>(() => {
   const d = data.value
   if (!d) return []
@@ -315,21 +434,12 @@ const objectives = computed<Objective[]>(() => {
     status: scored > 0 ? 'Met' : 'Not tested',
   })
 
-  // 3. Anomaly model. Not tested when the report has no injections or no detection rate. Met when the
-  // detection rate is at least DETECTION_TARGET and the false alarm rate (when there are normal
-  // minutes) is at most FALSE_ALARM_LIMIT. In progress otherwise.
-  let modelStatus: Status = 'Not tested'
-  if (r.detection_rate !== null && (r.injections ?? 0) > 0) {
-    const falseOk = r.false_alarm_rate === null || r.false_alarm_rate <= FALSE_ALARM_LIMIT
-    modelStatus = r.detection_rate >= DETECTION_TARGET && falseOk ? 'Met' : 'In progress'
-  }
+  // 3. Anomaly model, linked to precision, recall, F1, lead time (E1) and false positive rate (E2).
   list.push({
     no: 3,
     text: 'Develop and evaluate the anomaly model',
-    by: r.detection_rate !== null
-      ? `Detection ${percent(r.detection_rate, 1)}${r.false_alarm_rate !== null ? `, false alarms ${percent(r.false_alarm_rate, 2)}` : ''}; ${TARGETS_TEXT}`
-      : `Detection and false alarms against the injector log; ${TARGETS_TEXT}`,
-    status: modelStatus,
+    by: `Precision, recall, F1, lead time and false positive rate: ${targetsText(OBJECTIVE_3_TARGETS)}`,
+    status: statusFromTargets(OBJECTIVE_3_TARGETS),
   })
 
   // 4. Local LLM. Not tested when no incident explanation is stored. In progress when some are stored,
@@ -342,18 +452,12 @@ const objectives = computed<Objective[]>(() => {
     status: explanations > 0 ? 'In progress' : 'Not tested',
   })
 
-  // 5. Three-tier remediation. Not tested when no restart or rollback has run. Met when at least one
-  // restart and at least one rollback ran and the service was up afterwards (service_up 1). In
-  // progress when actions ran but one of the two has not yet worked.
-  const a = e?.actions
-  let remediation: Status = 'Not tested'
-  if (a && a.ran > 0) remediation = a.restart_worked > 0 && a.rollback_worked > 0 ? 'Met' : 'In progress'
-  const mttrText = d.mttr?.median_minutes != null ? `, MTTR ${d.mttr.median_minutes.toFixed(1)} min` : ''
+  // 5. Three-tier remediation, linked to MTTR (E3) and remediation success (E5).
   list.push({
     no: 5,
     text: 'Implement three-tier remediation',
-    by: a ? `${a.ran} ${plural(a.ran, 'action', 'actions')} ran, ${a.restart_worked} ${plural(a.restart_worked, 'restart', 'restarts')} and ${a.rollback_worked} ${plural(a.rollback_worked, 'rollback', 'rollbacks')} worked${mttrText}` : 'Restarts and rollbacks that worked (could not be read)',
-    status: remediation,
+    by: `MTTR and remediation success rate: ${targetsText(OBJECTIVE_5_TARGETS)}`,
+    status: statusFromTargets(OBJECTIVE_5_TARGETS),
   })
 
   // 6. Dashboard and Telegram chatbot. Test results are not stored anywhere the dashboard reads, so
@@ -367,9 +471,10 @@ const objectives = computed<Objective[]>(() => {
   return list
 })
 
-const STATUS_CLASS: Record<Status, string> = {
+const STATUS_CLASS: Record<Status | TargetStatus, string> = {
   'Met': 'border-transparent bg-okbg text-ok',
   'In progress': 'border-transparent bg-tier-medium-bg text-tier-medium-fg',
+  'Not met': 'border-transparent bg-tier-medium-bg text-tier-medium-fg',
   'Not tested': 'border-dashed border-input bg-transparent text-chipfg',
 }
 
@@ -424,9 +529,10 @@ const buttonClass = 'inline-flex min-h-9 items-center gap-2 rounded-lg border bo
     <Skeleton class="h-56 rounded-xl" />
   </template>
 
-  <p v-else-if="failed && !data" class="rounded-lg bg-tier-high-bg p-3 text-[13px] text-tier-high-fg" role="alert">
-    InfluxDB did not answer. Retrying in 60 s.
-  </p>
+  <div v-else-if="failed && !data" class="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-tier-high-bg p-3 text-[13px] text-tier-high-fg" role="alert">
+    <span>The evaluation data could not be loaded. Retrying in 30 s.</span>
+    <button type="button" class="min-h-9 rounded-lg border border-current px-3.5 font-medium hover:bg-card/40 pointer-coarse:min-h-11" @click="refresh">Retry</button>
+  </div>
 
   <div v-else-if="!data" class="rounded-xl border border-dashed border-input px-[18px] py-10 text-center text-[13px] text-muted-foreground">
     <template v-if="run">
@@ -457,6 +563,7 @@ const buttonClass = 'inline-flex min-h-9 items-center gap-2 rounded-lg border bo
           <span v-if="c.value !== null && c.unit" class="text-[13px] text-muted-foreground">{{ c.unit }}</span>
         </div>
         <div class="mt-0.5 text-xs text-muted-foreground">{{ c.context }}</div>
+        <div v-if="c.extra" class="mt-0.5 text-xs text-muted-foreground">{{ c.extra }}</div>
       </div>
     </section>
 
@@ -526,10 +633,41 @@ const buttonClass = 'inline-flex min-h-9 items-center gap-2 rounded-lg border bo
       </section>
     </div>
 
+    <section aria-labelledby="targets-title" class="overflow-hidden rounded-xl border border-border">
+      <div class="px-[18px] py-3.5">
+        <h2 id="targets-title" class="text-[15px] font-semibold">Chapter 3 targets</h2>
+        <p class="text-xs text-muted-foreground">The acceptance criteria of the System Evaluation Metrics (E1 to E6) and the ML model metrics, judged on this report. Not tested means nothing stored answers it yet.</p>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[760px] text-left">
+          <thead class="bg-chip text-xs font-medium text-muted-foreground">
+            <tr>
+              <th scope="col" :class="cell" class="w-14 py-2 font-medium">ID</th>
+              <th scope="col" :class="cell" class="py-2 font-medium">Metric</th>
+              <th scope="col" :class="cell" class="py-2 font-medium">Target</th>
+              <th scope="col" :class="cell" class="py-2 font-medium">Measured</th>
+              <th scope="col" :class="cell" class="w-32 py-2 font-medium">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="t in targets" :key="t.key" class="border-t border-border align-middle">
+              <td :class="cell" class="font-mono text-[13px]">{{ t.id }}</td>
+              <td :class="cell">{{ t.metric }}</td>
+              <td :class="cell" class="text-[13px] text-muted-foreground">{{ t.target }}</td>
+              <td :class="cell" class="text-[13px]"><span :class="t.status === 'Not tested' ? 'text-muted-foreground' : 'font-mono'">{{ t.measured }}</span></td>
+              <td :class="cell">
+                <span class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold whitespace-nowrap" :class="STATUS_CLASS[t.status]">{{ t.status }}</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <section aria-labelledby="objectives-title" class="overflow-hidden rounded-xl border border-border">
       <div class="px-[18px] py-3.5">
         <h2 id="objectives-title" class="text-[15px] font-semibold">Against the project objectives</h2>
-        <p class="text-xs text-muted-foreground">Status comes only from stored data. Not tested means nothing stored answers it yet. The targets for objective 3 are set in this dashboard, not taken from the project documents.</p>
+        <p class="text-xs text-muted-foreground">Status comes only from stored data. Objectives 3 and 5 are Met only when every Chapter 3 target linked to them is met, In progress when some are measured, and Not tested when none is.</p>
       </div>
       <div class="overflow-x-auto">
         <table class="w-full min-w-[760px] text-left">
