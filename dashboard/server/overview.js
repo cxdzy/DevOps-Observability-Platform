@@ -2,13 +2,11 @@
 // Every query is a constant here; nothing from the request is ever put into a query.
 const { createPrometheus } = require("./prometheus");
 const { mergeIncidents } = require("./incidents");
+const { createRegistry } = require("./registry");
 
-// One entry per server. The jobs are the scrape jobs in prometheus/prometheus.yml. displayName is
-// the name shown on the card; the real hostname comes from node_uname_info.
-const SERVERS = [
-  { key: "main", displayName: "fyp-main", nodeJob: "node-exporter", cadvisorJob: "cadvisor", role: "Platform", provider: "Tencent Cloud", location: "Singapore" },
-  { key: "old", displayName: "staging", nodeJob: "node-exporter-old", cadvisorJob: "cadvisor-old", role: "Staging", provider: "Hetzner", location: "Finland" },
-];
+// The servers come from the registry (registry.js). The two built-in servers use the scrape jobs in
+// prometheus/prometheus.yml, with the constant queries below. Servers added in the dashboard get
+// the same queries with their own selector (see extraQueries), one set per server.
 
 const NODE_JOBS = 'job=~"node-exporter|node-exporter-old"';
 const CADVISOR_JOBS = 'job=~"cadvisor|cadvisor-old"';
@@ -26,6 +24,28 @@ const QUERIES = Object.freeze({
   containers: `count by (job) (count by (job, name) (container_memory_working_set_bytes{${CADVISOR_JOBS},name!=""}))`,
   services: 'container_memory_working_set_bytes{job="cadvisor",name!=""}',
 });
+
+// The same node queries for one server added in the dashboard. %N is replaced by the server's node
+// selector and %C by its cAdvisor selector from the registry, built from the validated key only
+// (see registry.js).
+const EXTRA_TEMPLATES = Object.freeze({
+  uname: "node_uname_info{%N}",
+  up: "up{%N}",
+  memTotal: "node_memory_MemTotal_bytes{%N}",
+  memAvailable: "node_memory_MemAvailable_bytes{%N}",
+  diskSize: `node_filesystem_size_bytes{%N,${ROOT_FS}}`,
+  diskAvailable: `node_filesystem_avail_bytes{%N,${ROOT_FS}}`,
+  cpuCount: 'count by (job) (node_cpu_seconds_total{%N,mode="idle"})',
+  cpuBusy: '1 - avg by (job) (rate(node_cpu_seconds_total{%N,mode="idle"}[5m]))',
+  containers: 'count by (job) (count by (job, name) (container_memory_working_set_bytes{%C,name!=""}))',
+});
+
+// The query strings of one registry server, by name.
+function extraQueries(server) {
+  return Object.fromEntries(
+    Object.entries(EXTRA_TEMPLATES).map(([k, t]) => [k, t.replace(/%N/g, server.nodeSel).replace(/%C/g, server.cadvisorSel)])
+  );
+}
 
 // Containers expected on the main server: the container_name values in docker-compose.yml, plus
 // sample-service, which the CI workflow starts with docker run on the same network.
@@ -95,24 +115,42 @@ function text(value) {
   return value === null || value === undefined || value === "" ? null : String(value);
 }
 
-function createOverview({ query, prometheus }) {
-  const prom = prometheus || createPrometheus({ allowed: Object.values(QUERIES) });
+// registry: from registry.js; without one only the built-in servers are shown.
+function createOverview({ query, prometheus, registry = createRegistry() }) {
+  // The allow list is the constant queries plus those of the active registry servers. It is
+  // rebuilt only when the registry changes.
+  const allowed = registry.derived((snap) => [
+    ...Object.values(QUERIES),
+    ...snap.activeServers.filter((s) => !s.builtin).flatMap((s) => Object.values(extraQueries(s))),
+  ]);
+  const prom = prometheus || createPrometheus({ allowed });
 
   async function nodes() {
+    await registry.load();
+    const servers = registry.current().activeServers;
+    const extra = servers.filter((s) => !s.builtin);
     const names = Object.keys(QUERIES).filter((k) => k !== "services");
-    const results = await Promise.all(names.map((k) => prom.query(QUERIES[k])));
+    const extraNames = Object.keys(EXTRA_TEMPLATES);
+    const [results, extraResults] = await Promise.all([
+      Promise.all(names.map((k) => prom.query(QUERIES[k]))),
+      Promise.all(extra.map((s) => Promise.all(extraNames.map((k) => prom.query(extraQueries(s)[k]))))),
+    ]);
     const r = Object.fromEntries(names.map((k, i) => [k, byJob(results[i])]));
-    const value = (name, job) => numberOrNull(r[name].get(job)?.value);
+    const extraBy = new Map(extra.map((s, i) => [s.key, Object.fromEntries(extraNames.map((k, j) => [k, extraResults[i][j]]))]));
 
-    return SERVERS.map((s) => {
+    return servers.map((s) => {
+      // One reader per server: built-in servers pick their job out of the shared results, the
+      // others read their own queries.
+      const row = (name, job) => (s.builtin ? r[name].get(job) : extraBy.get(s.key)[name][0]);
+      const value = (name, job) => numberOrNull(row(name, job)?.value);
       const up = value("up", s.nodeJob);
       return {
         key: s.key,
         displayName: s.displayName,
-        hostname: text(r.uname.get(s.nodeJob)?.labels.nodename),
-        role: s.role,
+        hostname: text(row("uname", s.nodeJob)?.labels.nodename),
+        role: s.roleLabel,
         provider: s.provider,
-        location: s.location,
+        location: s.place,
         up: up === null ? null : up === 1,
         memoryTotalBytes: value("memTotal", s.nodeJob),
         memoryAvailableBytes: value("memAvailable", s.nodeJob),
@@ -191,4 +229,4 @@ function createOverview({ query, prometheus }) {
   return { nodes, services, activity };
 }
 
-module.exports = { createOverview, loadIncidents, QUERIES, SERVERS, EXPECTED };
+module.exports = { createOverview, loadIncidents, QUERIES, EXPECTED, extraQueries };

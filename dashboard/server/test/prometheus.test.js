@@ -129,3 +129,40 @@ test("query() still only uses /api/v1/query", async (t) => {
   await prom.query(ALLOWED);
   assert.equal(new URL(calls[0].url).pathname, "/api/v1/query");
 });
+
+test("allowed can be a function, so the list can follow the registry", async (t) => {
+  const calls = stubFetch(t, () => json({ status: "success", data: { resultType: "vector", result: [] } }));
+  let current = [ALLOWED];
+  const prom = createPrometheus({ allowed: () => current, url: URL_BASE });
+  const added = 'up{job="node-registry",server="shop-node"}';
+  await assert.rejects(prom.query(added), /allow list/);
+  assert.equal(calls.length, 0);
+  // A new array object is a new list; the added string is now allowed and the old one still is.
+  current = [ALLOWED, added];
+  await prom.query(added);
+  await prom.query(ALLOWED);
+  assert.equal(calls.length, 2);
+  // Removing a string takes it out again, and a range query follows the same list.
+  current = [ALLOWED];
+  await assert.rejects(prom.query(added), /allow list/);
+  await assert.rejects(prom.queryRange(added, 0, 60, 15), /allow list/);
+  assert.equal(calls.length, 2);
+});
+
+test("a function allow list is read on each query but the set is built only when the array changes", async (t) => {
+  stubFetch(t, () => json({ status: "success", data: { resultType: "vector", result: [] } }));
+  let reads = 0;
+  let iterations = 0;
+  const list = {
+    *[Symbol.iterator]() {
+      iterations += 1;
+      yield ALLOWED;
+    },
+  };
+  const prom = createPrometheus({ allowed: () => { reads += 1; return list; }, url: URL_BASE });
+  await prom.query(ALLOWED);
+  await prom.query(ALLOWED);
+  await prom.query(ALLOWED);
+  assert.equal(reads, 3);
+  assert.equal(iterations, 1);
+});

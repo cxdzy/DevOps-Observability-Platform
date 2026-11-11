@@ -4,7 +4,9 @@ const express = require("express");
 const helmet = require("helmet");
 const { createAuth } = require("./auth");
 const { createGoogle } = require("./google");
-const { createOverview, loadIncidents, SERVERS } = require("./overview");
+const { createOverview, loadIncidents } = require("./overview");
+const { createRegistry } = require("./registry");
+const { createSettingsRouter } = require("./settings");
 const { createResources, HOURS: RESOURCE_HOURS } = require("./resources");
 const { loadRemediation } = require("./remediation");
 const { loadEvents } = require("./events");
@@ -14,6 +16,11 @@ const { loadDrift, DAYS: DRIFT_DAYS } = require("./drift");
 const { loadTimeline, parseParams: parseTimelineParams } = require("./timeline");
 const { createModel } = require("./model");
 const { createChatRouter } = require("./routes/chat");
+
+// "node must be main or old", from the active server keys.
+function nodeMessage(keys) {
+  return "node must be " + (keys.length > 1 ? `${keys.slice(0, -1).join(", ")} or ${keys[keys.length - 1]}` : keys[0]);
+}
 
 // Returns the validated hours value, or null after sending a 400. Values are clamped to 1..max.
 function hoursParam(req, res, fallback = 24, max = 168) {
@@ -52,9 +59,10 @@ function securityHeaders(https) {
 // Trusts no proxy; used when no trusted set is passed.
 const TRUST_NOBODY = { has: () => false };
 
-// deps: { db, query, influxUrl, config, trusted, now, log, oidc, prometheus, mlflow }
+// deps: { db, query, influxUrl, config, trusted, now, log, oidc, prometheus, mlflow, registryPrometheus }
 // prometheus: a client from prometheus.js; tests pass a stub. Defaults to PROMETHEUS_URL.
 // resourcesPrometheus: the same for /api/resources, which has its own allow list.
+// registryPrometheus: the same for the settings routes (checks and container names).
 // mlflow: a client from mlflow.js. Defaults to MLFLOW_URL.
 // config: { appOrigin, cookieSecure, sessionMaxAgeMs, googleClientId, googleClientSecret, clientDist, bcryptCost }
 // trusted: the resolved trusted proxy addresses (security.createTrustedProxies).
@@ -193,8 +201,20 @@ function createApp(deps) {
     }
   });
 
+  // The servers and projects registry. Views read the active servers from it instead of constants.
+  const registry = createRegistry({ db, now, log });
+
+  // The active servers for every signed-in user.
+  app.get("/api/servers", async (req, res) => {
+    await registry.load();
+    res.json(registry.current().activeServers.map((s) => ({ key: s.key, name: s.name, role: s.role, location: s.location })));
+  });
+
+  // Settings (admin only): servers, projects and the change log.
+  app.use("/api/settings", createSettingsRouter({ auth, db, registry, prometheus: deps.registryPrometheus, appOrigin: config.appOrigin }));
+
   // Overview data. Each route fails on its own, so one unreachable source does not hide the others.
-  const overview = createOverview({ query, prometheus: deps.prometheus });
+  const overview = createOverview({ query, prometheus: deps.prometheus, registry });
 
   app.get("/api/nodes", async (req, res) => {
     try {
@@ -212,14 +232,16 @@ function createApp(deps) {
     }
   });
 
-  // Node resources of one server. node and hours must be exactly one of the fixed values; anything
+  // Node resources of one server. node must be an active server key and hours one of the fixed values; anything
   // else is a 400 and no query is sent. The values only select constants in resources.js.
-  const resources = createResources({ prometheus: deps.resourcesPrometheus, now });
+  const resources = createResources({ prometheus: deps.resourcesPrometheus, now, registry });
   app.get("/api/resources", async (req, res) => {
     const node = req.query.node === undefined ? "main" : req.query.node;
     const rawHours = req.query.hours === undefined ? "6" : req.query.hours;
-    if (typeof node !== "string" || !SERVERS.some((s) => s.key === node)) {
-      return res.status(400).json({ error: "node must be main or old" });
+    await registry.load();
+    const keys = registry.current().activeServers.map((s) => s.key);
+    if (typeof node !== "string" || !keys.includes(node)) {
+      return res.status(400).json({ error: nodeMessage(keys) });
     }
     const hours = typeof rawHours === "string" && /^\d+$/.test(rawHours) ? Number(rawHours) : NaN;
     if (!RESOURCE_HOURS.includes(hours)) {
@@ -233,11 +255,13 @@ function createApp(deps) {
   });
 
   // Containers of one server from its cAdvisor job, with a 24 hour strip each. node must be
-  // exactly main or old (main when left out), the same rule as /api/resources.
+  // the key of an active server (main when left out), the same rule as /api/resources.
   app.get("/api/resources/containers", async (req, res) => {
     const node = req.query.node === undefined ? "main" : req.query.node;
-    if (typeof node !== "string" || !SERVERS.some((s) => s.key === node)) {
-      return res.status(400).json({ error: "node must be main or old" });
+    await registry.load();
+    const keys = registry.current().activeServers.map((s) => s.key);
+    if (typeof node !== "string" || !keys.includes(node)) {
+      return res.status(400).json({ error: nodeMessage(keys) });
     }
     try {
       res.json(await resources.containers(node));

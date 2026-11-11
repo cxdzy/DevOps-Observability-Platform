@@ -4,9 +4,24 @@
 const PROMETHEUS_URL = process.env.PROMETHEUS_URL || "http://prometheus:9090";
 const TIMEOUT_MS = 5000;
 
-// allowed: the query strings this client may send.
+// allowed: the query strings this client may send, as an array, or a function that returns the
+// current array (the registry adds and removes servers). The function must return the same array
+// object until the list changes; the set is rebuilt only when the object changes.
 function createPrometheus({ allowed, url = PROMETHEUS_URL }) {
-  const allowList = new Set(allowed);
+  const fixed = typeof allowed === "function" ? null : new Set(allowed);
+  let lastList = null;
+  let lastSet = null;
+  const allowList = {
+    has(q) {
+      if (fixed) return fixed.has(q);
+      const list = allowed();
+      if (list !== lastList) {
+        lastList = list;
+        lastSet = new Set(list);
+      }
+      return lastSet.has(q);
+    },
+  };
 
   // Returns the result vector as [{ labels, value }]; value is a number or null.
   async function query(q) {

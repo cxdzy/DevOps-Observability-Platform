@@ -1,44 +1,51 @@
 // Data for the Resources page: node resources of one server from Prometheus, right now and over a
-// chosen window. The servers come from overview.js, so they are defined once. Every query string
-// is built here from a constant template with only that server's scrape job filled in, and the
-// full set is the allow list. Nothing from the request ever enters a query: the route picks a
-// server key and an hours value from fixed sets and this module looks both up.
+// chosen window. The servers come from the registry (registry.js). Every query string is built
+// here from a constant template with only that server's selector filled in (job="..." for the
+// built-in servers, job="...",server="<key>" for the others), and the full set is the allow list,
+// which follows the registry. Nothing from the request ever enters a query: the route picks a
+// server key from the active servers and an hours value from a fixed set, and this module looks
+// both up.
 const { createPrometheus } = require("./prometheus");
-const { SERVERS, QUERIES: OVERVIEW_QUERIES } = require("./overview");
+const { QUERIES: OVERVIEW_QUERIES } = require("./overview");
+const { createRegistry, toServer } = require("./registry");
+const { SEED_SERVERS } = require("./db");
+
+// The two built-in servers. Their selectors give the same query strings as before the registry.
+const BUILTIN_SERVERS = SEED_SERVERS.map(toServer);
 
 // The same root filesystem filter and container count as overview.js, per job.
 const ROOT_FS = 'mountpoint="/",fstype!~"tmpfs|overlay"';
 const NET_DEVICES = 'device!~"lo|veth.*|docker.*|br-.*"';
 const DISK_DEVICES = 'device!~"loop.*"';
 
-// %J is the node-exporter job, %C the cAdvisor job.
+// %J is the node-exporter selector, %C the cAdvisor selector.
 const INSTANT_TEMPLATES = Object.freeze({
-  uname: 'node_uname_info{job="%J"}',
-  cpuBusy: '1 - avg by (job) (rate(node_cpu_seconds_total{job="%J",mode="idle"}[5m]))',
-  cores: 'count by (job) (node_cpu_seconds_total{job="%J",mode="idle"})',
+  uname: 'node_uname_info{%J}',
+  cpuBusy: '1 - avg by (job) (rate(node_cpu_seconds_total{%J,mode="idle"}[5m]))',
+  cores: 'count by (job) (node_cpu_seconds_total{%J,mode="idle"})',
   loadPerCore:
-    'sum by (job) (node_load1{job="%J"}) / count by (job) (node_cpu_seconds_total{job="%J",mode="idle"})',
-  memoryUsed: '1 - node_memory_MemAvailable_bytes{job="%J"} / node_memory_MemTotal_bytes{job="%J"}',
-  memoryTotal: 'node_memory_MemTotal_bytes{job="%J"}',
-  swapUsed: '1 - node_memory_SwapFree_bytes{job="%J"} / node_memory_SwapTotal_bytes{job="%J"}',
-  swapTotal: 'node_memory_SwapTotal_bytes{job="%J"}',
-  diskUsed: `1 - node_filesystem_avail_bytes{job="%J",${ROOT_FS}} / node_filesystem_size_bytes{job="%J",${ROOT_FS}}`,
-  rootSize: `node_filesystem_size_bytes{job="%J",${ROOT_FS}}`,
-  pressureCpu: 'rate(node_pressure_cpu_waiting_seconds_total{job="%J"}[1m]) * 100',
-  pressureMemory: 'rate(node_pressure_memory_waiting_seconds_total{job="%J"}[1m]) * 100',
-  pressureIo: 'rate(node_pressure_io_waiting_seconds_total{job="%J"}[1m]) * 100',
-  uptime: 'time() - node_boot_time_seconds{job="%J"}',
-  containers: 'count by (job) (count by (job, name) (container_memory_working_set_bytes{job="%C",name!=""}))',
+    'sum by (job) (node_load1{%J}) / count by (job) (node_cpu_seconds_total{%J,mode="idle"})',
+  memoryUsed: '1 - node_memory_MemAvailable_bytes{%J} / node_memory_MemTotal_bytes{%J}',
+  memoryTotal: 'node_memory_MemTotal_bytes{%J}',
+  swapUsed: '1 - node_memory_SwapFree_bytes{%J} / node_memory_SwapTotal_bytes{%J}',
+  swapTotal: 'node_memory_SwapTotal_bytes{%J}',
+  diskUsed: `1 - node_filesystem_avail_bytes{%J,${ROOT_FS}} / node_filesystem_size_bytes{%J,${ROOT_FS}}`,
+  rootSize: `node_filesystem_size_bytes{%J,${ROOT_FS}}`,
+  pressureCpu: 'rate(node_pressure_cpu_waiting_seconds_total{%J}[1m]) * 100',
+  pressureMemory: 'rate(node_pressure_memory_waiting_seconds_total{%J}[1m]) * 100',
+  pressureIo: 'rate(node_pressure_io_waiting_seconds_total{%J}[1m]) * 100',
+  uptime: 'time() - node_boot_time_seconds{%J}',
+  containers: 'count by (job) (count by (job, name) (container_memory_working_set_bytes{%C,name!=""}))',
 });
 
 // %W is the rate window of the chosen preset (see rateWindow).
 const RANGE_TEMPLATES = Object.freeze({
-  cpu: '100 * (1 - avg by (job) (rate(node_cpu_seconds_total{job="%J",mode="idle"}[%W])))',
-  memory: '100 * (1 - node_memory_MemAvailable_bytes{job="%J"} / node_memory_MemTotal_bytes{job="%J"})',
-  networkIn: `sum by (job) (rate(node_network_receive_bytes_total{job="%J",${NET_DEVICES}}[%W]))`,
-  networkOut: `sum by (job) (rate(node_network_transmit_bytes_total{job="%J",${NET_DEVICES}}[%W]))`,
-  diskRead: `sum by (job) (rate(node_disk_read_bytes_total{job="%J",${DISK_DEVICES}}[%W]))`,
-  diskWrite: `sum by (job) (rate(node_disk_written_bytes_total{job="%J",${DISK_DEVICES}}[%W]))`,
+  cpu: '100 * (1 - avg by (job) (rate(node_cpu_seconds_total{%J,mode="idle"}[%W])))',
+  memory: '100 * (1 - node_memory_MemAvailable_bytes{%J} / node_memory_MemTotal_bytes{%J})',
+  networkIn: `sum by (job) (rate(node_network_receive_bytes_total{%J,${NET_DEVICES}}[%W]))`,
+  networkOut: `sum by (job) (rate(node_network_transmit_bytes_total{%J,${NET_DEVICES}}[%W]))`,
+  diskRead: `sum by (job) (rate(node_disk_read_bytes_total{%J,${DISK_DEVICES}}[%W]))`,
+  diskWrite: `sum by (job) (rate(node_disk_written_bytes_total{%J,${DISK_DEVICES}}[%W]))`,
 });
 
 // Whether each server's node exporter is up, for the status dots on the node switch.
@@ -61,29 +68,27 @@ function rateWindow(hours) {
 }
 
 function fill(template, server, window = "") {
-  return template.replace(/%J/g, server.nodeJob).replace(/%C/g, server.cadvisorJob).replace(/%W/g, window);
+  return template.replace(/%J/g, server.nodeSel).replace(/%C/g, server.cadvisorSel).replace(/%W/g, window);
 }
 
-// Query strings per server key: { main: { instant: {...}, range: { 1: {...}, 6: {...}, ... } },
-// old: {...} }. range is keyed by preset hours, each preset with its own rate window.
-const QUERIES = Object.freeze(
-  Object.fromEntries(
-    SERVERS.map((s) => [
-      s.key,
-      Object.freeze({
-        instant: Object.freeze(Object.fromEntries(Object.entries(INSTANT_TEMPLATES).map(([k, t]) => [k, fill(t, s)]))),
-        range: Object.freeze(
-          Object.fromEntries(
-            HOURS.map((h) => [
-              h,
-              Object.freeze(Object.fromEntries(Object.entries(RANGE_TEMPLATES).map(([k, t]) => [k, fill(t, s, rateWindow(h))]))),
-            ])
-          )
-        ),
-      }),
-    ])
-  )
-);
+// The node query strings of one server: { instant: {...}, range: { 1: {...}, 6: {...}, ... } }.
+// range is keyed by preset hours, each preset with its own rate window.
+function buildNodeQueries(s) {
+  return Object.freeze({
+    instant: Object.freeze(Object.fromEntries(Object.entries(INSTANT_TEMPLATES).map(([k, t]) => [k, fill(t, s)]))),
+    range: Object.freeze(
+      Object.fromEntries(
+        HOURS.map((h) => [
+          h,
+          Object.freeze(Object.fromEntries(Object.entries(RANGE_TEMPLATES).map(([k, t]) => [k, fill(t, s, rateWindow(h))]))),
+        ])
+      )
+    ),
+  });
+}
+
+// Node query strings of the built-in servers by key: { main: {...}, old: {...} }.
+const QUERIES = Object.freeze(Object.fromEntries(BUILTIN_SERVERS.map((s) => [s.key, buildNodeQueries(s)])));
 
 // The Containers tab: per container name, from the server's cAdvisor job. Containers are summed or
 // maxed by name so a container that was recreated (new id, same name) is one row. CPU and memory
@@ -99,17 +104,17 @@ const QUERIES = Object.freeze(
 // divides "on (id, name)": one-to-one matching with on() keeps only the listed labels, so name
 // has to be listed for the max by (name) around it to see it.
 const CONTAINER_INSTANT_TEMPLATES = Object.freeze({
-  cpu: '100 * sum by (name) (rate(container_cpu_usage_seconds_total{job="%C",name!=""}[5m]))',
-  memory: 'sum by (name) (container_memory_working_set_bytes{job="%C",name!=""})',
-  limit: 'max by (name) (container_spec_memory_limit_bytes{job="%C",name!=""})',
-  restarts: 'changes(max by (name) (container_start_time_seconds{job="%C",name!=""})[24h:1m])',
-  memoryUsedBytes: 'node_memory_MemTotal_bytes{job="%J"} - node_memory_MemAvailable_bytes{job="%J"}',
+  cpu: '100 * sum by (name) (rate(container_cpu_usage_seconds_total{%C,name!=""}[5m]))',
+  memory: 'sum by (name) (container_memory_working_set_bytes{%C,name!=""})',
+  limit: 'max by (name) (container_spec_memory_limit_bytes{%C,name!=""})',
+  restarts: 'changes(max by (name) (container_start_time_seconds{%C,name!=""})[24h:1m])',
+  memoryUsedBytes: 'node_memory_MemTotal_bytes{%J} - node_memory_MemAvailable_bytes{%J}',
 });
 const CONTAINER_RANGE_TEMPLATES = Object.freeze({
-  present: 'count by (name) (count_over_time(container_memory_working_set_bytes{job="%C",name!=""}[15m]))',
-  started: 'max by (name) (max_over_time(container_start_time_seconds{job="%C",name!=""}[15m]))',
+  present: 'count by (name) (count_over_time(container_memory_working_set_bytes{%C,name!=""}[15m]))',
+  started: 'max by (name) (max_over_time(container_start_time_seconds{%C,name!=""}[15m]))',
   share:
-    'max by (name) (max_over_time(container_memory_working_set_bytes{job="%C",name!=""}[15m]) / on (id, name) (max_over_time(container_spec_memory_limit_bytes{job="%C",name!=""}[15m]) > 0 < scalar(node_memory_MemTotal_bytes{job="%J"})))',
+    'max by (name) (max_over_time(container_memory_working_set_bytes{%C,name!=""}[15m]) / on (id, name) (max_over_time(container_spec_memory_limit_bytes{%C,name!=""}[15m]) > 0 < scalar(node_memory_MemTotal_bytes{%J})))',
 });
 
 // The strip covers the last 24 hours with one cell per 15 minutes.
@@ -119,22 +124,33 @@ const CELLS = (CONTAINER_HOURS * 3600) / CONTAINER_STEP;
 // A cell is "over70" from this share of the limit.
 const OVER_SHARE = 0.7;
 
-// Query strings per server key for the Containers tab. memoryTotal is the node total from the
-// node queries above, so the tab has no extra string for it.
+// The Containers tab query strings of one server. memoryTotal is the node total from the node
+// queries above, so the tab has no extra string for it.
+function buildContainerQueries(s, nodeQueries) {
+  return Object.freeze({
+    instant: Object.freeze({
+      ...Object.fromEntries(Object.entries(CONTAINER_INSTANT_TEMPLATES).map(([k, t]) => [k, fill(t, s)])),
+      memoryTotal: nodeQueries.instant.memoryTotal,
+    }),
+    range: Object.freeze(Object.fromEntries(Object.entries(CONTAINER_RANGE_TEMPLATES).map(([k, t]) => [k, fill(t, s)]))),
+  });
+}
+
+// Per server key for the built-in servers.
 const CONTAINER_QUERIES = Object.freeze(
-  Object.fromEntries(
-    SERVERS.map((s) => [
-      s.key,
-      Object.freeze({
-        instant: Object.freeze({
-          ...Object.fromEntries(Object.entries(CONTAINER_INSTANT_TEMPLATES).map(([k, t]) => [k, fill(t, s)])),
-          memoryTotal: QUERIES[s.key].instant.memoryTotal,
-        }),
-        range: Object.freeze(Object.fromEntries(Object.entries(CONTAINER_RANGE_TEMPLATES).map(([k, t]) => [k, fill(t, s)]))),
-      }),
-    ])
-  )
+  Object.fromEntries(BUILTIN_SERVERS.map((s) => [s.key, buildContainerQueries(s, QUERIES[s.key])]))
 );
+
+// Every query string of one server's set.
+function allStrings(set) {
+  return [
+    set.up,
+    ...Object.values(set.node.instant),
+    ...Object.values(set.node.range).flatMap((preset) => Object.values(preset)),
+    ...Object.values(set.container.instant),
+    ...Object.values(set.container.range),
+  ];
+}
 
 const ALLOWED = Object.freeze([
   UP_QUERY,
@@ -154,14 +170,35 @@ function first(rows) {
   return rows.length ? numberOrNull(rows[0].value) : null;
 }
 
-function createResources({ prometheus, now = Date.now } = {}) {
-  const prom = prometheus || createPrometheus({ allowed: ALLOWED });
+// registry: from registry.js; without one only the built-in servers are known.
+function createResources({ prometheus, now = Date.now, registry = createRegistry() } = {}) {
+  // The query sets of a server added in the dashboard, made once per selector pair.
+  const extraSets = new Map();
+  function setFor(server) {
+    if (server.builtin) return { up: UP_QUERY, node: QUERIES[server.key], container: CONTAINER_QUERIES[server.key] };
+    const id = `${server.nodeSel}|${server.cadvisorSel}`;
+    if (!extraSets.has(id)) {
+      const node = buildNodeQueries(server);
+      extraSets.set(id, { up: fill("up{%J}", server), node, container: buildContainerQueries(server, node) });
+    }
+    return extraSets.get(id);
+  }
 
-  // key and hours must already be validated by the caller (one of SERVERS and one of HOURS).
+  // The constant allow list plus the strings of the active registry servers, rebuilt only when the
+  // registry changes.
+  const allowed = registry.derived((snap) => [
+    ...ALLOWED,
+    ...snap.activeServers.filter((s) => !s.builtin).flatMap((s) => allStrings(setFor(s))),
+  ]);
+  const prom = prometheus || createPrometheus({ allowed });
+
+  // key and hours must already be validated by the caller (an active server and one of HOURS).
   async function load(key, hours) {
-    const server = SERVERS.find((s) => s.key === key);
+    await registry.load();
+    const servers = registry.current().activeServers;
+    const server = servers.find((s) => s.key === key);
     if (!server || !HOURS.includes(hours)) throw new Error("unknown server or window");
-    const q = QUERIES[key];
+    const q = setFor(server).node;
 
     const step = stepFor(hours);
     const end = Math.floor(now() / 1000);
@@ -172,8 +209,10 @@ function createResources({ prometheus, now = Date.now } = {}) {
     const rangeNames = Object.keys(ranges);
     // Any failed request rejects the whole load (the route answers 502). An empty result is a
     // missing metric and becomes null.
-    const [upRows, instant, range] = await Promise.all([
+    const extras = servers.filter((s) => !s.builtin);
+    const [upRows, extraUp, instant, range] = await Promise.all([
       prom.query(UP_QUERY),
+      Promise.all(extras.map((s) => prom.query(setFor(s).up))),
       Promise.all(instantNames.map((n) => prom.query(q.instant[n]))),
       Promise.all(rangeNames.map((n) => prom.queryRange(ranges[n], start, end, step))),
     ]);
@@ -183,8 +222,8 @@ function createResources({ prometheus, now = Date.now } = {}) {
     const swapTotal = v("swapTotal");
     const hostname = r.uname[0] && r.uname[0].labels.nodename ? String(r.uname[0].labels.nodename) : null;
 
-    const nodes = SERVERS.map((s) => {
-      const row = upRows.find((u) => u.labels.job === s.nodeJob);
+    const nodes = servers.map((s) => {
+      const row = s.builtin ? upRows.find((u) => u.labels.job === s.nodeJob) : extraUp[extras.indexOf(s)][0];
       const up = row ? numberOrNull(row.value) : null;
       return { key: s.key, displayName: s.displayName, up: up === null ? null : up === 1 };
     });
@@ -197,9 +236,9 @@ function createResources({ prometheus, now = Date.now } = {}) {
       key: server.key,
       displayName: server.displayName,
       hostname,
-      role: server.role,
+      role: server.roleLabel,
       provider: server.provider,
-      location: server.location,
+      location: server.place,
       hours,
       stepSeconds: step,
       start: start * 1000,
@@ -276,9 +315,10 @@ function createResources({ prometheus, now = Date.now } = {}) {
 
   // Containers of one server (key must already be validated) with the last 24 hours as cells.
   async function containers(key) {
-    const server = SERVERS.find((s) => s.key === key);
+    await registry.load();
+    const server = registry.current().activeServers.find((s) => s.key === key);
     if (!server) throw new Error("unknown server");
-    const q = CONTAINER_QUERIES[key];
+    const q = setFor(server).container;
     const end = Math.floor(now() / 1000);
     const start = end - CONTAINER_HOURS * 3600;
     const times = Array.from({ length: CELLS }, (_, i) => start + (i + 1) * CONTAINER_STEP);

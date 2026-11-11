@@ -266,3 +266,65 @@ test("InfluxDB down gives 502 on activity while nodes still work", async (t) => 
   assert.deepEqual(await res.json(), { error: "influxdb unreachable" });
   assert.equal((await get("/api/nodes")).status, 200);
 });
+
+// A server added in the dashboard shows up in /api/nodes with its own queries.
+test("an active registry server is added to /api/nodes with its own selector", async (t) => {
+  const { extraQueries } = require("../overview");
+  const sent = [];
+  const original = globalThis.fetch;
+  const mine = extraQueries({ nodeSel: 'job="node-registry",server="shop-node"', cadvisorSel: 'job="cadvisor-registry",server="shop-node"' });
+  const mineByQuery = new Map(Object.entries(mine).map(([k, q]) => [q, k]));
+  const values = { up: 1, memTotal: 2 * GB, memAvailable: 1 * GB, cpuCount: 2, cpuBusy: 0.5, containers: 4 };
+  const base = samples();
+  const byQuery = new Map(Object.entries(QUERIES).map(([k, q]) => [q, k]));
+  globalThis.fetch = async (url, init) => {
+    const href = String(url);
+    if (!href.startsWith(PROMETHEUS_URL)) return original(url, init);
+    const q = new URL(href).searchParams.get("query");
+    sent.push(q);
+    let rows = [];
+    if (mineByQuery.has(q)) {
+      const key = mineByQuery.get(q);
+      if (key === "uname") rows = [{ metric: { job: "node-registry", server: "shop-node", nodename: "shop-host" }, value: 1 }];
+      else if (values[key] !== undefined) rows = [{ metric: { job: "node-registry", server: "shop-node" }, value: values[key] }];
+    } else if (byQuery.has(q)) rows = base[byQuery.get(q)] || [];
+    const result = rows.map((r) => ({ metric: r.metric, value: [1700000000, String(r.value)] }));
+    return new Response(JSON.stringify({ status: "success", data: { resultType: "vector", result } }), { headers: { "content-type": "application/json" } });
+  };
+  t.after(() => { globalThis.fetch = original; });
+
+  const { app, get } = await signedIn(t);
+  await app.addUser("boss@example.com", "admin", "a long enough password");
+  const boss = await app.login("boss@example.com", "a long enough password");
+  const patch = () => app.request("/api/settings/servers/old", { method: "PATCH", json: { role: "staging" }, headers: { cookie: boss.cookie } });
+
+  // Pending: the node list is the two built-in servers and no extra query is sent.
+  await app.db.transaction(async (ops) => {
+    await ops.insertServer({ key: "shop-node", name: "shop-node", role: "application", location: "Home lab", address: "100.64.0.12", builtin: false, status: "pending", node_job: "node-registry", cadvisor_job: "cadvisor-registry" });
+  });
+  assert.equal((await patch()).status, 200); // a write reloads the registry at once
+  let nodes = await (await get("/api/nodes")).json();
+  assert.deepEqual(nodes.map((n) => n.key), ["main", "old"]);
+  assert.ok(!sent.some((q) => q.includes("node-registry")));
+
+  // Active: it is listed with its own values.
+  await app.db.transaction(async (ops) => ops.updateServer("shop-node", { status: "active" }));
+  assert.equal((await patch()).status, 200);
+  nodes = await (await get("/api/nodes")).json();
+  assert.deepEqual(nodes.map((n) => n.key), ["main", "old", "shop-node"]);
+  const shop = nodes[2];
+  assert.equal(shop.displayName, "shop-node");
+  assert.equal(shop.hostname, "shop-host");
+  assert.equal(shop.role, "Application");
+  assert.equal(shop.provider, "");
+  assert.equal(shop.location, "Home lab");
+  assert.equal(shop.up, true);
+  assert.equal(shop.memoryTotalBytes, 2 * GB);
+  assert.equal(shop.cpuBusy, 0.5);
+  assert.equal(shop.containers, 4);
+  assert.equal(shop.diskSizeBytes, null);
+  // Its queries carry the server label; the built-in servers are unchanged.
+  assert.ok(sent.includes('up{job="node-registry",server="shop-node"}'));
+  assert.equal(nodes[0].memoryTotalBytes, 8 * GB);
+  assert.equal(nodes[1].memoryTotalBytes, 4 * GB);
+});

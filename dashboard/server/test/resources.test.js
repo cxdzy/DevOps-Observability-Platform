@@ -567,3 +567,76 @@ test("the container strings are written out for the main server", () => {
   );
   assert.ok(Object.isFrozen(q.instant) && Object.isFrozen(q.range));
 });
+
+// A registry server: its queries carry job and server labels, and everything stays on the allow list.
+test("an active registry server works on both resource routes with its own selector", async (t) => {
+  const NODE = 'job="node-registry",server="shop-node"';
+  const CAD = 'job="cadvisor-registry",server="shop-node"';
+  const sent = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const href = String(url);
+    if (!href.startsWith(PROMETHEUS_URL)) return original(url, init);
+    const u = new URL(href);
+    const q = u.searchParams.get("query");
+    sent.push({ path: u.pathname, query: q });
+    const matrix = u.pathname === "/api/v1/query_range";
+    let result = [];
+    if (q === "up{" + NODE + "}") result = [{ metric: { job: "node-registry", server: "shop-node" }, value: [NOW_SEC, "1"] }];
+    else if (q === "node_memory_MemTotal_bytes{" + NODE + "}") result = [{ metric: {}, value: [NOW_SEC, String(2 * GB)] }];
+    else if (matrix && q.includes("node_cpu_seconds_total")) result = [{ metric: {}, values: [[NOW_SEC, "12.5"]] }];
+    else if (q.startsWith("sum by (name) (container_memory_working_set_bytes")) result = [{ metric: { name: "shop-web" }, value: [NOW_SEC, "1000"] }];
+    return new Response(JSON.stringify({ status: "success", data: { resultType: matrix ? "matrix" : "vector", result } }), { headers: { "content-type": "application/json" } });
+  };
+  t.after(() => { globalThis.fetch = original; });
+
+  const app = await startApp();
+  t.after(app.close);
+  await app.addUser("boss@example.com", "admin", "a long enough password");
+  const { cookie } = await app.login("boss@example.com", "a long enough password");
+  const get = (path) => app.request(path, { headers: { cookie } });
+
+  // Unknown until the server is active, and no query is sent for it.
+  const unknown = await get("/api/resources?node=shop-node");
+  assert.equal(unknown.status, 400);
+  assert.deepEqual(await unknown.json(), { error: "node must be main or old" });
+  assert.equal((await get("/api/resources/containers?node=shop-node")).status, 400);
+  assert.equal(sent.length, 0);
+
+  await app.db.transaction(async (ops) => {
+    await ops.insertServer({ key: "shop-node", name: "shop-node", role: "application", location: "Home lab", address: "100.64.0.12", builtin: false, status: "active", node_job: "node-registry", cadvisor_job: "cadvisor-registry" });
+  });
+  // A settings write reloads the registry at once.
+  const write = await app.request("/api/settings/servers/old", { method: "PATCH", json: { role: "staging" }, headers: { cookie } });
+  assert.equal(write.status, 200);
+
+  const res = await get("/api/resources?node=shop-node&hours=6");
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.key, "shop-node");
+  assert.equal(body.role, "Application");
+  assert.equal(body.location, "Home lab");
+  assert.deepEqual(body.nodes.map((n) => [n.key, n.up]), [["main", null], ["old", null], ["shop-node", true]]);
+  assert.equal(body.facts.memoryTotalBytes, 2 * GB);
+  assert.deepEqual(body.history.cpu, [[NOW_SEC * 1000, 12.5]]);
+  const instant = sent.filter((s) => s.path === "/api/v1/query").map((s) => s.query);
+  assert.ok(instant.includes("node_uname_info{" + NODE + "}"));
+  assert.ok(instant.includes("up{" + NODE + "}"));
+  assert.ok(instant.includes("node_memory_MemTotal_bytes{" + NODE + "}"));
+  // Every query of that server is scoped by both labels; none uses a built-in job.
+  for (const s of sent) {
+    if (s.query === UP_QUERY) continue;
+    assert.ok(s.query.includes(NODE) || s.query.includes(CAD), s.query);
+    assert.ok(!s.query.includes('job="node-exporter'), s.query);
+  }
+
+  sent.length = 0;
+  const containers = await get("/api/resources/containers?node=shop-node");
+  assert.equal(containers.status, 200);
+  const cbody = await containers.json();
+  assert.equal(cbody.node, "shop-node");
+  assert.deepEqual(cbody.containers.map((c) => c.name), ["shop-web"]);
+  for (const s of sent.filter((x) => x.query.includes("container_"))) assert.ok(s.query.includes(CAD), s.query);
+  // The main and old strings are unchanged by the registry.
+  assert.ok(ALLOWED.includes('node_memory_MemTotal_bytes{job="node-exporter"}'));
+});
