@@ -492,7 +492,7 @@ const runModel = computed(() => evaluation.value?.run.model ?? null)
           <p v-else class="ex-t-body m-0 text-muted-foreground">{{ !loadedOnce ? 'Loading' : incidentsFailed ? `The incidents could not be loaded. ${RETRY}` : `${NO_DATA}. No medium or high incident in the last 7 days.` }}</p>
         </section>
 
-        <section aria-label="Incident timeline" class="ex-card min-h-0 min-w-0 overflow-hidden">
+        <section aria-label="Incident timeline" class="ex-card flex min-h-0 min-w-0 flex-col overflow-hidden">
           <IncidentTimeline v-if="lastIncident && lastIncident.job" :key="`${lastIncident.start}-${lastIncident.job}`" :start="lastIncident.start" :job="lastIncident.job" :tier="lastIncident.tier" size="large" readonly />
           <p v-else class="ex-t-body m-0 text-muted-foreground">{{ lastIncident ? `${NO_DATA}. This incident has no timeline.` : empty }}</p>
         </section>

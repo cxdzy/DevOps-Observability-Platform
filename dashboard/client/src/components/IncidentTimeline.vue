@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { IncidentTimeline, TimelineKind, TimelineStep } from '@/types'
-import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ChartLoadError from '@/components/ChartLoadError.vue'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -157,6 +157,71 @@ function hasLine(i: number): boolean {
   if (layout.value.columns === 2 && (i + 1) % gridRows.value === 0) return false
   return true
 }
+
+// ---- Spare height (exhibition card only) ----
+// The budget above decides which steps are shown at the smallest chart. After the steps are laid
+// out, the height left below them is measured and given to the chart, which grows up to half the
+// card. If at least FIT_THREE_LINES px is still left after that, each detail may use three lines
+// instead of two; should that overflow, the chart gives the height back, or the details go back to
+// two lines. Sizes are read in layout pixels, so the scale of the exhibition stage does not matter.
+const FIT_THREE_LINES = 120
+const rootEl = ref<HTMLElement | null>(null)
+const listEl = ref<HTMLElement | null>(null)
+const chartHeight = ref(FIT_CHART)
+const detailLines = ref(2)
+// Distance from the bottom of the step list to the bottom of the card, in layout pixels. Negative
+// when the list runs past the card.
+function spareBelowList(): number | null {
+  const root = rootEl.value
+  const list = listEl.value
+  if (!root || !list || root.offsetHeight === 0) return null
+  const rootBox = root.getBoundingClientRect()
+  const scale = rootBox.height / root.offsetHeight || 1
+  return (rootBox.bottom - list.getBoundingClientRect().bottom) / scale
+}
+let fitRun = 0
+async function fitSpare() {
+  if (!fit.value) return
+  const mine = ++fitRun
+  chartHeight.value = FIT_CHART
+  detailLines.value = 2
+  await nextTick()
+  const spare = spareBelowList()
+  const root = rootEl.value
+  if (mine !== fitRun || spare === null || !root) return
+  const half = Math.floor(root.offsetHeight / 2)
+  const grow = Math.max(0, Math.min(Math.floor(spare), half - FIT_CHART))
+  chartHeight.value = FIT_CHART + grow
+  if (spare - grow < FIT_THREE_LINES) return
+  detailLines.value = 3
+  await nextTick()
+  const after = spareBelowList()
+  if (mine !== fitRun || after === null || after >= 0) return
+  const shrunk = chartHeight.value + Math.floor(after)
+  if (shrunk >= FIT_CHART) chartHeight.value = shrunk
+  else {
+    detailLines.value = 2
+    chartHeight.value = FIT_CHART + grow
+  }
+}
+// The card height changes only when the notice above the screens appears or goes, and the steps
+// change only when new data arrives, so this runs rarely. The chart resizes itself.
+let observer: ResizeObserver | null = null
+let observedHeight = 0
+onMounted(() => {
+  if (typeof ResizeObserver === 'undefined') return
+  observer = new ResizeObserver(() => {
+    const h = rootEl.value?.offsetHeight ?? 0
+    if (h !== observedHeight) {
+      observedHeight = h
+      void fitSpare()
+    }
+  })
+  if (rootEl.value) observer.observe(rootEl.value)
+})
+onBeforeUnmount(() => observer?.disconnect())
+watch([shownSteps, () => timeline.value], () => { void fitSpare() }, { flush: 'post' })
+
 const points = computed(() => timeline.value?.points ?? [])
 // Times of early warnings, for the dashed lines on the chart.
 const warnings = computed(() => steps.value.filter(s => s.kind === 'early_warning' && s.time !== null).map(s => s.time as number))
@@ -251,7 +316,7 @@ const rangeText = computed(() => (timeline.value ? `${clockTime(timeline.value.f
 </script>
 
 <template>
-  <section aria-label="Incident timeline" class="flex flex-col gap-3" :class="[size === 'large' ? 'tl-large' : '', fit ? 'tl-fit' : '']">
+  <section ref="rootEl" aria-label="Incident timeline" class="flex flex-col gap-3" :class="[size === 'large' ? 'tl-large' : '', fit ? 'tl-fit min-h-0 flex-1' : '']" :style="fit ? { '--tl-lines': String(detailLines) } : undefined">
     <div class="flex items-baseline justify-between gap-2">
       <h3 class="tl-body text-[13px] font-semibold">What happened, in order</h3>
       <span v-if="timeline && steps.length && !readonly" class="tl-small text-xs text-muted-foreground">Select a step to find it on the chart</span>
@@ -280,7 +345,7 @@ const rangeText = computed(() => (timeline.value ? `${clockTime(timeline.value.f
       <div class="min-w-0">
         <p class="tl-small mb-1 text-xs text-muted-foreground">Score around the incident, <span class="font-mono">{{ rangeText }}</span></p>
         <!-- The large chart fills this box, which sets its height; the normal chart sets its own. -->
-        <div v-if="hasChart" class="tl-chart" :class="fit ? 'pointer-events-none' : ''">
+        <div v-if="hasChart" class="tl-chart" :class="fit ? 'pointer-events-none' : ''" :style="fit ? { height: `calc(${chartHeight} * var(--tu))` } : undefined">
           <AnomalyChart
             compact
             :size="size"
@@ -296,6 +361,7 @@ const rangeText = computed(() => (timeline.value ? `${clockTime(timeline.value.f
       </div>
 
       <ol
+        ref="listEl"
         class="m-0 list-none p-0"
         :class="fit && layout.columns === 2 ? 'tl-cols' : ''"
         :style="fit && layout.columns === 2 ? { gridTemplateRows: `repeat(${gridRows}, auto)` } : undefined"
@@ -359,8 +425,9 @@ const rangeText = computed(() => (timeline.value ? `${clockTime(timeline.value.f
 .tl-large .tl-icon { width: calc(20 * var(--tu)); height: calc(20 * var(--tu)); }
 .tl-large .tl-line { top: calc(46 * var(--tu)); }
 
-/* The exhibition card (large and readonly): a fixed, shorter chart, no scrolling, tighter steps
-   with the title on one line and the detail clamped to two, and past four steps two columns. The
+/* The exhibition card (large and readonly): no scrolling, a chart that starts at 240 px and takes
+   the spare height (fitSpare in the script), tighter steps with the title on one line and the
+   detail clamped to two lines (three when there is room), and past four steps two columns. The
    type stays at the large sizes above (24 px body, 20 px times, 36 px nodes). These rules come
    after the large ones so they win, and the sizes match FIT_* in the script. */
 .tl-fit { overflow: hidden; }
@@ -373,6 +440,6 @@ const rangeText = computed(() => (timeline.value ? `${clockTime(timeline.value.f
 .tl-fit .tl-step { margin: 0; padding: calc(2 * var(--tu)) calc(10 * var(--tu)); }
 .tl-fit .tl-head { flex-wrap: nowrap; }
 .tl-fit .tl-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tl-fit .tl-detail { margin-top: 0; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tl-fit .tl-detail { margin-top: 0; display: -webkit-box; -webkit-line-clamp: var(--tl-lines, 2); line-clamp: var(--tl-lines, 2); -webkit-box-orient: vertical; overflow: hidden; }
 .tl-fit .tl-more { padding: calc(4 * var(--tu)) calc(10 * var(--tu)); }
 </style>
