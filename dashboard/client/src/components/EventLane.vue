@@ -6,9 +6,10 @@
 //
 // The plot width is cut into equal slots, each one marker wide plus a 4 px gap (28 px with a
 // mouse, 48 px on a touch screen). Every event goes into the slot that holds its x position. A
-// slot with one event draws that event's marker; a slot with more draws one "+n" pill. A marker
-// always fits inside its own slot, so no two markers overlap at any width, and the slots are cut
-// again on every zoom, pan, resize and poll, so zooming in splits the pills.
+// slot with one event draws that event's marker at its true x; a slot with more draws one "+n"
+// pill on the slot's centre. Beside a taken slot a marker is kept inside its own slot, so no two
+// markers overlap at any width. The slots are cut again on every zoom, pan, resize and poll, so
+// zooming in splits the pills.
 import type { EventItem, ChartWindow } from '@/types'
 import { computed, h, nextTick, onMounted, onUnmounted, ref, watch, type FunctionalComponent } from 'vue'
 import { clockTime, localDateTime, shortDate } from '@/lib/format'
@@ -188,10 +189,12 @@ const markers = computed<Marker[]>(() => {
     list.sort((a, b) => a.event.time - b.event.time)
     const start = w.left + k * slot
     const items = list.map(i => i.event)
-    // One event: centred on its true x, kept inside its slot. More: centred on the slot.
-    const x = list.length === 1
-      ? Math.min(start + slot - half - pad, Math.max(start + half + pad, list[0].x))
-      : start + slot / 2
+    // One event: centred on its true x. Only on a side whose neighbouring slot is taken is it kept
+    // inside its own slot; next to an empty slot it may reach into it, which still leaves at
+    // least the gap to any marker beyond. More events: one pill centred on the slot.
+    const lo = bySlot.has(k - 1) ? start + half + pad : -Infinity
+    const hi = bySlot.has(k + 1) ? start + slot - half - pad : Infinity
+    const x = list.length === 1 ? Math.min(hi, Math.max(lo, list[0].x)) : start + slot / 2
     const lead = items.reduce((best, e) => (rank(e) < rank(best) ? e : best), items[0])
     out.push({ key: eventKey(items[0]), x, items, lead })
   }
@@ -323,7 +326,8 @@ const Shape: FunctionalComponent<{ event: EventItem, small?: boolean }> = ({ eve
     h('svg', { ...svgAttrs, class: small ? 'size-2' : 'size-3', 'stroke-width': '3' }, [h('path', { d: mark })]),
   ])
 }
-Shape.props = ['event', 'small']
+// Object props, so a bare `small` attribute becomes true (an array would pass an empty string).
+Shape.props = { event: { type: Object, required: true }, small: { type: Boolean, default: false } }
 </script>
 
 <template>
@@ -375,7 +379,7 @@ Shape.props = ['event', 'small']
         <template v-else>
           <div class="mb-1.5 font-semibold">{{ openMarker.items.length }} events, newest first</div>
           <ul class="flex flex-col gap-1">
-            <li v-for="e in groupList" :key="eventKey(e)" class="flex items-center gap-2 text-xs">
+            <li v-for="(e, i) in groupList" :key="i" class="flex items-center gap-2 text-xs">
               <span class="flex w-5 shrink-0 justify-center"><Shape :event="e" small /></span>
               <span class="shrink-0 font-mono text-muted-foreground">{{ stamp(e.time) }}</span>
               <span class="min-w-0 truncate">{{ e.label }}</span>
