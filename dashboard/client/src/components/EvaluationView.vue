@@ -136,6 +136,28 @@ function parseTime(text: string | null): number | null {
   const ms = text ? Date.parse(text) : Number.NaN
   return Number.isFinite(ms) ? ms : null
 }
+// Times are shown in the browser's local time, in the dashboard's usual format, with the zone
+// abbreviation from Intl written once wherever a period or timestamp appears.
+function zoneName(ms: number = Date.now()): string {
+  try {
+    return new Intl.DateTimeFormat([], { timeZoneName: 'short' }).formatToParts(new Date(ms)).find(p => p.type === 'timeZoneName')?.value ?? ''
+  } catch {
+    return ''
+  }
+}
+const zone = zoneName()
+const zoneSuffix = zone ? ` (${zone})` : ''
+const localStamp = (ms: number) => `${shortDate(ms)} ${clockTime(ms)}`
+
+// The missed example as the script stores it, "2026-10-28T11:59:33Z, peak score 0.558", with its
+// time rewritten in local time. Text that does not start with a time is shown as it is.
+function missedText(example: string): string {
+  const match = example.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2}))(.*)$/)
+  if (!match) return example
+  const ms = Date.parse(match[1])
+  return Number.isFinite(ms) ? `${localStamp(ms)}${match[2]}` : example
+}
+
 function periodText(since: string | null, until: string | null): string {
   const a = parseTime(since)
   const b = parseTime(until)
@@ -156,7 +178,7 @@ const options = computed(() =>
     const when = saved === null ? r.run_id : `${shortDate(saved)} ${clockTime(saved)}`
     return {
       id: r.run_id,
-      label: `${periodText(r.since, r.until)} (${hoursText(r.since, r.until) || 'period not stored'}, ${count(r.injections)} injections, saved ${when})`,
+      label: `${periodText(r.since, r.until)}${zoneSuffix} (${hoursText(r.since, r.until) || 'period not stored'}, ${count(r.injections)} injections, saved ${when})`,
     }
   }),
 )
@@ -558,7 +580,7 @@ const buttonClass = 'inline-flex min-h-9 items-center gap-2 rounded-lg border bo
     </p>
 
     <p class="text-[13px] text-muted-foreground">
-      <span class="font-medium text-foreground">{{ periodText(data.run.since, data.run.until) }}</span>{{ summaryRest }}
+      <span class="font-medium text-foreground">{{ periodText(data.run.since, data.run.until) }}{{ zoneSuffix }}</span>{{ summaryRest }}
     </p>
 
     <section aria-label="Headline results" class="grid grid-cols-[repeat(auto-fit,minmax(min(200px,100%),1fr))] gap-4">
@@ -622,7 +644,7 @@ const buttonClass = 'inline-flex min-h-9 items-center gap-2 rounded-lg border bo
                 <th scope="col" :class="cell" class="py-2 font-medium">Detected</th>
                 <th scope="col" :class="cell" class="py-2 font-medium">Rate</th>
                 <th scope="col" :class="cell" class="py-2 font-medium">Median peak</th>
-                <th scope="col" :class="cell" class="py-2 font-medium">Missed example</th>
+                <th scope="col" :class="cell" class="py-2 font-medium">Missed example{{ zoneSuffix }}</th>
               </tr>
             </thead>
             <tbody>
@@ -633,7 +655,7 @@ const buttonClass = 'inline-flex min-h-9 items-center gap-2 rounded-lg border bo
                 <td :class="cell" class="font-mono text-[13px]">{{ f.detection_rate === null ? '-' : percent(f.detection_rate, 0) }}</td>
                 <td :class="cell" class="font-mono text-[13px]">{{ fixed(f.median_peak_score) }}</td>
                 <td :class="cell" class="text-[13px]">
-                  <span v-if="f.missed_example" class="font-mono text-xs text-tier-medium-fg">{{ f.missed_example }}</span>
+                  <span v-if="f.missed_example" class="font-mono text-xs text-tier-medium-fg">{{ missedText(f.missed_example) }}</span>
                   <span v-else class="text-muted-foreground">{{ f.missed === 0 ? 'None missed' : '-' }}</span>
                 </td>
               </tr>

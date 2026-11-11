@@ -11,7 +11,7 @@ import { useWheelScrollsPage } from '@/components/ResourceChart.vue'
 import { Skeleton } from '@/components/ui/skeleton'
 import { api, usePoll } from '@/composables/useApi'
 import { cssVar, MONO, useChartTheme, withAlpha } from '@/lib/chartTheme'
-import { fixed, localDateTime } from '@/lib/format'
+import { clockTime, fixed, shortDate } from '@/lib/format'
 
 use([CustomChart, LineChart, ScatterChart, GridComponent, TooltipComponent, DataZoomInsideComponent, DataZoomSliderComponent, MarkLineComponent, CanvasRenderer])
 
@@ -103,6 +103,22 @@ function percent(rate: number | null | undefined): string {
 }
 const thresholdText = computed(() => `${Math.round(threshold.value * 1000) / 10}%`)
 
+// Moments (promotions, the latest reference) are shown in the browser's local time, in the same
+// format as the rest of the dashboard, with the zone abbreviation from Intl written once where they
+// appear. Days (bars, episodes) are UTC days and keep their UTC dates.
+function localStamp(ms: number): string {
+  return `${shortDate(ms)} ${clockTime(ms)}`
+}
+function zoneName(ms: number = Date.now()): string {
+  try {
+    return new Intl.DateTimeFormat([], { timeZoneName: 'short' }).formatToParts(new Date(ms)).find(p => p.type === 'timeZoneName')?.value ?? ''
+  } catch {
+    return ''
+  }
+}
+const zone = zoneName()
+const withZone = (text: string) => (zone ? `${text} (${zone})` : text)
+
 // Days are UTC days, so their dates are written in UTC.
 function utcDate(ms: number): string {
   return new Date(ms).toLocaleDateString([], { day: 'numeric', month: 'short', timeZone: 'UTC' })
@@ -185,7 +201,8 @@ const finePointer = typeof window !== 'undefined' && window.matchMedia?.('(point
 
 interface Rect { x: number, y: number, width: number, height: number }
 interface CustomApi { value: (dim: number) => number, coord: (v: number[]) => number[] }
-interface CustomParams { coordSys: Rect }
+// dataIndexInside is the item's position among the items drawn in this pass, from 0.
+interface CustomParams { coordSys: Rect, dataIndexInside: number }
 
 // The top of the rate axis: a nice number above the largest rate, and never above 15 percent, so
 // one very bad day does not flatten the rest. A taller bar is cut at the top and labelled.
@@ -222,20 +239,65 @@ function barRenderItem(fill: string, ink: string) {
   }
 }
 
+// Chart labels are drawn only where they fit. A label is drawn when it lies fully inside its room
+// (an episode band, or the plot width for a version label) and starts at least LABEL_GAP_PX after
+// the right edge of the previous drawn label of the same kind; otherwise it is left out, and the
+// lists below the chart carry the full text. Nothing is drawn past the plot edges, so nothing is
+// clipped. ECharts calls renderItem once per item, in data order (oldest first), on every redraw,
+// including zoom and resize, so the last drawn edge is reset at the first item.
+const LABEL_GAP_PX = 8
+const LABEL_PAD_PX = 4
+const LABEL_FONT = '11px "Geist", system-ui, sans-serif'
+const VERSION_FONT = `11px ${MONO}`
+let measureCtx: CanvasRenderingContext2D | null = null
+function textWidth(text: string, font: string): number {
+  measureCtx ??= document.createElement('canvas').getContext('2d')
+  if (!measureCtx) return text.length * 7
+  measureCtx.font = font
+  return Math.ceil(measureCtx.measureText(text).width)
+}
+
 function bandRenderItem(fill: string, ink: string) {
+  let lastRight = -Infinity
   return (params: CustomParams, a: CustomApi) => {
+    if (params.dataIndexInside === 0) lastRight = -Infinity
     const left = a.coord([a.value(0), 0])[0]
     const right = a.coord([a.value(1), 0])[0]
     const cs = params.coordSys
     const rect = graphic.clipRectByRect({ x: Math.min(left, right), y: cs.y, width: Math.max(2, Math.abs(right - left)), height: cs.height }, cs)
     if (!rect) return null
-    return {
-      type: 'group',
-      children: [
-        { type: 'rect', shape: rect, style: { fill } },
-        { type: 'text', x: rect.x + 4, y: rect.y + 4, style: { text: episodeLabel(Number(a.value(2))), fill: ink, font: `11px "Geist", system-ui, sans-serif`, textVerticalAlign: 'top' } },
-      ],
+    const children: object[] = [{ type: 'rect', shape: rect, style: { fill } }]
+    const text = episodeLabel(Number(a.value(2)))
+    const x = rect.x + LABEL_PAD_PX
+    const width = textWidth(text, LABEL_FONT)
+    if (width + 2 * LABEL_PAD_PX <= rect.width && x - lastRight >= LABEL_GAP_PX) {
+      children.push({ type: 'text', x, y: rect.y + 4, style: { text, fill: ink, font: LABEL_FONT, textVerticalAlign: 'top' } })
+      lastRight = x + width
     }
+    return { type: 'group', children }
+  }
+}
+
+// The version label above each promotion hexagon, centred on it, by the same rule. The hexagon sits
+// HEXAGON_OFFSET_PX above the top of the plot (see the promotions series).
+const HEXAGON_OFFSET_PX = 24
+function versionRenderItem(ink: string) {
+  let lastRight = -Infinity
+  return (params: CustomParams, a: CustomApi) => {
+    if (params.dataIndexInside === 0) lastRight = -Infinity
+    const cs = params.coordSys
+    const [x, y] = a.coord([a.value(0), 1])
+    // The data holds the promotion's index, because a custom series reads every value as a number.
+    const p = promotions.value[Number(a.value(2))]
+    if (!p || !p.new_version) return null
+    const text = `v${p.new_version.replace(/^v/i, '')}`
+    const width = textWidth(text, VERSION_FONT)
+    const left = x - width / 2
+    const right = x + width / 2
+    if (left < cs.x || right > cs.x + cs.width || left - lastRight < LABEL_GAP_PX) return null
+    lastRight = right
+    const size = Number(a.value(3)) || 16
+    return { type: 'text', x, y: y - HEXAGON_OFFSET_PX - size / 2 - 4, style: { text, fill: ink, font: VERSION_FONT, textAlign: 'center', textVerticalAlign: 'bottom' } }
   }
 }
 
@@ -271,7 +333,7 @@ function tooltip(params: unknown): string {
   const ref = referenceBy(start + DAY_MS)
   if (ref) rows.push(`${REFERENCE_NAME}: ${megabytes(ref.memory_median)}`)
   for (const p of promotions.value.filter(p => p.time >= start && p.time < start + DAY_MS)) {
-    rows.push(`${PROMOTION_NAME} ${escapeHtml(promotionTitle(p))}, ${escapeHtml(f1Text(p))}`)
+    rows.push(`${PROMOTION_NAME} ${escapeHtml(promotionTitle(p))} at ${escapeHtml(withZone(localStamp(p.time)))}, ${escapeHtml(f1Text(p))}`)
   }
   return rows.join('<br>')
 }
@@ -300,7 +362,7 @@ const option = computed(() => {
   return {
     animation: false,
     useUTC: true,
-    grid: { left: 52, right: reference.value.length ? 56 : 16, top: 56, bottom: 64 },
+    grid: { left: 52, right: reference.value.length ? 56 : 16, top: 56, bottom: 84 },
     tooltip: {
       trigger: 'axis',
       formatter: tooltip,
@@ -353,6 +415,11 @@ const option = computed(() => {
       axisTick: { lineStyle: { color: c.grid } },
       splitLine: { show: false },
       axisLabel: { ...axisText, formatter: (v: number) => axisDate(v), hideOverlap: true },
+      // The bars are UTC days.
+      name: 'UTC day',
+      nameLocation: 'middle',
+      nameGap: 26,
+      nameTextStyle: { ...axisText },
     },
     yAxis: [
       {
@@ -440,11 +507,24 @@ const option = computed(() => {
         yAxisIndex: 2,
         z: 4,
         symbol: HEXAGON,
-        symbolOffset: [0, -24],
+        symbolOffset: [0, -HEXAGON_OFFSET_PX],
         cursor: 'pointer',
         tooltip: { show: false },
-        label: { show: true, position: 'top', distance: 4, formatter: (p: { value: unknown[] }) => `v${String(p.value[2]).replace(/^v/i, '')}`, color: c.ink, fontFamily: MONO, fontSize: 11 },
+        label: { show: false },
         data: promoted,
+      },
+      {
+        // The version labels above the hexagons, drawn only where they fit (versionRenderItem).
+        name: 'Versions',
+        type: 'custom',
+        yAxisIndex: 2,
+        z: 5,
+        silent: true,
+        clip: false,
+        tooltip: { show: false },
+        renderItem: versionRenderItem(c.ink),
+        encode: { x: 0, y: 1 },
+        data: promotions.value.map((p, i) => [p.time, 1, i, p.time === selectedPromotion.value ? 22 : 16]),
       },
       {
         // An invisible point in the middle of every day, so the tooltip always describes the day under the pointer.
@@ -591,7 +671,7 @@ const note = 'rounded-lg bg-chip p-3 text-[13px] text-chipfg'
         <div class="text-[13px] text-muted-foreground">Promotions</div>
         <div :class="bigNumber">{{ promotions.length }}</div>
         <div class="mt-0.5 text-xs text-muted-foreground">
-          {{ latestPromotion ? `latest ${promotionTitle(latestPromotion)}, ${utcDate(latestPromotion.time)}` : 'no new model in this range' }}
+          {{ latestPromotion ? `latest ${promotionTitle(latestPromotion)}, ${withZone(localStamp(latestPromotion.time))}` : 'no new model in this range' }}
         </div>
       </section>
 
@@ -600,7 +680,7 @@ const note = 'rounded-lg bg-chip p-3 text-[13px] text-chipfg'
         <div v-if="latest && latest.memory_median !== null" :class="bigNumber">{{ megabytes(latest.memory_median) }}</div>
         <div v-else class="mt-2.5 text-[22px] font-semibold tracking-[-0.02em]">No data</div>
         <div class="mt-0.5 text-xs text-muted-foreground">
-          {{ latest && latest.memory_median !== null ? `normal memory, 99th percentile ${megabytes(latest.memory_p99)}, ${localDateTime(latest.time)}` : 'the worker has not saved a reference yet' }}
+          {{ latest && latest.memory_median !== null ? `normal memory, 99th percentile ${megabytes(latest.memory_p99)}, ${withZone(localStamp(latest.time))}` : 'the worker has not saved a reference yet' }}
         </div>
       </section>
     </div>
@@ -634,7 +714,7 @@ const note = 'rounded-lg bg-chip p-3 text-[13px] text-chipfg'
     <div class="grid grid-cols-[repeat(auto-fit,minmax(min(300px,100%),1fr))] gap-4">
       <section aria-labelledby="promotions-title" class="min-w-0 rounded-xl border border-border p-4">
         <h2 id="promotions-title" class="text-[15px] font-semibold">Model promotions</h2>
-        <p class="mb-2 text-xs text-muted-foreground">Select one for the versions and the test F1 of the old and new model.</p>
+        <p class="mb-2 text-xs text-muted-foreground">Select one for the versions and the test F1 of the old and new model. Times are local{{ zone ? ` (${zone})` : '' }}.</p>
         <p v-if="promotions.length === 0" class="py-4 text-[13px] text-muted-foreground">No new model was promoted in this range.</p>
         <ul v-else class="flex flex-col gap-1">
           <li v-for="p in promotions" :key="p.time">
@@ -646,12 +726,12 @@ const note = 'rounded-lg bg-chip p-3 text-[13px] text-chipfg'
               @click="togglePromotion(p.time)"
             >
               <span class="font-mono">{{ promotionTitle(p) }}</span>
-              <span class="text-xs text-muted-foreground">{{ utcDate(p.time) }}</span>
+              <span class="text-xs text-muted-foreground">{{ localStamp(p.time) }}</span>
             </button>
           </li>
         </ul>
         <p v-if="chosen" :class="[note, 'mt-2']" role="status">
-          Promoted {{ promotionTitle(chosen) }} on {{ localDateTime(chosen.time) }}. {{ f1Text(chosen) }}, both measured on the same test minutes.
+          Promoted {{ promotionTitle(chosen) }} on {{ withZone(localStamp(chosen.time)) }}. {{ f1Text(chosen) }}, both measured on the same test minutes.
         </p>
       </section>
 
