@@ -8,7 +8,7 @@ import { clockTime } from '@/lib/format'
 // The Containers tab of Resources: memory share across containers and a table with a 24 hour
 // strip per container, from cAdvisor through /api/resources/containers. The parent owns the node
 // switch and the Refresh button; it passes the node and calls refresh().
-const props = defineProps<{ node: 'main' | 'old' }>()
+const props = defineProps<{ node: string }>()
 const emit = defineEmits<{ refreshed: [ok: boolean], busy: [busy: boolean] }>()
 
 type SortKey = 'mem' | 'cpu' | 'name'

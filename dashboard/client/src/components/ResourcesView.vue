@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ResourcesInfo, ZoomWindow } from '@/types'
+import type { ResourcesInfo, ServerBrief, ZoomWindow } from '@/types'
 import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import ChartLoadError from '@/components/ChartLoadError.vue'
 import ChartSkeleton from '@/components/ChartSkeleton.vue'
@@ -19,9 +19,13 @@ const ResourceChart = defineAsyncComponent({
   timeout: 30000,
 })
 
-const emit = defineEmits<{ refreshed: [ok: boolean] }>()
+// query: the text after the "?" in the hash. #resources?node=<key> opens that server and
+// &tab=containers its Containers tab (the links at the end of Add server). Plain #resources opens main.
+const props = withDefaults(defineProps<{ query?: string }>(), { query: '' })
+const emit = defineEmits<{ 'refreshed': [ok: boolean], 'update:query': [query: string] }>()
 
-type NodeKey = 'main' | 'old'
+// A server key from the registry. main and old are the two built-in servers.
+type NodeKey = string
 
 // The windows /api/resources accepts.
 const PRESETS = [
@@ -52,12 +56,39 @@ const data = ref<ResourcesInfo | null>(null)
 const loading = ref(true)
 const failed = ref(false)
 const zoom = ref<ZoomWindow>({ ...FULL })
-// Both servers with their status, from the last answer. The names are the fixed display names
-// from the server until the first answer arrives.
-const nodes = ref<{ key: NodeKey, displayName: string, up: boolean | null }[]>([
-  { key: 'main', displayName: 'fyp-main', up: null },
-  { key: 'old', displayName: 'staging', up: null },
-])
+// The active servers with their status. They come from GET /api/servers until the first resources
+// answer arrives, which carries the same list with each exporter's state.
+const nodes = ref<{ key: NodeKey, displayName: string, up: boolean | null }[]>([])
+const nodesFromResources = ref(false)
+
+// A server key has the registry's form; anything else in the hash is ignored. The hash is then set
+// back to #resources, since the switch and the tab are not kept in it.
+const KEY_RE = /^[a-z][a-z0-9-]{1,30}$/
+function applyQuery(query: string) {
+  if (!query) return
+  const params = new URLSearchParams(query)
+  const wantedNode = params.get('node')
+  if (wantedNode && KEY_RE.test(wantedNode)) node.value = wantedNode
+  if (params.get('tab') === 'containers') tab.value = 'containers'
+  else if (params.get('tab') === 'node') tab.value = 'node'
+  if (window.location.hash.startsWith('#resources?')) history.replaceState(null, '', '#resources')
+  emit('update:query', '')
+}
+applyQuery(props.query)
+watch(() => props.query, applyQuery)
+
+async function loadServers() {
+  try {
+    const res = await api.get<ServerBrief[]>('/api/servers')
+    if (!Array.isArray(res.data) || nodesFromResources.value) return
+    nodes.value = res.data.map(s => ({ key: s.key, displayName: s.name, up: null }))
+    // The keys main and old keep working in old links. A key that is not an active server falls back to the first one.
+    if (nodes.value.length && !nodes.value.some(n => n.key === node.value)) node.value = nodes.value[0].key
+  } catch {
+    // The resources answer carries the list too, so the switch fills in from it.
+  }
+}
+loadServers()
 
 function valid(v: unknown): v is ResourcesInfo {
   const r = v as ResourcesInfo
@@ -74,6 +105,7 @@ async function load() {
     if (!valid(res.data)) throw new Error('unexpected response')
     data.value = res.data
     nodes.value = res.data.nodes
+    nodesFromResources.value = true
     failed.value = false
     emit('refreshed', true)
   } catch {
@@ -408,7 +440,7 @@ function upText(up: boolean | null) {
     </section>
 
     <p class="text-xs text-muted-foreground">
-      Read live from Prometheus for both servers. The staging server is not stored in InfluxDB, so its history only reaches back as far as Prometheus keeps data (15 days).
+      Read live from Prometheus for every server. Only fyp-main is also stored in InfluxDB, so the history of the other servers only reaches back as far as Prometheus keeps data (15 days).
     </p>
   </template>
 </template>

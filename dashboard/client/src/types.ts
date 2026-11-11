@@ -62,7 +62,7 @@ export interface Incident {
 
 // One server from GET /api/nodes. Null means Prometheus returned no value.
 export interface NodeInfo {
-  key: 'main' | 'old'
+  key: string
   // Fixed card title (fyp-main, staging); hostname is the real one from node_uname_info.
   displayName: string
   hostname: string | null
@@ -147,7 +147,7 @@ export interface ModelInfo {
 // Prometheus. Null means Prometheus returned no value for that metric.
 export type ResourceSeries = [number, number | null][]
 export interface ResourcesInfo {
-  key: 'main' | 'old'
+  key: string
   displayName: string
   hostname: string | null
   role: string
@@ -159,7 +159,7 @@ export interface ResourcesInfo {
   start: number
   end: number
   // Both servers, for the status dots on the node switch. up is null when Prometheus has no value.
-  nodes: { key: 'main' | 'old', displayName: string, up: boolean | null }[]
+  nodes: { key: string, displayName: string, up: boolean | null }[]
   // Shares from 0 to 1, except pressure, which is percent of the last minute spent waiting.
   // swapUsed is null when the server reports no swap.
   now: {
@@ -196,7 +196,7 @@ export interface ContainerRow {
   cells: { t: number, state: ContainerCellState }[]
 }
 export interface ContainersInfo {
-  node: 'main' | 'old'
+  node: string
   displayName: string
   // Whole-node memory for the "Where the memory goes" header.
   memTotalBytes: number | null
@@ -438,4 +438,172 @@ export interface DriftResponse {
   // Start of the first requested day and end of the last, in ms.
   from: number
   to: number
+}
+
+// Server and project registry (Settings). GET /api/servers lists the active servers for every
+// signed-in user; the views use it instead of fixed names. The keys main and old stay valid.
+export interface ServerBrief {
+  key: string
+  name: string
+  role: string
+  location: string
+}
+
+export type ServerStatus = 'pending' | 'active' | 'archived'
+
+// GET /api/settings/servers (admin only). nodeUp and cadvisorUp are null when Prometheus failed.
+export interface SettingsServer {
+  key: string
+  name: string
+  role: string
+  location: string
+  address: string | null
+  builtin: boolean
+  status: ServerStatus
+  nodeUp: boolean | null
+  cadvisorUp: boolean | null
+  lastSeen: number | string | null
+}
+
+// GET /api/settings/servers/:key/check. error is words, for example "Not added to Prometheus yet".
+export interface ExporterCheck {
+  up: boolean
+  lastScrape: number | string | null
+  error: string | null
+}
+export interface ServerCheck {
+  node: ExporterCheck
+  cadvisor: ExporterCheck
+}
+
+// GET /api/settings/servers/:key/containers. reason says why a container cannot be picked, for
+// example "Used by the platform" or "Already in sample-service".
+export interface PickableContainer {
+  name: string
+  available: boolean
+  reason: string | null
+}
+
+export type DeploySource = 'ci' | 'image'
+export type Automation = 'approval' | 'monitored'
+
+// GET /api/settings/projects (admin only). The server sends snake case (server_key, server_name,
+// repo_url, deploy_source); toSettingsProject turns it into these names.
+export interface SettingsProject {
+  key: string
+  name: string
+  serverKey: string
+  // The server's display name. It is also there for an archived server, which /api/servers no longer lists.
+  serverName: string
+  repoUrl: string | null
+  deploySource: DeploySource
+  automation: Automation
+  builtin: boolean
+  status: 'active' | 'archived'
+  containers: string[]
+}
+
+// GET /api/settings/log?limit=50|200. Newest first. The server sends { id, at (ISO text),
+// user_email, action, target, detail }; toSettingsLogRow turns at into milliseconds.
+export interface SettingsLogRow {
+  id: number
+  at: number
+  userEmail: string
+  action: string
+  target: string
+  detail: string
+}
+
+// The error body of every failed Settings write. field names the form field it belongs to.
+export type ErrorField = 'name' | 'role' | 'location' | 'address' | 'repo_url' | 'containers' | 'server_key'
+export interface ApiErrorInfo {
+  message: string
+  field: ErrorField | null
+}
+
+const FIELDS: readonly string[] = ['name', 'role', 'location', 'address', 'repo_url', 'containers', 'server_key']
+
+// Reads { error, field? } from a failed call. Without a usable body the message says the call did
+// not work, so a form never shows a blank error.
+export function apiError(err: unknown, fallback = 'That did not work. Try again.'): ApiErrorInfo {
+  const body = (err as { response?: { data?: { error?: unknown, field?: unknown } } })?.response?.data
+  const message = typeof body?.error === 'string' && body.error ? body.error : fallback
+  const field = typeof body?.field === 'string' && FIELDS.includes(body.field) ? (body.field as ErrorField) : null
+  return { message, field }
+}
+
+// The Settings answers are read defensively: a field that is missing or of another type gets a
+// plain default, so one odd row never breaks the table. Snake case names are accepted too.
+type Raw = Record<string, unknown>
+const str = (v: unknown, d = ''): string => (typeof v === 'string' ? v : d)
+const strOrNull = (v: unknown): string | null => (typeof v === 'string' && v ? v : null)
+const boolOrNull = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null)
+const when = (v: unknown): number | string | null => (typeof v === 'number' || typeof v === 'string' ? v : null)
+const pick = (r: Raw, ...names: string[]): unknown => names.map(n => r[n]).find(v => v !== undefined)
+
+export function toSettingsServer(v: unknown): SettingsServer {
+  const r = (v ?? {}) as Raw
+  const status = str(r.status)
+  return {
+    key: str(r.key),
+    name: str(r.name, str(r.key)),
+    role: str(r.role),
+    location: str(r.location),
+    address: strOrNull(r.address),
+    builtin: r.builtin === true,
+    status: status === 'pending' || status === 'archived' ? status : 'active',
+    nodeUp: boolOrNull(pick(r, 'nodeUp', 'node_up')),
+    cadvisorUp: boolOrNull(pick(r, 'cadvisorUp', 'cadvisor_up')),
+    lastSeen: when(pick(r, 'lastSeen', 'last_seen')),
+  }
+}
+
+function toExporterCheck(v: unknown): ExporterCheck {
+  const r = (v ?? {}) as Raw
+  return { up: r.up === true, lastScrape: when(pick(r, 'lastScrape', 'last_scrape')), error: strOrNull(r.error) }
+}
+
+export function toServerCheck(v: unknown): ServerCheck {
+  const r = (v ?? {}) as Raw
+  return { node: toExporterCheck(r.node), cadvisor: toExporterCheck(r.cadvisor) }
+}
+
+export function toPickableContainer(v: unknown): PickableContainer {
+  const r = (v ?? {}) as Raw
+  const available = r.available !== false && !pick(r, 'reason', 'why')
+  return { name: str(pick(r, 'name', 'container_name', 'containerName')), available, reason: strOrNull(pick(r, 'reason', 'why')) }
+}
+
+export function toSettingsProject(v: unknown): SettingsProject {
+  const r = (v ?? {}) as Raw
+  const containers = pick(r, 'containers', 'container_names')
+  const source = str(pick(r, 'deploySource', 'deploy_source'))
+  const automation = str(r.automation)
+  return {
+    key: str(r.key),
+    name: str(r.name, str(r.key)),
+    serverKey: str(pick(r, 'server_key', 'serverKey')),
+    serverName: str(pick(r, 'server_name', 'serverName'), str(pick(r, 'server_key', 'serverKey'))),
+    repoUrl: strOrNull(pick(r, 'repo_url', 'repoUrl')),
+    deploySource: source === 'ci' ? 'ci' : 'image',
+    automation: automation === 'approval' ? 'approval' : 'monitored',
+    builtin: r.builtin === true,
+    status: r.status === 'archived' ? 'archived' : 'active',
+    containers: Array.isArray(containers)
+      ? containers.map(c => (typeof c === 'string' ? c : str((c as Raw)?.container_name ?? (c as Raw)?.name))).filter(Boolean)
+      : [],
+  }
+}
+
+export function toSettingsLogRow(v: unknown): SettingsLogRow {
+  const r = (v ?? {}) as Raw
+  const at = pick(r, 'at', 'time')
+  return {
+    id: typeof r.id === 'number' ? r.id : Number(r.id) || 0,
+    at: typeof at === 'number' ? at : Date.parse(str(at)) || 0,
+    userEmail: str(pick(r, 'userEmail', 'user_email', 'user')),
+    action: str(r.action),
+    target: str(r.target),
+    detail: str(r.detail),
+  }
 }

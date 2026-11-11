@@ -15,7 +15,7 @@ const props = defineProps<{
 const { me, logout } = useAuth()
 
 // Only the views that exist today, in their sidebar groups. Icons are 24 by 24 stroke paths.
-const NAV = [
+const ALL_NAV = [
   {
     label: 'Monitoring',
     items: [
@@ -46,9 +46,17 @@ const NAV = [
     label: 'System',
     items: [
       { id: 'model', label: 'Model', icon: 'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1' },
+      // Sliders. Admins only.
+      { id: 'settings', label: 'Settings', adminOnly: true, icon: 'M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0M16 4v4M10 10v4M18 16v4' },
     ],
   },
 ]
+
+// Viewers do not see the Settings item.
+const NAV = computed(() => ALL_NAV.map(group => ({
+  ...group,
+  items: group.items.filter(item => !('adminOnly' in item && item.adminOnly) || me.value?.role === 'admin'),
+})))
 
 const roleLabel = computed(() => (me.value?.role === 'admin' ? 'Admin' : 'Viewer'))
 const initials = computed(() => {

@@ -22,6 +22,16 @@ const EvaluationView = defineAsyncComponent({
   timeout: 30000,
 })
 
+// Settings (servers, projects and the change log) is for admins and rarely opened, so it is downloaded
+// only when first opened.
+const SettingsView = defineAsyncComponent({
+  loader: () => import('@/components/SettingsView.vue'),
+  loadingComponent: ChartSkeleton,
+  errorComponent: ChartLoadError,
+  delay: 0,
+  timeout: 30000,
+})
+
 // Drift draws an ECharts chart, so the whole view is downloaded only when it is first opened.
 const DriftView = defineAsyncComponent({
   loader: () => import('@/components/DriftView.vue'),
@@ -81,11 +91,11 @@ const ExhibitionView = defineAsyncComponent({
   timeout: 30000,
 })
 
-const TABS = ['overview', 'resources', 'anomaly', 'incidents', 'remediation', 'chat', 'evaluation', 'drift', 'model', 'exhibition'] as const
+const TABS = ['overview', 'resources', 'anomaly', 'incidents', 'remediation', 'chat', 'evaluation', 'drift', 'model', 'settings', 'exhibition'] as const
 type Tab = typeof TABS[number]
-const TITLES: Record<Tab, string> = { overview: 'Overview', resources: 'Resources', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', evaluation: 'Evaluation', drift: 'Drift', model: 'Model', exhibition: 'Exhibition mode' }
+const TITLES: Record<Tab, string> = { overview: 'Overview', resources: 'Resources', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', evaluation: 'Evaluation', drift: 'Drift', model: 'Model', settings: 'Settings', exhibition: 'Exhibition mode' }
 // Breadcrumb group, the same grouping as the sidebar.
-const GROUPS: Record<Tab, string> = { overview: 'Monitoring', resources: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', evaluation: 'Results', drift: 'Results', model: 'System', exhibition: 'Results' }
+const GROUPS: Record<Tab, string> = { overview: 'Monitoring', resources: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', evaluation: 'Results', drift: 'Results', model: 'System', settings: 'System', exhibition: 'Results' }
 
 // The hash is the view name, optionally followed by "?" and the view's own state, for example
 // #evaluation?run=2026-11-11T04:30:00Z. The view is read from the part before the "?".
@@ -193,7 +203,7 @@ function openIncident(start: number) {
       <div class="flex flex-col gap-5 p-4 md:p-6">
         <!-- v-if, so a hidden view stops polling and the chart is not drawn in a hidden box. -->
         <OverviewView v-if="tab === 'overview'" @refreshed="onViewRefreshed" />
-        <ResourcesView v-else-if="tab === 'resources'" @refreshed="onViewRefreshed" />
+        <ResourcesView v-else-if="tab === 'resources'" v-model:query="viewQuery" @refreshed="onViewRefreshed" />
         <AnomalyView
           v-else-if="tab === 'anomaly'"
           v-model:hours="hours"
@@ -211,6 +221,7 @@ function openIncident(start: number) {
         <EvaluationView v-else-if="tab === 'evaluation'" v-model:query="viewQuery" @refreshed="onViewRefreshed" />
         <ModelView v-else-if="tab === 'model'" @refreshed="onViewRefreshed" @champion="championVersion = $event" />
         <DriftView v-else-if="tab === 'drift'" @refreshed="onViewRefreshed" />
+        <SettingsView v-else-if="tab === 'settings'" v-model:query="viewQuery" @refreshed="onViewRefreshed" />
         <IncidentsView
           v-else
           v-model:hours="hours"
