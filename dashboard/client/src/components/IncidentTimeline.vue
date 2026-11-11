@@ -19,7 +19,13 @@ const AnomalyChart = defineAsyncComponent({
 })
 
 // tier is the incident's tier from the list, only used to word the message when there is no timeline.
-const props = defineProps<{ start: number, job: string, tier?: string | null }>()
+// size 'large' is for a hall screen (Exhibition mode): 24 px body text, 20 px times and a taller
+// chart. Its sizes are multiples of --u when an ancestor sets it (one design pixel there), and plain
+// pixels otherwise. readonly draws the steps as plain list items instead of buttons, with no
+// selection. Both are off by default, which leaves the timeline exactly as it was.
+const props = defineProps<{ start: number, job: string, tier?: string | null, size?: 'normal' | 'large', readonly?: boolean }>()
+// A step is a button only when it has a time and the timeline is not read-only.
+const isButton = (step: TimelineStep) => step.time !== null && !props.readonly
 
 // The timeline starts from the open-incident record, which the explainer writes only for medium
 // and high incidents (OPEN_MIN_TIER), so a low incident never has one.
@@ -97,6 +103,7 @@ function pickStep(index: number) {
 }
 
 function pickMinute(time: number) {
+  if (props.readonly) return
   selectedMinute.value = time
   let best = -1
   steps.value.forEach((s, i) => {
@@ -170,10 +177,10 @@ const rangeText = computed(() => (timeline.value ? `${clockTime(timeline.value.f
 </script>
 
 <template>
-  <section aria-label="Incident timeline" class="flex flex-col gap-3">
+  <section aria-label="Incident timeline" class="flex flex-col gap-3" :class="size === 'large' ? 'tl-large' : ''">
     <div class="flex items-baseline justify-between gap-2">
-      <h3 class="text-[13px] font-semibold">What happened, in order</h3>
-      <span v-if="timeline && steps.length" class="text-xs text-muted-foreground">Select a step to find it on the chart</span>
+      <h3 class="tl-body text-[13px] font-semibold">What happened, in order</h3>
+      <span v-if="timeline && steps.length && !readonly" class="tl-small text-xs text-muted-foreground">Select a step to find it on the chart</span>
     </div>
 
     <div v-if="loading" class="flex flex-col gap-2" role="status" aria-label="Loading the timeline">
@@ -181,69 +188,74 @@ const rangeText = computed(() => (timeline.value ? `${clockTime(timeline.value.f
       <Skeleton v-for="n in 4" :key="n" class="h-10 w-full rounded-lg bg-chip" />
     </div>
 
-    <div v-else-if="problem === 'failed'" class="flex flex-col items-start gap-2 text-[13px]" role="alert">
+    <div v-else-if="problem === 'failed'" class="tl-body flex flex-col items-start gap-2 text-[13px]" role="alert">
       <p class="text-muted-foreground">The timeline could not be loaded. InfluxDB did not answer.</p>
       <Button variant="outline" class="min-h-9 border-border bg-transparent px-3.5 text-[13px] dark:border-border dark:bg-transparent" @click="load">
         Try again
       </Button>
     </div>
 
-    <p v-else-if="problem === 'missing'" class="text-[13px] text-muted-foreground">
+    <p v-else-if="problem === 'missing'" class="tl-body text-[13px] text-muted-foreground">
       {{ missingText }}
     </p>
 
-    <p v-else-if="timeline && steps.length === 0" class="text-[13px] text-muted-foreground">No steps were recorded for this incident.</p>
+    <p v-else-if="timeline && steps.length === 0" class="tl-body text-[13px] text-muted-foreground">No steps were recorded for this incident.</p>
 
     <template v-else-if="timeline">
       <div class="min-w-0">
-        <p class="mb-1 text-xs text-muted-foreground">Score around the incident, <span class="font-mono">{{ rangeText }}</span></p>
-        <AnomalyChart
-          v-if="hasChart"
-          compact
-          :points="points"
-          :hours="1"
-          :selected="selectedMinute"
-          :zoom="FULL"
-          :warnings="warnings"
-          @select="pickMinute"
-        />
-        <p v-else class="rounded-lg bg-chip px-3 py-6 text-center text-[13px] text-muted-foreground">No scored minutes in this window</p>
+        <p class="tl-small mb-1 text-xs text-muted-foreground">Score around the incident, <span class="font-mono">{{ rangeText }}</span></p>
+        <!-- The large chart fills this box, which sets its height; the normal chart sets its own. -->
+        <div v-if="hasChart" class="tl-chart">
+          <AnomalyChart
+            compact
+            :size="size"
+            :points="points"
+            :hours="1"
+            :selected="selectedMinute"
+            :zoom="FULL"
+            :warnings="warnings"
+            @select="pickMinute"
+          />
+        </div>
+        <p v-else class="tl-body rounded-lg bg-chip px-3 py-6 text-center text-[13px] text-muted-foreground">No scored minutes in this window</p>
       </div>
 
       <ol class="m-0 list-none p-0">
-        <li v-for="(step, i) in steps" :key="i" class="grid grid-cols-[44px_22px_minmax(0,1fr)] gap-x-2">
+        <li v-for="(step, i) in steps" :key="i" class="tl-row grid grid-cols-[44px_22px_minmax(0,1fr)] gap-x-2">
           <!-- The time is part of each step's accessible name below, so this column is hidden from it. -->
-          <span class="pt-[11px] text-right font-mono text-xs text-muted-foreground" aria-hidden="true">{{ step.time === null ? '' : clockTime(step.time) }}</span>
+          <span class="tl-time pt-[11px] text-right font-mono text-xs text-muted-foreground" aria-hidden="true">{{ step.time === null ? '' : clockTime(step.time) }}</span>
           <span class="relative flex justify-center">
             <span
               v-if="i < steps.length - 1"
-              class="absolute top-[30px] -bottom-2 left-1/2 w-0 border-l-[1.5px] border-border"
+              class="tl-line absolute top-[30px] -bottom-2 left-1/2 w-0 border-l-[1.5px] border-border"
               :class="steps[i + 1].family === 'not_run' ? 'border-dashed' : 'border-solid'"
               aria-hidden="true"
             />
-            <span class="relative z-[1] mt-2 flex size-[22px] items-center justify-center rounded-full" :style="nodeStyle(step)" aria-hidden="true">
-              <svg width="12" height="12" viewBox="0 0 12 12">
+            <span class="tl-node relative z-[1] mt-2 flex size-[22px] items-center justify-center rounded-full" :style="nodeStyle(step)" aria-hidden="true">
+              <svg class="tl-icon" width="12" height="12" viewBox="0 0 12 12">
                 <path :d="look(step).icon" :style="iconStyle(step)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
               </svg>
             </span>
           </span>
           <component
-            :is="step.time === null ? 'div' : 'button'"
-            :type="step.time === null ? undefined : 'button'"
-            :aria-pressed="step.time === null ? undefined : selected === i"
-            :aria-label="step.time === null ? undefined : stepName(step)"
-            class="-mx-0.5 mt-0.5 mb-1.5 block w-full rounded-lg px-2.5 py-2 text-left text-[13px]"
+            :is="isButton(step) ? 'button' : 'div'"
+            :type="isButton(step) ? 'button' : undefined"
+            :aria-pressed="isButton(step) ? selected === i : undefined"
+            :aria-label="isButton(step) ? stepName(step) : undefined"
+            class="tl-body -mx-0.5 mt-0.5 mb-1.5 block w-full rounded-lg px-2.5 py-2 text-left text-[13px]"
             :class="[
-              step.time === null ? '' : 'cursor-pointer hover:bg-chip',
+              isButton(step) ? 'cursor-pointer hover:bg-chip' : '',
               selected === i ? 'bg-navon ring-1 ring-navring hover:bg-navon' : '',
               step.family === 'not_run' ? 'text-muted-foreground' : 'text-foreground',
             ]"
-            @click="step.time === null ? undefined : pickStep(i)"
+            @click="isButton(step) ? pickStep(i) : undefined"
           >
             <span class="flex flex-wrap items-center gap-1.5">
               <span v-if="step.time === null" class="sr-only">After the incident,</span>
+              <!-- A read-only step is not a button, so its time is read out here instead. -->
+              <span v-else-if="readonly" class="sr-only">{{ clockTime(step.time) }},</span>
               <span class="font-semibold">{{ step.title }}</span>
-              <span class="rounded-[5px] bg-chip px-1.5 font-mono text-[11px] text-chipfg">{{ step.source }}</span>
+              <span class="tl-source rounded-[5px] bg-chip px-1.5 font-mono text-[11px] text-chipfg">{{ step.source }}</span>
             </span>
             <span class="mt-0.5 block break-words text-muted-foreground">{{ step.detail }}</span>
           </component>
@@ -252,3 +264,18 @@ const rangeText = computed(() => (timeline.value ? `${clockTime(timeline.value.f
     </template>
   </section>
 </template>
+
+<style scoped>
+/* The large size. One unit is --u when an ancestor sets it (Exhibition mode), else 1 px. These
+   rules apply only under .tl-large, so the normal timeline is unchanged. */
+.tl-large { --tu: var(--u, 1px); gap: calc(16 * var(--tu)); }
+.tl-large .tl-body { font-size: calc(24 * var(--tu)); line-height: 1.35; }
+.tl-large .tl-small { font-size: calc(20 * var(--tu)); }
+.tl-large .tl-source { font-size: calc(18 * var(--tu)); }
+.tl-large .tl-chart { height: calc(380 * var(--tu)); }
+.tl-large .tl-row { grid-template-columns: calc(76 * var(--tu)) calc(36 * var(--tu)) minmax(0, 1fr); column-gap: calc(14 * var(--tu)); }
+.tl-large .tl-time { font-size: calc(20 * var(--tu)); padding-top: calc(16 * var(--tu)); }
+.tl-large .tl-node { width: calc(36 * var(--tu)); height: calc(36 * var(--tu)); margin-top: calc(10 * var(--tu)); }
+.tl-large .tl-icon { width: calc(20 * var(--tu)); height: calc(20 * var(--tu)); }
+.tl-large .tl-line { top: calc(46 * var(--tu)); }
+</style>

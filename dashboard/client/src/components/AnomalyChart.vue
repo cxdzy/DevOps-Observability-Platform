@@ -32,6 +32,9 @@ const props = defineProps<{
   warnings: number[]
   // A short chart for the incident detail: no slider or zoom, and it keeps the window it is given.
   compact?: boolean
+  // 'large' is for a hall screen (Exhibition mode): the chart fills its container's height, axis
+  // labels and the legend are 18 px, and lines and markers are thicker. The default is 'normal'.
+  size?: 'normal' | 'large'
 }>()
 const emit = defineEmits<{ select: [time: number], zoom: [window: ZoomWindow], window: [window: ChartWindow] }>()
 
@@ -40,6 +43,12 @@ const emit = defineEmits<{ select: [time: number], zoom: [window: ZoomWindow], w
 // rendered and uses these only until then.
 const GRID_LEFT = 48
 const GRID_RIGHT = 16
+
+// Sizes that differ between the normal and the large chart.
+const large = computed(() => props.size === 'large')
+const sizes = computed(() => large.value
+  ? { text: 18, legend: 18, legendRow: 34, legendTop: 50, iconWidth: 32, iconHeight: 16, gridLeft: 72, line: 3, guide: 2, marker: 15, chevron: 17, ring: 24 }
+  : { text: 11, legend: 12, legendRow: 24, legendTop: 40, iconWidth: 25, iconHeight: 14, gridLeft: GRID_LEFT, line: 1.5, guide: 1, marker: 9, chevron: 11, ring: 16 })
 
 // The x axis covers the loaded range, so a zoom percent means the same times everywhere.
 const axisRange = computed(() => {
@@ -72,8 +81,8 @@ const WARMUP_NAME = 'Warm-up'
 // The legend wraps to as many rows as the chart's width needs, and the plot starts below it. Rows
 // are counted the way the ECharts legend lays them out: 25 px icon, 5 px gap, the text in the
 // legend font, 10 px between items and rows, 5 px padding. One row puts the plot at 40 px and each
-// further row adds 24 px. Without a measured width, phones assume two rows.
-const LEGEND_FONT = '12px sans-serif'
+// further row adds 24 px. Without a measured width, phones assume two rows. The large chart uses
+// its own icon width, font size and row height (see sizes).
 const LEGEND_NAMES = ['Score', 'Threshold', ...FLAG_TIERS.map(t => TIER_STYLE[t].label), EW_NAME, RESTART_NAME, WARMUP_NAME]
 const { width: boxWidth } = useElementSize(box)
 let measure: CanvasRenderingContext2D | null = null
@@ -81,11 +90,11 @@ const legendRows = computed(() => {
   const max = boxWidth.value - 10
   measure ??= document.createElement('canvas').getContext('2d')
   if (max <= 0 || !measure) return narrow.value ? 2 : 1
-  measure.font = LEGEND_FONT
+  measure.font = `${sizes.value.legend}px sans-serif`
   let rows = 1
   let x = 0
   for (const name of LEGEND_NAMES) {
-    const w = 30 + Math.ceil(measure.measureText(name).width)
+    const w = sizes.value.iconWidth + 5 + Math.ceil(measure.measureText(name).width)
     if (x > 0 && x + w > max) {
       rows++
       x = 0
@@ -94,11 +103,12 @@ const legendRows = computed(() => {
   }
   return rows
 })
-const gridTop = computed(() => 40 + 24 * (legendRows.value - 1))
+const gridTop = computed(() => sizes.value.legendTop + sizes.value.legendRow * (legendRows.value - 1))
 // The chart is 300 px tall (360 px from md), sized for one legend row (two on phones). Each extra
 // row makes it taller by that row, so the plot keeps its height.
 const wide = useMediaQuery('(min-width: 768px)')
-const boxHeight = computed(() => `${(props.compact ? 240 : wide.value ? 360 : 300) + 24 * Math.max(0, legendRows.value - (narrow.value ? 2 : 1))}px`)
+// The large chart takes the height of its container instead.
+const boxHeight = computed(() => large.value ? '100%' : `${(props.compact ? 240 : wide.value ? 360 : 300) + 24 * Math.max(0, legendRows.value - (narrow.value ? 2 : 1))}px`)
 
 // The window the chart was last drawn with. Not reactive on purpose: the option is rebuilt for new
 // data or a theme change and then takes the current window, but a zoom alone does not rebuild it.
@@ -162,7 +172,7 @@ function updateRestartLabels() {
       const left = Number(instance.convertToPixel({ xAxisIndex: 0 }, min + (span * drawn.start) / 100))
       const right = Number(instance.convertToPixel({ xAxisIndex: 0 }, min + (span * drawn.end) / 100))
       if (labelMeasure && Number.isFinite(left) && Number.isFinite(right)) {
-        labelMeasure.font = `11px ${RESTART_LABEL_FAMILY}`
+        labelMeasure.font = `${sizes.value.text}px ${RESTART_LABEL_FAMILY}`
         const room = Math.ceil(labelMeasure.measureText(RESTART_NAME).width) + RESTART_LABEL_GAP_PX
         let previous = Number.NEGATIVE_INFINITY
         for (const t of times) {
@@ -208,14 +218,15 @@ const option = computed(() => {
   const c = palette.value
   // Read so the option is rebuilt, and the canvas redrawn, when the font arrives.
   void fontReady.value
-  const axisText = { color: c.faint, fontFamily: MONO, fontSize: 11 }
+  const z = sizes.value
+  const axisText = { color: c.faint, fontFamily: MONO, fontSize: z.text }
   const score = props.points.map(p => [p.time, p.score])
   const threshold = props.points.map(p => [p.time, p.threshold])
   const flagged = FLAG_TIERS.map(tier => ({
     name: TIER_STYLE[tier].label,
     type: 'scatter',
     symbol: TIER_STYLE[tier].symbol,
-    symbolSize: 9,
+    symbolSize: z.marker,
     itemStyle: { color: c.tiers[tier], borderColor: c.panel, borderWidth: 1.5 },
     data: flaggedPoints.value
       .filter(p => toTier(p.tier) === tier)
@@ -227,9 +238,11 @@ const option = computed(() => {
   return {
     animation: false,
     // The bottom leaves room for the two-line time labels and the slider.
-    grid: { left: GRID_LEFT, right: GRID_RIGHT, top: gridTop.value, bottom: props.compact ? 32 : 80 },
+    grid: { left: z.gridLeft, right: GRID_RIGHT, top: gridTop.value, bottom: (props.compact ? 32 : 80) + (large.value ? 14 : 0) },
     legend: {
       top: 0,
+      itemWidth: z.iconWidth,
+      itemHeight: z.iconHeight,
       // Plain line icons for the two lines. The default line icon draws a symbol on top, which
       // ECharts fills with a fixed light colour (a white dot in dark mode).
       data: [
@@ -241,7 +254,7 @@ const option = computed(() => {
         { name: WARMUP_NAME, icon: 'rect', itemStyle: { color: hatch, borderColor: c.faint, borderWidth: 0.5 } },
       ],
       // The same font the row count above measures.
-      textStyle: { color: c.muted, fontSize: 12, fontFamily: 'sans-serif' },
+      textStyle: { color: c.muted, fontSize: z.legend, fontFamily: 'sans-serif' },
       inactiveColor: c.thresh,
     },
     tooltip: {
@@ -315,7 +328,7 @@ const option = computed(() => {
         // Thins the drawn line on long ranges while keeping peaks; flagged minutes are separate series.
         sampling: 'lttb',
         showSymbol: false,
-        lineStyle: { width: 1.5, color: c.chartline },
+        lineStyle: { width: z.line, color: c.chartline },
         itemStyle: { color: c.chartline },
         // Early warnings: dashed vertical lines in the warn colour.
         markLine: {
@@ -323,7 +336,7 @@ const option = computed(() => {
           symbol: 'none',
           animation: false,
           label: { show: false },
-          lineStyle: { color: c.warn, type: 'dashed', width: 1 },
+          lineStyle: { color: c.warn, type: 'dashed', width: z.guide },
           data: props.warnings.map(t => ({ xAxis: t })),
         },
         // Area under the line, fading from 12 percent to nothing.
@@ -348,7 +361,7 @@ const option = computed(() => {
         data: threshold,
         step: 'end',
         showSymbol: false,
-        lineStyle: { width: 1.5, type: [5, 4], color: c.thresh },
+        lineStyle: { width: z.line, type: [5, 4], color: c.thresh },
         itemStyle: { color: c.thresh },
       },
       ...flagged,
@@ -382,9 +395,9 @@ const option = computed(() => {
         name: EW_NAME,
         type: 'scatter',
         symbol: CHEVRON,
-        symbolSize: 11,
+        symbolSize: z.chevron,
         z: 4,
-        itemStyle: { color: 'transparent', borderColor: c.warn, borderWidth: 1.5 },
+        itemStyle: { color: 'transparent', borderColor: c.warn, borderWidth: large.value ? 2.5 : 1.5 },
         data: warningPoints.value.map(p => [p.time, p.score]),
       },
       {
@@ -399,8 +412,8 @@ const option = computed(() => {
           silent: true,
           symbol: 'none',
           animation: false,
-          lineStyle: { color: c.primary, type: 'dashed', width: 1 },
-          label: { show: true, formatter: RESTART_NAME, color: c.primary, fontSize: 11, fontFamily: RESTART_LABEL_FAMILY, position: 'insideEndTop' },
+          lineStyle: { color: c.primary, type: 'dashed', width: z.guide },
+          label: { show: true, formatter: RESTART_NAME, color: c.primary, fontSize: z.text, fontFamily: RESTART_LABEL_FAMILY, position: 'insideEndTop' },
           // A line gets its label only when there is room for it (see updateRestartLabels).
           data: restarts.value.map(t => ({ xAxis: t, label: { show: labelled.value.has(t) } })),
         },
@@ -411,7 +424,7 @@ const option = computed(() => {
         name: 'Selected',
         type: 'scatter',
         symbol: 'circle',
-        symbolSize: 16,
+        symbolSize: z.ring,
         itemStyle: { color: 'transparent', borderColor: c.primary, borderWidth: 2 },
         tooltip: { show: false },
         data: selectedPoint ? [[selectedPoint.time, selectedPoint.score]] : [],

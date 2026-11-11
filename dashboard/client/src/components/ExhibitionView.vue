@@ -48,7 +48,8 @@ onBeforeUnmount(() => {
 
 // ---- Scale ----
 // u is the size of one design pixel: 1 px at 1920 x 1080, the smaller of the width and height ratio
-// otherwise. Reused components with fixed small type (the status chip) are scaled with CSS zoom.
+// otherwise. The timeline's large size reads --u too. The status chip, whose type is fixed and
+// small, is scaled with CSS zoom.
 const DESIGN_W = 1920
 const DESIGN_H = 1080
 const unit = ref(Math.max(0.5, Math.min(window.innerWidth / DESIGN_W, window.innerHeight / DESIGN_H)))
@@ -125,6 +126,13 @@ const statusFailed = ref(false)
 const points = ref<AnomalyPoint[]>([])
 const incidents = ref<Incident[]>([])
 const evaluation = ref<Evaluation | null>(null)
+// The header and footer are always drawn; only the middle changes. Until the first load ends the
+// screens say "Loading". A source whose latest request failed is named in a line above the screen,
+// with the fact that it is tried again in 30 s, and keeps showing its last good answer if it has one.
+const loadedOnce = ref(false)
+const anomalyFailed = ref(false)
+const incidentsFailed = ref(false)
+const evaluationFailed = ref(false)
 
 const SCORE_WINDOW_HOURS = 2
 const INCIDENT_LOOKBACK_HOURS = 168
@@ -142,6 +150,10 @@ async function load() {
   ])
   statusFailed.value = s.status === 'rejected'
   if (s.status === 'fulfilled') status.value = s.value.data
+  anomalyFailed.value = !(a.status === 'fulfilled' && Array.isArray(a.value.data))
+  incidentsFailed.value = !(i.status === 'fulfilled' && Array.isArray(i.value.data))
+  // A 404 is an answer (no report saved yet), not a failure.
+  evaluationFailed.value = e.status === 'rejected' && (e.reason as { response?: { status?: number } })?.response?.status !== 404
   if (a.status === 'fulfilled' && Array.isArray(a.value.data)) {
     const data = a.value.data
     const from = data.length ? data[data.length - 1].time - SCORE_WINDOW_HOURS * 3600000 : 0
@@ -151,6 +163,7 @@ async function load() {
   // A 404 means no report is saved yet; either way there is nothing to show.
   if (e.status === 'fulfilled') evaluation.value = e.value.data
   else if ((e.reason as { response?: { status?: number } })?.response?.status === 404) evaluation.value = null
+  loadedOnce.value = true
 }
 usePoll(load, 30000)
 
@@ -171,6 +184,21 @@ const zoneSuffix = zone ? ` (${zone})` : ''
 const localStamp = (ms: number) => `${shortDate(ms)} ${clockTime(ms)}`
 
 const NO_DATA = 'No data'
+// What an empty place shows: "Loading" until the first load has ended, then "No data".
+const empty = computed(() => (loadedOnce.value ? NO_DATA : 'Loading'))
+
+// What failed, in words, for the line above the screen.
+const RETRY = 'Retrying in 30 s.'
+const failureText = computed(() => {
+  const names: string[] = []
+  if (statusFailed.value) names.push('status')
+  if (anomalyFailed.value) names.push('anomaly scores')
+  if (incidentsFailed.value) names.push('incidents')
+  if (evaluationFailed.value) names.push('evaluation report')
+  if (names.length === 0) return ''
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  return `The ${list} could not be loaded. ${RETRY}`
+})
 
 // ---- Live screen ----
 const latest = computed(() => {
@@ -312,7 +340,7 @@ const plural = (n: number, one: string, many: string) => (n === 1 ? one : many)
 const stats = computed<Stat[]>(() => {
   const d = evaluation.value
   const r = d?.run
-  const none = (label: string, sub = ''): Stat => ({ label, value: NO_DATA, sub, words: true })
+  const none = (label: string, sub = ''): Stat => ({ label, value: empty.value, sub, words: true })
   if (!d || !r) {
     return ['Recall, faults detected', 'False positive rate', 'Safety margin', 'Warned ahead', 'Time to recover', 'Remediation success'].map(l => none(l))
   }
@@ -379,20 +407,26 @@ const runModel = computed(() => evaluation.value?.run.model ?? null)
       </div>
     </header>
 
-    <main class="ex-main min-h-0 flex-1" :aria-label="SCREENS[screen].label">
+    <main class="ex-main flex min-h-0 flex-1 flex-col" :aria-label="SCREENS[screen].label">
+      <!-- What could not be loaded, whichever screen is showing. -->
+      <p v-if="failureText" class="ex-alert ex-t-body m-0 shrink-0 bg-tier-high-bg text-tier-high-fg" role="alert">{{ failureText }}</p>
+
       <!-- Live -->
-      <div v-if="screen === 0" class="ex-live grid h-full min-h-0">
+      <div v-if="screen === 0" class="ex-live grid min-h-0 flex-1">
         <section aria-label="Live score" class="ex-card flex min-h-0 min-w-0 flex-col">
           <div class="flex items-baseline justify-between">
             <h2 class="ex-t-title m-0 font-semibold">Anomaly score, last 2 hours</h2>
           </div>
           <div class="flex flex-wrap items-baseline ex-score-row">
-            <span class="ex-t-hero font-mono font-medium leading-none tracking-tight">{{ latest ? fixed(latest.score, 3) : NO_DATA }}</span>
+            <span class="ex-t-hero font-mono font-medium leading-none tracking-tight">{{ latest ? fixed(latest.score, 3) : empty }}</span>
             <span class="ex-t-body text-muted-foreground">{{ latest ? latestSub : '' }}</span>
           </div>
-          <div class="min-h-0 min-w-0 flex-1 overflow-hidden">
-            <AnomalyChart v-if="points.length" compact :points="points" :hours="SCORE_WINDOW_HOURS" :selected="null" :zoom="FULL" :warnings="warnings" />
-            <p v-else class="ex-t-body m-0 rounded-lg bg-chip text-center text-muted-foreground ex-nodata">{{ NO_DATA }}</p>
+          <!-- The chart takes all the height left in the card; the large chart fills this box. -->
+          <div class="relative min-h-0 min-w-0 flex-1">
+            <div v-if="points.length" class="absolute inset-0 overflow-hidden">
+              <AnomalyChart compact size="large" :points="points" :hours="SCORE_WINDOW_HOURS" :selected="null" :zoom="FULL" :warnings="warnings" />
+            </div>
+            <p v-else class="ex-t-body m-0 rounded-lg bg-chip text-center text-muted-foreground ex-nodata">{{ loadedOnce && anomalyFailed ? `The anomaly scores could not be loaded. ${RETRY}` : empty }}</p>
           </div>
         </section>
 
@@ -421,7 +455,7 @@ const runModel = computed(() => evaluation.value?.run.model ?? null)
       </div>
 
       <!-- Last incident -->
-      <div v-else-if="screen === 1" class="ex-incident grid h-full min-h-0">
+      <div v-else-if="screen === 1" class="ex-incident grid min-h-0 flex-1">
         <section aria-label="Last incident" class="ex-card flex min-h-0 min-w-0 flex-col overflow-y-auto">
           <h2 class="ex-t-title m-0 font-semibold">Last incident, medium or high</h2>
           <template v-if="lastIncident">
@@ -440,20 +474,20 @@ const runModel = computed(() => evaluation.value?.run.model ?? null)
             </div>
             <p v-else class="ex-t-explain m-0 whitespace-pre-line">{{ lastIncident.explanation || explanationFallback(lastIncident) }}</p>
           </template>
-          <p v-else class="ex-t-body m-0 text-muted-foreground">{{ NO_DATA }}. No medium or high incident in the last 7 days.</p>
+          <p v-else class="ex-t-body m-0 text-muted-foreground">{{ !loadedOnce ? 'Loading' : incidentsFailed ? `The incidents could not be loaded. ${RETRY}` : `${NO_DATA}. No medium or high incident in the last 7 days.` }}</p>
         </section>
 
         <section aria-label="Incident timeline" class="ex-card min-h-0 min-w-0 overflow-y-auto">
-          <IncidentTimeline v-if="lastIncident && lastIncident.job" :key="`${lastIncident.start}-${lastIncident.job}`" :start="lastIncident.start" :job="lastIncident.job" :tier="lastIncident.tier" />
-          <p v-else class="ex-t-body m-0 text-muted-foreground">{{ NO_DATA }}. {{ lastIncident ? 'This incident has no timeline.' : '' }}</p>
+          <IncidentTimeline v-if="lastIncident && lastIncident.job" :key="`${lastIncident.start}-${lastIncident.job}`" :start="lastIncident.start" :job="lastIncident.job" :tier="lastIncident.tier" size="large" readonly />
+          <p v-else class="ex-t-body m-0 text-muted-foreground">{{ lastIncident ? `${NO_DATA}. This incident has no timeline.` : empty }}</p>
         </section>
       </div>
 
       <!-- Results -->
-      <div v-else class="flex h-full min-h-0 flex-col ex-results">
+      <div v-else class="flex min-h-0 flex-1 flex-col ex-results">
         <div class="ex-results-head flex flex-wrap items-baseline">
           <h2 class="ex-t-title m-0 font-semibold">Results of the latest saved evaluation run</h2>
-          <span class="ex-t-body text-muted-foreground">{{ period ? `${period}${runModel ? `, model ${runModel}` : ''}` : NO_DATA }}</span>
+          <span class="ex-t-body text-muted-foreground">{{ period ? `${period}${runModel ? `, model ${runModel}` : ''}` : loadedOnce && evaluationFailed ? `The evaluation report could not be loaded. ${RETRY}` : empty }}</span>
         </div>
         <ul class="ex-stats m-0 grid min-h-0 flex-1 list-none p-0">
           <li v-for="stat in stats" :key="stat.label" class="ex-card ex-stat flex min-w-0 flex-col justify-center">
@@ -493,7 +527,8 @@ const runModel = computed(() => evaluation.value?.run.model ?? null)
 .ex-header { gap: calc(20 * var(--u)); padding: calc(28 * var(--u)) var(--pad) calc(16 * var(--u)); }
 .ex-header-right { gap: calc(28 * var(--u)); }
 .ex-logo { width: calc(64 * var(--u)); height: calc(64 * var(--u)); border-radius: calc(16 * var(--u)); }
-.ex-main { padding: 0 var(--pad); }
+.ex-main { padding: 0 var(--pad); gap: calc(12 * var(--u)); }
+.ex-alert { padding: calc(10 * var(--u)) calc(20 * var(--u)); border-radius: calc(12 * var(--u)); }
 .ex-footer { gap: calc(20 * var(--u)); padding: calc(16 * var(--u)) var(--pad) calc(24 * var(--u)); }
 .ex-dots { gap: calc(10 * var(--u)); }
 .ex-dot { min-height: calc(52 * var(--u)); padding: 0 calc(22 * var(--u)); }
