@@ -164,6 +164,38 @@ test("a warm-up that starts before the action's logged time still comes after th
   assert.equal(steps.find((s) => s.kind === "warmup").time, START + 2 * MIN);
 });
 
+test("a rollback logged at 22:05:21 owns the warm-up that started at 22:03:00", () => {
+  // The real case of 10 November: n8n writes the row after the 60 s service check, so the
+  // container restart and its warm-up come about two and a half minutes before it.
+  const start = Date.UTC(2026, 10, 10, 13, 57);
+  const at = (h, m, s = 0) => Date.UTC(2026, 10, 10, h - 8, m, s);
+  const rows = [
+    { time: start, score: 0.616, threshold: 0.61, is_anomaly: 1, tier: "high", signal: "latency", warmup: 0 },
+    { time: at(22, 3), score: 0.4, is_anomaly: 0, warmup: 1 },
+    { time: at(22, 4), score: 0.4, is_anomaly: 0, warmup: 1 },
+    { time: at(22, 5), score: 0.4, is_anomaly: 0, warmup: 1 },
+  ];
+  const steps = buildSteps(open({ time: start, tier: "high", action: "rollback", deployment: 1 }), {
+    scores: rows,
+    actions: [{ time: at(22, 5, 21), action: "rollback", mode: "approved", outcome: "success", service_up: 1 }],
+  });
+  const warm = steps.find((s) => s.kind === "warmup");
+  assert.ok(warm, "the warm-up step is there");
+  assert.equal(warm.time, at(22, 3));
+  assert.equal(warm.title, "Warm-up, 3 minutes");
+  const order = kinds(steps);
+  assert.ok(order.indexOf("action") < order.indexOf("warmup"));
+});
+
+test("the warm-up window is 5 minutes before to 5 minutes after the action", () => {
+  const act = [{ time: START + 10 * MIN, outcome: "success" }];
+  const has = (offsetMin) => buildSteps(open(), { scores: [score(offsetMin, { warmup: 1 })], actions: act }).some((s) => s.kind === "warmup");
+  assert.equal(has(5), true);
+  assert.equal(has(4), false);
+  assert.equal(has(15), true);
+  assert.equal(has(16), false);
+});
+
 test("a flag after a 2 minute gap stays in the incident", () => {
   const rows = [flagged(0), score(1), flagged(2), score(3), score(4), score(5), score(6)];
   const closed = buildSteps(open(), { scores: rows }).find((s) => s.kind === "incident_closed");

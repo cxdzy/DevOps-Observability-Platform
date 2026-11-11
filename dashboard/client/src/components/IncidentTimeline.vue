@@ -157,6 +157,14 @@ function iconStyle(step: TimelineStep) {
   return { fill: l.filled ? l.color : 'none', stroke: l.color }
 }
 
+// The accessible name of a step button: its time, title and detail, for example "23:26, Approved,
+// the service was restarted (approved on Telegram). Back up 60 s later." Steps without a time are
+// not buttons and read "After the incident" before their title instead.
+function stepName(step: TimelineStep): string {
+  const detail = step.detail ? `, ${step.detail.charAt(0).toLowerCase()}${step.detail.slice(1)}` : ''
+  return `${step.time === null ? 'After the incident' : clockTime(step.time)}, ${step.title}${detail}`
+}
+
 const hasChart = computed(() => points.value.length > 0)
 const rangeText = computed(() => (timeline.value ? `${clockTime(timeline.value.from)} to ${clockTime(timeline.value.to)}` : ''))
 </script>
@@ -204,7 +212,8 @@ const rangeText = computed(() => (timeline.value ? `${clockTime(timeline.value.f
 
       <ol class="m-0 list-none p-0">
         <li v-for="(step, i) in steps" :key="i" class="grid grid-cols-[44px_22px_minmax(0,1fr)] gap-x-2">
-          <span class="pt-[11px] text-right font-mono text-xs text-muted-foreground">{{ step.time === null ? '' : clockTime(step.time) }}</span>
+          <!-- The time is part of each step's accessible name below, so this column is hidden from it. -->
+          <span class="pt-[11px] text-right font-mono text-xs text-muted-foreground" aria-hidden="true">{{ step.time === null ? '' : clockTime(step.time) }}</span>
           <span class="relative flex justify-center">
             <span
               v-if="i < steps.length - 1"
@@ -222,6 +231,7 @@ const rangeText = computed(() => (timeline.value ? `${clockTime(timeline.value.f
             :is="step.time === null ? 'div' : 'button'"
             :type="step.time === null ? undefined : 'button'"
             :aria-pressed="step.time === null ? undefined : selected === i"
+            :aria-label="step.time === null ? undefined : stepName(step)"
             class="-mx-0.5 mt-0.5 mb-1.5 block w-full rounded-lg px-2.5 py-2 text-left text-[13px]"
             :class="[
               step.time === null ? '' : 'cursor-pointer hover:bg-chip',
@@ -231,6 +241,7 @@ const rangeText = computed(() => (timeline.value ? `${clockTime(timeline.value.f
             @click="step.time === null ? undefined : pickStep(i)"
           >
             <span class="flex flex-wrap items-center gap-1.5">
+              <span v-if="step.time === null" class="sr-only">After the incident,</span>
               <span class="font-semibold">{{ step.title }}</span>
               <span class="rounded-[5px] bg-chip px-1.5 font-mono text-[11px] text-chipfg">{{ step.source }}</span>
             </span>

@@ -23,7 +23,10 @@ const INCIDENT_GAP_MS = 2 * MINUTE;
 // An incident closes after this many quiet minutes (the explainer's CLOSE_AFTER_MINUTES default).
 const QUIET_MINUTES_TO_CLOSE = 4;
 // A warm-up run belongs to an action when it starts from this long before to this long after it.
-const WARMUP_BEFORE_MS = 2 * MINUTE;
+// n8n writes the remediation_action row when the action has finished (after its 60 s service
+// check), so the container restart, and the warm-up it starts, can come minutes before the row:
+// a rollback logged at 22:05:21 had its warm-up from 22:03:00.
+const WARMUP_BEFORE_MS = 5 * MINUTE;
 const WARMUP_AFTER_MS = 5 * MINUTE;
 // The explanation row has the incident's start as its time; allow the explainer's merge window.
 const EXPLANATION_MATCH_MS = 2 * MINUTE;
