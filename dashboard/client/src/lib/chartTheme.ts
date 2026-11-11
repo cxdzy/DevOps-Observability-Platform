@@ -20,6 +20,30 @@ export function withAlpha(hex: string, alpha: number): string {
   return `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, ${alpha})`
 }
 
+// A small canvas with 45 degree lines in one colour on a clear background. Used as a repeating
+// pattern for warm-up minutes, in the chart (as an ECharts pattern fill) and in the minute strip.
+export function hatchTile(color: string): HTMLCanvasElement {
+  const size = 8
+  const tile = document.createElement('canvas')
+  tile.width = size
+  tile.height = size
+  const ctx = tile.getContext('2d')
+  if (ctx) {
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.2
+    ctx.beginPath()
+    // The extra short strokes in the corners make the lines continue across tile edges.
+    ctx.moveTo(0, size)
+    ctx.lineTo(size, 0)
+    ctx.moveTo(-1, 1)
+    ctx.lineTo(1, -1)
+    ctx.moveTo(size - 1, size + 1)
+    ctx.lineTo(size + 1, size - 1)
+    ctx.stroke()
+  }
+  return tile
+}
+
 export function readPalette() {
   return {
     panel: cssVar('--panel', '#FFFFFF'),
@@ -38,6 +62,9 @@ export function readPalette() {
     okdot: cssVar('--okdot', '#16A34A'),
     // Early warning only (DESIGN.md section 7.1): purple, so it is never read as a tier.
     warn: cssVar('--warn', '#7C3AED'),
+    warnbg: cssVar('--warnbg', '#F5F3FF'),
+    // Normal cell in the minute strip.
+    strip: cssVar('--strip', '#D4D4D8'),
     tiers: {
       low: cssVar(TIER_STYLE.low.markerVar, '#2563EB'),
       medium: cssVar(TIER_STYLE.medium.markerVar, '#D97706'),

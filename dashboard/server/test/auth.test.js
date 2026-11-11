@@ -168,6 +168,23 @@ test("/api needs a session except /api/health", async (t) => {
   assert.deepEqual(await ok.json(), [{ time: 1, score: 0.5 }]);
 });
 
+test("/api/anomaly selects every column the anomaly view reads", async (t) => {
+  const sent = [];
+  const app = await startApp({ query: async (q) => { sent.push(q); return []; } });
+  t.after(app.close);
+  await app.addUser("june@example.com", "viewer", PASSWORD);
+  const { cookie } = await app.login("june@example.com", PASSWORD, ipHeader());
+  const res = await app.request("/api/anomaly?hours=6", { headers: { cookie } });
+  assert.equal(res.status, 200);
+  assert.equal(sent.length, 1);
+  const columns = [
+    "score", "threshold", "is_anomaly", "tier", "tier_level", "signal", "cpu_rate", "memory_mb", "latency_ms",
+    "recent_deployment", "model", "early_warning", "ew_signal", "ew_minutes", "ew_slope", "ew_r2", "warmup",
+  ];
+  const expected = `SELECT ${columns.map((c) => `"${c}"`).join(",")} FROM "anomaly_score" WHERE time > now() - 6h ORDER BY time ASC`;
+  assert.equal(sent[0], expected);
+});
+
 test("expired sessions are rejected and deleted; sliding renewal at most once per hour", async (t) => {
   const app = await startApp();
   t.after(app.close);

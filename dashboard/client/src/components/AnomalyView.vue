@@ -5,6 +5,7 @@ import ChartLoadError from '@/components/ChartLoadError.vue'
 import ChartSkeleton from '@/components/ChartSkeleton.vue'
 import ChartToolbar from '@/components/ChartToolbar.vue'
 import EventLane from '@/components/EventLane.vue'
+import MinuteStrip, { eventTimes } from '@/components/MinuteStrip.vue'
 import PointDetail from '@/components/PointDetail.vue'
 import StatusChip from '@/components/StatusChip.vue'
 import SummaryCards from '@/components/SummaryCards.vue'
@@ -126,6 +127,21 @@ const atMin = computed(() => span.value <= minSpan.value + 0.001)
 // with no data can still be left.
 const noChart = computed(() => props.loading || props.points.length === 0)
 
+// Warning, flag and restart minutes, for the step buttons in the detail panel.
+const steps = computed(() => eventTimes(props.points))
+
+// A step can land outside the zoom window; the window then moves to centre on it, at the same span.
+function stepTo(time: number) {
+  selected.value = time
+  const pts = props.points
+  if (pts.length === 0) return
+  const first = pts[0].time
+  const range = pts[pts.length - 1].time - first
+  if (range <= 0) return
+  const at = ((time - first) / range) * 100
+  if (at < zoom.value.start || at > zoom.value.end) setZoom(at - span.value / 2, at + span.value / 2)
+}
+
 const warnings = computed(() => events.value.filter(e => e.kind === 'early_warning').map(e => e.time))
 
 const warning = 'rounded-lg bg-tier-medium-bg p-2.5 text-[13px] text-tier-medium-fg'
@@ -171,7 +187,7 @@ const warning = 'rounded-lg bg-tier-medium-bg p-2.5 text-[13px] text-tier-medium
       Anomaly data could not be refreshed. Showing the last loaded data.
     </p>
 
-    <SummaryCards :points="points" :incidents="incidents" :incidents-failed="incidentsFailed && !incidentsLoaded" />
+    <SummaryCards :points="points" />
 
     <p v-if="incidentsFailed" :class="warning" role="status">
       {{ incidentsLoaded ? 'Incident details could not be refreshed. Showing the last loaded data.' : 'Incident details unavailable' }}
@@ -199,9 +215,10 @@ const warning = 'rounded-lg bg-tier-medium-bg p-2.5 text-[13px] text-tier-medium
             Events could not be loaded. Retrying in 30 s.
           </p>
           <EventLane v-else class="mt-2" :events="events" :window="laneWindow" :unavailable="unavailable" :truncated="truncated" />
+          <MinuteStrip :points="points" :zoom="zoom" @zoom="setZoom($event.start, $event.end)" />
         </template>
       </section>
-      <PointDetail class="min-w-0 flex-[1_1_280px]" :point="point" :incident="incident" />
+      <PointDetail class="min-w-0 flex-[1_1_280px]" :point="point" :incident="incident" :events="steps" @select="stepTo" />
     </div>
   </template>
 </template>

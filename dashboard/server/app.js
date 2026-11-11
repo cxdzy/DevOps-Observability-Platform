@@ -118,7 +118,7 @@ function createApp(deps) {
     if (hours === null) return;
     try {
       const rows = await query(
-        'SELECT "score","threshold","is_anomaly","tier","tier_level","signal","cpu_rate","memory_mb","latency_ms","recent_deployment","model","early_warning","ew_signal","ew_minutes" ' +
+        'SELECT "score","threshold","is_anomaly","tier","tier_level","signal","cpu_rate","memory_mb","latency_ms","recent_deployment","model","early_warning","ew_signal","ew_minutes","ew_slope","ew_r2","warmup" ' +
           `FROM "anomaly_score" WHERE time > now() - ${hours}h ORDER BY time ASC`
       );
       res.json(rows);

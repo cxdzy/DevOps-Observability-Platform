@@ -34,6 +34,11 @@ export interface AnomalyPoint {
   early_warning?: number | null
   ew_signal?: string | null
   ew_minutes?: number | null
+  // Fitted rise per minute of the warned signal (cpu_rate, memory in MB, latency in ms) and the fit's R squared.
+  ew_slope?: number | null
+  ew_r2?: number | null
+  // 1 for minutes scored during the warm-up after a restart; those are never flagged.
+  warmup?: number | null
 }
 
 export type IncidentStatus = 'open' | 'closed' | 'awaiting_explanation'
