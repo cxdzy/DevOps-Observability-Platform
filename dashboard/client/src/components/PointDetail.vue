@@ -54,17 +54,26 @@ const sentence = computed(() => {
   return `${text} This is a heads-up only; nothing restarts from a warning.`
 })
 
-// [label, value, shown in mono]
-const rows = computed(() => {
+const has = (v: unknown) => v !== null && v !== undefined && v !== ''
+
+// [label, value, shown in mono]. A row is left out only when its field is missing from the point.
+const rows = computed<[string, string, boolean][]>(() => {
   const p = props.point
   if (!p) return []
-  return [
-    ['Score', fixed(p.score), true],
-    ['Memory', p.memory_mb === null ? '-' : `${fixed(p.memory_mb, 1)} MB`, true],
-    ['Tier', TIER_STYLE[toTier(p.tier)].label, false],
-    ['Early warning', p.early_warning === 1 ? `Yes${p.ew_signal ? `, ${SIGNAL_NAME[p.ew_signal] ?? p.ew_signal}` : ''}` : 'No', false],
-    ['Warm-up', p.warmup === 1 ? 'Yes' : 'No', false],
-  ] as const
+  const all: [string, string | null, boolean][] = [
+    ['Score', has(p.score) ? fixed(p.score) : null, true],
+    ['Threshold', has(p.threshold) ? fixed(p.threshold) : null, true],
+    ['Tier', has(p.tier) ? TIER_STYLE[toTier(p.tier)].label : null, false],
+    ['Signal', has(p.signal) ? String(p.signal) : null, false],
+    ['Early warning', has(p.early_warning) ? (p.early_warning === 1 ? `Yes${p.ew_signal ? `, ${SIGNAL_NAME[p.ew_signal] ?? p.ew_signal}` : ''}` : 'No') : null, false],
+    ['Warm-up', has(p.warmup) ? (p.warmup === 1 ? 'Yes' : 'No') : null, false],
+    ['Memory', has(p.memory_mb) ? `${fixed(p.memory_mb, 1)} MB` : null, true],
+    ['CPU rate', has(p.cpu_rate) ? fixed(p.cpu_rate) : null, true],
+    ['Latency', has(p.latency_ms) ? `${fixed(p.latency_ms, 1)} ms` : null, true],
+    ['Recent deployment', has(p.recent_deployment) ? (p.recent_deployment === true || p.recent_deployment === 1 ? 'Yes' : 'No') : null, false],
+    ['Model', has(p.model) ? String(p.model) : null, true],
+  ]
+  return all.filter((r): r is [string, string, boolean] => r[1] !== null)
 })
 
 const step = 'min-h-9 flex-1 rounded-md border border-border px-2.5 text-[13px] font-medium hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:cursor-not-allowed disabled:text-faint disabled:hover:bg-transparent pointer-coarse:min-h-11'

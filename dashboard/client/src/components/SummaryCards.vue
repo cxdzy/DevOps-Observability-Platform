@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AnomalyPoint } from '@/types'
 import { computed } from 'vue'
-import { findEpisodes, isFlagged } from '@/components/MinuteStrip.vue'
+import { findEpisodes, isFlagged, LEAD_WINDOW_MS } from '@/components/MinuteStrip.vue'
 import TierBadge from '@/components/TierBadge.vue'
 import { fixed } from '@/lib/format'
 import { FLAG_TIERS, TIER_STYLE, toTier } from '@/lib/tier'
@@ -18,14 +18,19 @@ const counts = computed(() =>
 )
 const warmupMinutes = computed(() => props.points.filter(p => p.warmup === 1).length)
 
-// Episodes use the shared rule in MinuteStrip: a run of warning minutes, and a lead time to the
-// first flag within 30 minutes after the run.
+// Episodes use the shared rule in MinuteStrip: warning runs less than 10 minutes apart are one
+// episode, and its lead time runs to the first flag within 30 minutes after it.
 const episodes = computed(() => findEpisodes(props.points))
 const lastEpisode = computed(() => episodes.value[episodes.value.length - 1] ?? null)
 const episodeLine = computed(() => {
   const e = lastEpisode.value
   if (!e) return 'none in this range'
-  return e.leadMinutes === null ? 'no flag followed' : `came ${e.leadMinutes} min before its first flag`
+  let text: string
+  if (e.leadMinutes !== null) text = `came ${e.leadMinutes} min before its first flag`
+  // No flag yet, but the 30-minute window after the episode has not passed at the latest minute.
+  else if (latest.value && latest.value.time - e.end < LEAD_WINDOW_MS) text = 'no flag yet, watching'
+  else text = 'no flag followed'
+  return e.startedBeforeRange ? `${text}, started before this range` : text
 })
 
 // State of the latest minute, as words and a chip style; never colour alone.

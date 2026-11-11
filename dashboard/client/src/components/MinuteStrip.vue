@@ -16,14 +16,22 @@ export interface Episode {
   flagAt: number | null
   // Whole minutes from the first warning minute to flagAt, or null.
   leadMinutes: number | null
+  // The first loaded minute is already a warning, so the episode began before the loaded range.
+  startedBeforeRange: boolean
 }
 
-// An episode is a run of minutes with early_warning = 1, each exactly 60 s after the one before.
-// Its lead time runs from the first warning minute to the first is_anomaly = 1 minute within 30
-// minutes after the run ends. Without such a flag there is no lead time. Points must be sorted
+// Warning runs closer than this (from the end of one to the start of the next) are one episode,
+// the same as the worker's EW_RENOTIFY_MINUTES default, which notifies once per episode.
+export const EPISODE_MERGE_MS = 10 * MINUTE_MS
+
+// A warning run is minutes with early_warning = 1, each exactly 60 s after the one before. An
+// episode is one or more runs where each run starts less than 10 minutes after the previous one
+// ended. Its lead time runs from the episode's first warning minute to the first is_anomaly = 1
+// minute (not a warm-up minute) after that first warning and no later than 30 minutes after the
+// episode's last warning minute. Without such a flag there is no lead time. Points must be sorted
 // by time, as the API returns them.
 export function findEpisodes(points: AnomalyPoint[]): Episode[] {
-  const episodes: Episode[] = []
+  const runs: Run[] = []
   let i = 0
   while (i < points.length) {
     if (points[i].early_warning !== 1) {
@@ -37,17 +45,36 @@ export function findEpisodes(points: AnomalyPoint[]): Episode[] {
       end = points[j].time
       j++
     }
+    runs.push({ start, end })
+    i = j
+  }
+
+  const merged: Run[] = []
+  for (const r of runs) {
+    const last = merged[merged.length - 1]
+    if (last && r.start - last.end < EPISODE_MERGE_MS) last.end = r.end
+    else merged.push({ ...r })
+  }
+
+  const firstTime = points.length ? points[0].time : null
+  return merged.map(({ start, end }) => {
     let flagAt: number | null = null
-    for (let k = j; k < points.length && points[k].time <= end + LEAD_WINDOW_MS; k++) {
-      if (points[k].is_anomaly === 1 && points[k].warmup !== 1 && points[k].time > end) {
-        flagAt = points[k].time
+    for (const p of points) {
+      if (p.time <= start) continue
+      if (p.time > end + LEAD_WINDOW_MS) break
+      if (p.is_anomaly === 1 && p.warmup !== 1) {
+        flagAt = p.time
         break
       }
     }
-    episodes.push({ start, end, flagAt, leadMinutes: flagAt === null ? null : Math.round((flagAt - start) / MINUTE_MS) })
-    i = j
-  }
-  return episodes
+    return {
+      start,
+      end,
+      flagAt,
+      leadMinutes: flagAt === null ? null : Math.round((flagAt - start) / MINUTE_MS),
+      startedBeforeRange: start === firstTime,
+    }
+  })
 }
 
 export interface Run { start: number, end: number }
