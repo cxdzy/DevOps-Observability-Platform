@@ -131,7 +131,16 @@ async function signOut() {
       </div>
     </nav>
 
-    <div v-if="me" class="mt-auto hidden items-center gap-2.5 rounded-[10px] bg-card p-2 ring-1 ring-border md:flex">
+    <!-- Opens the full-screen exhibition view. Dashed, so it reads as a mode and not as a page. -->
+    <a
+      href="#exhibition"
+      class="mt-auto hidden min-h-9 items-center gap-2.5 rounded-lg border border-dashed border-input px-2.5 py-2 text-[13px] text-foreground no-underline hover:bg-card md:flex"
+    >
+      <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></svg>
+      Exhibition mode
+    </a>
+
+    <div v-if="me" class="hidden items-center gap-2.5 rounded-[10px] bg-card p-2 ring-1 ring-border md:flex">
       <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-semibold text-primary-foreground" aria-hidden="true">
         {{ initials }}
       </span>

@@ -31,11 +31,21 @@ const DriftView = defineAsyncComponent({
   timeout: 30000,
 })
 
-const TABS = ['overview', 'resources', 'anomaly', 'incidents', 'remediation', 'chat', 'evaluation', 'drift', 'model'] as const
+// Exhibition mode is the full-screen view for the hall screen; it draws its own page and the
+// sidebar and top bar are not shown. It also has ECharts, so it is downloaded only when opened.
+const ExhibitionView = defineAsyncComponent({
+  loader: () => import('@/components/ExhibitionView.vue'),
+  loadingComponent: ChartSkeleton,
+  errorComponent: ChartLoadError,
+  delay: 0,
+  timeout: 30000,
+})
+
+const TABS = ['overview', 'resources', 'anomaly', 'incidents', 'remediation', 'chat', 'evaluation', 'drift', 'model', 'exhibition'] as const
 type Tab = typeof TABS[number]
-const TITLES: Record<Tab, string> = { overview: 'Overview', resources: 'Resources', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', evaluation: 'Evaluation', drift: 'Drift', model: 'Model' }
+const TITLES: Record<Tab, string> = { overview: 'Overview', resources: 'Resources', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', evaluation: 'Evaluation', drift: 'Drift', model: 'Model', exhibition: 'Exhibition mode' }
 // Breadcrumb group, the same grouping as the sidebar.
-const GROUPS: Record<Tab, string> = { overview: 'Monitoring', resources: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', evaluation: 'Results', drift: 'Results', model: 'System' }
+const GROUPS: Record<Tab, string> = { overview: 'Monitoring', resources: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', evaluation: 'Results', drift: 'Results', model: 'System', exhibition: 'Results' }
 
 // The hash is the view name, optionally followed by "?" and the view's own state, for example
 // #evaluation?run=2026-11-11T04:30:00Z. The view is read from the part before the "?".
@@ -127,7 +137,8 @@ function openIncident(start: number) {
 </script>
 
 <template>
-  <div class="flex min-h-dvh flex-col gap-2 p-2 md:flex-row">
+  <ExhibitionView v-if="tab === 'exhibition'" />
+  <div v-else class="flex min-h-dvh flex-col gap-2 p-2 md:flex-row">
     <AppSidebar :current="tab" :incident-count="incidentCount" :hours="hours" :champion-version="championVersion" />
 
     <main class="flex min-w-0 flex-1 flex-col rounded-[14px] bg-card ring-1 ring-border">
