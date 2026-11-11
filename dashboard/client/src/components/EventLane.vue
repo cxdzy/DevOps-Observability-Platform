@@ -230,6 +230,19 @@ function spread(wanted: number[], gap: number, lo: number, hi: number): number[]
   return out
 }
 
+// Every early warning in the window continues the chart's dashed line down through the lane, at
+// its true x on the same scale as the markers, so the two read as one line. Rounded to whole
+// pixels the way ECharts snaps a 1 px line.
+const warnLines = computed<{ key: string, x: number }[]>(() => {
+  const w = props.window
+  if (!w || w.end <= w.start) return []
+  const plot = width.value - w.left - w.right
+  if (plot <= 0) return []
+  return props.events
+    .filter(e => e.kind === 'early_warning' && e.time >= w.start && e.time <= w.end)
+    .map(e => ({ key: eventKey(e), x: Math.round(w.left + ((e.time - w.start) / (w.end - w.start)) * plot) }))
+})
+
 function markerLabel(m: Marker): string {
   if (m.items.length === 1) return ariaLabel(m.items[0])
   const counts = new Map<string, { n: number, rank: number }>()
@@ -366,6 +379,16 @@ Shape.props = { event: { type: Object, required: true }, small: { type: Boolean,
       <span v-if="window && markers.length === 0" class="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
         No events in this window
       </span>
+
+      <!-- Early-warning lines, behind the markers: 1 px in the warn colour with the chart's dash
+           (ECharts "dashed" at width 1 is 4 px on, 2 px off). Decorative only. -->
+      <span
+        v-for="l in warnLines"
+        :key="`line-${l.key}`"
+        class="pointer-events-none absolute inset-y-0 w-px"
+        :style="{ left: `${l.x}px`, backgroundImage: 'repeating-linear-gradient(to bottom, var(--warn) 0 4px, transparent 4px 6px)' }"
+        aria-hidden="true"
+      />
 
       <button
         v-for="m in markers"
