@@ -6,10 +6,11 @@
 //
 // The plot width is cut into equal slots, each one marker wide plus a 4 px gap (28 px with a
 // mouse, 48 px on a touch screen). Every event goes into the slot that holds its x position. A
-// slot with one event draws that event's marker at its true x; a slot with more draws one "+n"
-// pill on the slot's centre. Beside a taken slot a marker is kept inside its own slot, so no two
-// markers overlap at any width. The slots are cut again on every zoom, pan, resize and poll, so
-// zooming in splits the pills.
+// slot with one event draws that event's marker; a slot with more draws one "+n" pill. Each is
+// drawn at the true x of its (lead) event and moved only as far as needed to keep 4 px from the
+// marker drawn beside it and to stay inside the plot (see spread), so nothing overlaps at any
+// width. The slots are cut again on every zoom, pan, resize and poll, so zooming in splits the
+// pills.
 import type { EventItem, ChartWindow } from '@/types'
 import { computed, h, nextTick, onMounted, onUnmounted, ref, watch, type FunctionalComponent } from 'vue'
 import { clockTime, localDateTime, shortDate } from '@/lib/format'
@@ -169,12 +170,10 @@ const markers = computed<Marker[]>(() => {
   if (!w || w.end <= w.start) return []
   const plot = width.value - w.left - w.right
   if (plot <= 0) return []
-  // Equal slots, each at least one marker plus the gap wide, so a marker fits inside its slot.
+  // Equal slots, each at least one marker plus the gap wide, so every slot's marker fits.
   const count = Math.max(1, Math.floor(plot / slotPx.value))
   const slot = plot / count
   const half = Math.min(markerPx.value, slot) / 2
-  // Half the gap stays free on each side of a slot, so markers in neighbouring slots never touch.
-  const pad = Math.min(GAP_PX / 2, slot / 2 - half)
   const span = w.end - w.start
   const bySlot = new Map<number, { x: number, event: EventItem }[]>()
   for (const event of props.events) {
@@ -185,23 +184,51 @@ const markers = computed<Marker[]>(() => {
     if (list) list.push({ x, event })
     else bySlot.set(k, [{ x, event }])
   }
+  // One marker or pill per slot, wanted at the true x of its lead event (the only event, or the
+  // most important one). Slots are in order, so the wanted positions are too.
   const out: Marker[] = []
-  for (const [k, list] of [...bySlot.entries()].sort((a, b) => a[0] - b[0])) {
+  const wanted: number[] = []
+  for (const [, list] of [...bySlot.entries()].sort((a, b) => a[0] - b[0])) {
     list.sort((a, b) => a.event.time - b.event.time)
-    const start = w.left + k * slot
-    const items = list.map(i => i.event)
-    // A marker or pill is centred on the true x of its lead event (the only event, or the most
-    // important one). Only on a side whose neighbouring slot is taken is it kept inside its own
-    // slot; next to an empty slot it may reach into it, which still leaves at least the gap to any
-    // marker beyond.
     const leadAt = list.reduce((best, i) => (rank(i.event) < rank(best.event) ? i : best), list[0])
-    const lo = bySlot.has(k - 1) ? start + half + pad : -Infinity
-    const hi = bySlot.has(k + 1) ? start + slot - half - pad : Infinity
-    const x = Math.min(hi, Math.max(lo, leadAt.x))
-    out.push({ key: eventKey(items[0]), x, items, lead: leadAt.event })
+    out.push({ key: eventKey(list[0].event), x: leadAt.x, items: list.map(i => i.event), lead: leadAt.event })
+    wanted.push(leadAt.x)
   }
+  const placed = spread(wanted, markerPx.value + GAP_PX, w.left + half, w.left + plot - half)
+  out.forEach((m, i) => { m.x = placed[i] })
   return out
 })
+
+// Positions as close as possible (least squares) to the wanted ones, at least `gap` apart centre
+// to centre (one marker plus the 4 px gap) and inside [lo, hi], so every marker stays in the plot.
+// A marker with room around it keeps its true x; markers that would touch move apart only as far
+// as needed. With y[i] = x[i] - i * gap the spacing rule becomes "y never decreases", solved by
+// pooling neighbours that break it (pool adjacent violators) and then clamping to the bounds.
+// The slot count guarantees the bounds always have room for every marker.
+function spread(wanted: number[], gap: number, lo: number, hi: number): number[] {
+  const n = wanted.length
+  if (n === 0) return []
+  const blocks: { sum: number, size: number }[] = []
+  wanted.forEach((x, i) => {
+    blocks.push({ sum: x - i * gap, size: 1 })
+    while (blocks.length > 1) {
+      const b = blocks[blocks.length - 1]
+      const a = blocks[blocks.length - 2]
+      if (a.sum / a.size <= b.sum / b.size) break
+      a.sum += b.sum
+      a.size += b.size
+      blocks.pop()
+    }
+  })
+  const yLo = lo
+  const yHi = Math.max(lo, hi - (n - 1) * gap)
+  const out: number[] = []
+  for (const b of blocks) {
+    const y = Math.min(yHi, Math.max(yLo, b.sum / b.size))
+    for (let j = 0; j < b.size; j++) out.push(y + out.length * gap)
+  }
+  return out
+}
 
 function markerLabel(m: Marker): string {
   if (m.items.length === 1) return ariaLabel(m.items[0])
