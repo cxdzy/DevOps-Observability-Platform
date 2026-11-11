@@ -281,6 +281,8 @@ function bandRenderItem(fill: string, ink: string) {
 // The version label above each promotion hexagon, centred on it, by the same rule. The hexagon sits
 // HEXAGON_OFFSET_PX above the top of the plot (see the promotions series).
 const HEXAGON_OFFSET_PX = 24
+// The strip to the right of the plot that holds the limit label, so no bar or band can cover it.
+const LIMIT_MARGIN_PX = 80
 function versionRenderItem(ink: string) {
   let lastRight = -Infinity
   return (params: CustomParams, a: CustomApi) => {
@@ -362,7 +364,7 @@ const option = computed(() => {
   return {
     animation: false,
     useUTC: true,
-    grid: { left: 52, right: reference.value.length ? 56 : 16, top: 56, bottom: 84 },
+    grid: { left: 52, right: reference.value.length ? 56 + LIMIT_MARGIN_PX : LIMIT_MARGIN_PX, top: 56, bottom: 84 },
     tooltip: {
       trigger: 'axis',
       formatter: tooltip,
@@ -396,7 +398,7 @@ const option = computed(() => {
         height: 24,
         bottom: 8,
         left: 52,
-        right: reference.value.length ? 56 : 24,
+        right: reference.value.length ? 56 + LIMIT_MARGIN_PX : LIMIT_MARGIN_PX,
         borderColor: c.line,
         backgroundColor: 'transparent',
         fillerColor: withAlpha(c.primary, 0.12),
@@ -438,6 +440,8 @@ const option = computed(() => {
         min: 0,
         splitNumber: 3,
         position: 'right',
+        // Moved outward so the limit label has the strip between the plot edge and these labels.
+        offset: LIMIT_MARGIN_PX,
         axisLine: { show: false },
         splitLine: { show: false },
         axisLabel: { ...axisText, formatter: (v: number) => `${v} MB` },
@@ -472,7 +476,7 @@ const option = computed(() => {
           lineStyle: { color: c.thresh, type: 'dashed', width: 1 },
           label: { show: false },
           data: [
-            { yAxis: threshold.value, label: { show: true, formatter: `${thresholdText.value} limit`, position: 'insideEndTop', color: c.faint, fontSize: 11, fontFamily: MONO } },
+            { yAxis: threshold.value, label: { show: true, formatter: `${thresholdText.value} limit`, position: 'end', distance: 6, align: 'left', verticalAlign: 'middle', color: c.faint, fontSize: 11, fontFamily: MONO } },
             ...promotions.value.map(p => ({ xAxis: p.time })),
           ],
         },

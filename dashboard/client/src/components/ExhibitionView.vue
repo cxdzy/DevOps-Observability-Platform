@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // Exhibition mode: a full-screen view for a bright hall screen. It has no sidebar and no top bar,
 // shows three screens in turn (Live, Last incident, Results) and is dark whatever the saved theme.
-// It is designed for 1920 x 1080 and every size is scaled by --u, which is 1 px at that size, so
-// 1280 x 720 shows the same layout smaller and nothing scrolls.
+// It is one fixed 1920 x 1080 stage that is scaled as a whole to fit the window, so every window
+// size shows exactly the 1920 x 1080 layout, smaller or larger, with a dark border around it.
+// Inside the stage all sizes are plain design pixels and nothing scrolls.
 import type { AnomalyPoint, Evaluation, Incident, StatusInfo } from '@/types'
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ChartLoadError from '@/components/ChartLoadError.vue'
@@ -47,17 +48,18 @@ onBeforeUnmount(() => {
 })
 
 // ---- Scale ----
-// u is the size of one design pixel: 1 px at 1920 x 1080, the smaller of the width and height ratio
-// otherwise. The timeline's large size reads --u too. The status chip, whose type is fixed and
-// small, is scaled with CSS zoom.
+// The stage is DESIGN_W x DESIGN_H and is scaled by the smaller of the width and height ratio. The
+// stage sets --u to 1 px, so the rules below and the timeline's large size (which reads --u) work
+// in design pixels.
 const DESIGN_W = 1920
 const DESIGN_H = 1080
-const unit = ref(Math.max(0.5, Math.min(window.innerWidth / DESIGN_W, window.innerHeight / DESIGN_H)))
+const fitScale = () => Math.min(window.innerWidth / DESIGN_W, window.innerHeight / DESIGN_H)
+const scale = ref(fitScale())
 function onResize() {
-  unit.value = Math.max(0.5, Math.min(window.innerWidth / DESIGN_W, window.innerHeight / DESIGN_H))
+  scale.value = fitScale()
 }
-// The status chip's own text is 13 px, so it is zoomed to 24 px at 1920 wide.
-const chipZoom = computed(() => String(unit.value * (24 / 13)))
+// The status chip's own text is 13 px, so it is zoomed to 24 px on the stage.
+const CHIP_ZOOM = String(24 / 13)
 
 // ---- Screens, rotation and controls ----
 const SCREENS = [
@@ -95,8 +97,8 @@ function onKey(event: KeyboardEvent) {
   if (event.key === ' ' || event.code === 'Space') {
     if (target && ['BUTTON', 'A'].includes(target.tagName)) return
     event.preventDefault()
+    // Resuming carries on from the seconds that were left; only a screen change starts a new count.
     paused.value = !paused.value
-    if (!paused.value) left.value = ROTATE_SECONDS
   } else if (event.key === 'ArrowRight') {
     event.preventDefault()
     go(screen.value + 1)
@@ -337,46 +339,54 @@ interface Stat {
 const percent = (rate: number, digits: number) => `${(rate * 100).toFixed(digits)}%`
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many)
 
+// Only a figure that was measured gets a tile. A figure with no value is left out and the tiles
+// that remain are laid out again, so nothing says "No data" or "not measured".
 const stats = computed<Stat[]>(() => {
   const d = evaluation.value
   const r = d?.run
-  const none = (label: string, sub = ''): Stat => ({ label, value: empty.value, sub, words: true })
-  if (!d || !r) {
-    return ['Recall, faults detected', 'False positive rate', 'Safety margin', 'Warned ahead', 'Time to recover', 'Remediation success'].map(l => none(l))
+  if (!d || !r) return []
+  const out: Stat[] = []
+
+  if (r.detection_rate !== null && (r.injections ?? 0) > 0) {
+    out.push({ label: 'Recall, faults detected', value: percent(r.detection_rate, 1), sub: r.detected === null ? `${r.injections} injections` : `${r.detected} of ${r.injections} injections detected`, words: false })
   }
 
-  const recall: Stat = r.detection_rate !== null && (r.injections ?? 0) > 0
-    ? { label: 'Recall, faults detected', value: percent(r.detection_rate, 1), sub: r.detected === null ? `${r.injections} injections` : `${r.detected} of ${r.injections} injections detected`, words: false }
-    : none('Recall, faults detected', 'No injections in this period')
+  if (r.false_alarms !== null && r.flagged_minutes !== null && r.flagged_minutes > 0) {
+    out.push({ label: 'False positive rate', value: percent(r.false_alarms / r.flagged_minutes, 1), sub: `${r.false_alarms} of ${r.flagged_minutes} flagged minutes`, words: false })
+  }
 
-  const fpr: Stat = r.false_alarms !== null && r.flagged_minutes !== null && r.flagged_minutes > 0
-    ? { label: 'False positive rate', value: percent(r.false_alarms / r.flagged_minutes, 1), sub: `${r.false_alarms} of ${r.flagged_minutes} flagged minutes`, words: false }
-    : none('False positive rate', 'No minute was flagged')
+  if (r.margin !== null) {
+    out.push({ label: 'Safety margin', value: fixed(r.margin, 3), sub: r.threshold === null ? 'below the threshold' : `below the threshold ${fixed(r.threshold)}`, words: false })
+  }
 
-  const margin: Stat = r.margin !== null
-    ? { label: 'Safety margin', value: fixed(r.margin, 3), sub: r.threshold === null ? 'below the threshold' : `below the threshold ${fixed(r.threshold)}`, words: false }
-    : none('Safety margin')
-
-  let lead: Stat
-  if (r.ramp_injections === null || r.ramp_injections === 0) {
-    lead = { label: 'Warned ahead', value: 'not measured', sub: 'No ramp injections in this period', words: true }
-  } else if (r.lead_median_min !== null) {
-    lead = { label: 'Warned ahead', value: `${r.lead_median_min.toFixed(1)} min`, sub: r.warned_before_flag === null ? `median, ${r.ramp_injections} ramp ${plural(r.ramp_injections, 'injection', 'injections')}` : `median, ${r.warned_before_flag} of ${r.ramp_injections} ramp ${plural(r.ramp_injections, 'injection', 'injections')}`, words: false }
-  } else {
-    lead = { label: 'Warned ahead', value: 'None', sub: `0 of ${r.ramp_injections} ramp ${plural(r.ramp_injections, 'injection', 'injections')} warned first`, words: true }
+  if (r.ramp_injections !== null && r.ramp_injections > 0) {
+    if (r.lead_median_min !== null) {
+      out.push({ label: 'Warned ahead', value: `${r.lead_median_min.toFixed(1)} min`, sub: r.warned_before_flag === null ? `median, ${r.ramp_injections} ramp ${plural(r.ramp_injections, 'injection', 'injections')}` : `median, ${r.warned_before_flag} of ${r.ramp_injections} ramp ${plural(r.ramp_injections, 'injection', 'injections')}`, words: false })
+    } else {
+      out.push({ label: 'Warned ahead', value: 'None', sub: `0 of ${r.ramp_injections} ramp ${plural(r.ramp_injections, 'injection', 'injections')} warned first`, words: true })
+    }
   }
 
   const m = d.mttr
-  const mttr: Stat = m && m.median_seconds !== null
-    ? { label: 'Time to recover', value: `${m.median_seconds} s`, sub: `median, ${m.count} ${plural(m.count, 'incident', 'incidents')}`, words: false }
-    : none('Time to recover', m ? 'No action brought an incident back' : '')
+  if (m && m.median_seconds !== null) {
+    out.push({ label: 'Time to recover', value: `${m.median_seconds} s`, sub: `median, ${m.count} ${plural(m.count, 'incident', 'incidents')}`, words: false })
+  }
 
   const rem = d.remediation
-  const success: Stat = rem && rem.ran > 0
-    ? { label: 'Remediation success', value: percent(rem.worked / rem.ran, 0), sub: `${rem.worked} of ${rem.ran} ${plural(rem.ran, 'action', 'actions')} that ran`, words: false }
-    : none('Remediation success', rem ? 'No action ran in this period' : '')
+  if (rem && rem.ran > 0) {
+    out.push({ label: 'Remediation success', value: percent(rem.worked / rem.ran, 0), sub: `${rem.worked} of ${rem.ran} ${plural(rem.ran, 'action', 'actions')} that ran`, words: false })
+  }
 
-  return [recall, fpr, margin, lead, mttr, success]
+  return out
+})
+// Tiles per row: 1 to 3 in one row, 4 as 2 by 2, 5 and 6 over two rows of up to 3.
+const statColumns = computed(() => (stats.value.length === 4 ? 2 : Math.min(3, Math.max(1, stats.value.length))))
+// The one line shown instead of tiles.
+const resultsLine = computed(() => {
+  if (!loadedOnce.value) return 'Loading'
+  if (evaluationFailed.value && !evaluation.value) return `The evaluation report could not be loaded. ${RETRY}`
+  if (!evaluation.value?.run) return 'No saved evaluation run yet.'
+  return 'No figure was measured in this run.'
 })
 
 const period = computed(() => {
@@ -390,7 +400,8 @@ const runModel = computed(() => evaluation.value?.run.model ?? null)
 </script>
 
 <template>
-  <div class="ex fixed inset-0 z-50 flex flex-col overflow-hidden bg-background text-foreground" :style="{ '--u': `${unit}px` }">
+  <div class="ex-outer fixed inset-0 z-50 overflow-hidden bg-background text-foreground">
+  <div class="ex absolute flex flex-col overflow-hidden bg-background text-foreground" :style="{ transform: `translate(-50%, -50%) scale(${scale})` }">
     <header class="ex-header flex shrink-0 items-center">
       <span class="ex-logo flex shrink-0 items-center justify-center bg-primary text-primary-foreground" aria-hidden="true">
         <svg class="size-1/2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4" /></svg>
@@ -400,7 +411,7 @@ const runModel = computed(() => evaluation.value?.run.model ?? null)
         <p class="ex-t-body m-0 text-muted-foreground">Predicts failures, explains them in plain English, fixes them after approval</p>
       </div>
       <div class="ml-auto flex items-center ex-header-right">
-        <div :style="{ zoom: chipZoom }">
+        <div :style="{ zoom: CHIP_ZOOM }">
           <StatusChip :status="status" :failed="statusFailed" />
         </div>
         <time class="ex-t-clock font-mono font-medium" :datetime="new Date(now).toISOString()">{{ clock }}</time>
@@ -418,12 +429,16 @@ const runModel = computed(() => evaluation.value?.run.model ?? null)
             <h2 class="ex-t-title m-0 font-semibold">Anomaly score, last 2 hours</h2>
           </div>
           <div class="flex flex-wrap items-baseline ex-score-row">
-            <span class="ex-t-hero font-mono font-medium leading-none tracking-tight">{{ latest ? fixed(latest.score, 3) : empty }}</span>
-            <span class="ex-t-body text-muted-foreground">{{ latest ? latestSub : '' }}</span>
+            <!-- With no scored minute the place says so in body type, never in hero type. -->
+            <template v-if="latest">
+              <span class="ex-t-hero font-mono font-medium leading-none tracking-tight">{{ fixed(latest.score, 3) }}</span>
+              <span class="ex-t-body text-muted-foreground">{{ latestSub }}</span>
+            </template>
+            <span v-else class="ex-t-body text-muted-foreground">{{ empty }}</span>
           </div>
           <!-- The chart takes all the height left in the card; the large chart fills this box. -->
           <div class="relative min-h-0 min-w-0 flex-1">
-            <div v-if="points.length" class="absolute inset-0 overflow-hidden">
+            <div v-if="points.length" class="pointer-events-none absolute inset-0 overflow-hidden">
               <AnomalyChart compact size="large" :points="points" :hours="SCORE_WINDOW_HOURS" :selected="null" :zoom="FULL" :warnings="warnings" />
             </div>
             <p v-else class="ex-t-body m-0 rounded-lg bg-chip text-center text-muted-foreground ex-nodata">{{ loadedOnce && anomalyFailed ? `The anomaly scores could not be loaded. ${RETRY}` : empty }}</p>
@@ -456,7 +471,7 @@ const runModel = computed(() => evaluation.value?.run.model ?? null)
 
       <!-- Last incident -->
       <div v-else-if="screen === 1" class="ex-incident grid min-h-0 flex-1">
-        <section aria-label="Last incident" class="ex-card flex min-h-0 min-w-0 flex-col overflow-y-auto">
+        <section aria-label="Last incident" class="ex-card flex min-h-0 min-w-0 flex-col overflow-hidden">
           <h2 class="ex-t-title m-0 font-semibold">Last incident, medium or high</h2>
           <template v-if="lastIncident">
             <div class="flex flex-wrap items-center ex-incident-head">
@@ -469,15 +484,15 @@ const runModel = computed(() => evaluation.value?.run.model ?? null)
             <div v-if="sections" class="flex flex-col ex-sections">
               <div v-for="[title, text] in sections" :key="title">
                 <h3 class="ex-t-body m-0 font-semibold text-muted-foreground">{{ title }}</h3>
-                <p class="ex-t-explain m-0">{{ text }}</p>
+                <p class="ex-t-explain ex-clamp-section m-0">{{ text }}</p>
               </div>
             </div>
-            <p v-else class="ex-t-explain m-0 whitespace-pre-line">{{ lastIncident.explanation || explanationFallback(lastIncident) }}</p>
+            <p v-else class="ex-t-explain ex-clamp-whole m-0 whitespace-pre-line">{{ lastIncident.explanation || explanationFallback(lastIncident) }}</p>
           </template>
           <p v-else class="ex-t-body m-0 text-muted-foreground">{{ !loadedOnce ? 'Loading' : incidentsFailed ? `The incidents could not be loaded. ${RETRY}` : `${NO_DATA}. No medium or high incident in the last 7 days.` }}</p>
         </section>
 
-        <section aria-label="Incident timeline" class="ex-card min-h-0 min-w-0 overflow-y-auto">
+        <section aria-label="Incident timeline" class="ex-card min-h-0 min-w-0 overflow-hidden">
           <IncidentTimeline v-if="lastIncident && lastIncident.job" :key="`${lastIncident.start}-${lastIncident.job}`" :start="lastIncident.start" :job="lastIncident.job" :tier="lastIncident.tier" size="large" readonly />
           <p v-else class="ex-t-body m-0 text-muted-foreground">{{ lastIncident ? `${NO_DATA}. This incident has no timeline.` : empty }}</p>
         </section>
@@ -487,15 +502,16 @@ const runModel = computed(() => evaluation.value?.run.model ?? null)
       <div v-else class="flex min-h-0 flex-1 flex-col ex-results">
         <div class="ex-results-head flex flex-wrap items-baseline">
           <h2 class="ex-t-title m-0 font-semibold">Results of the latest saved evaluation run</h2>
-          <span class="ex-t-body text-muted-foreground">{{ period ? `${period}${runModel ? `, model ${runModel}` : ''}` : loadedOnce && evaluationFailed ? `The evaluation report could not be loaded. ${RETRY}` : empty }}</span>
+          <span class="ex-t-body text-muted-foreground">{{ period ? `${period}${runModel ? `, model ${runModel}` : ''}` : '' }}</span>
         </div>
-        <ul class="ex-stats m-0 grid min-h-0 flex-1 list-none p-0">
+        <ul v-if="stats.length" class="ex-stats m-0 flex min-h-0 flex-1 list-none p-0" :style="{ '--cols': statColumns }">
           <li v-for="stat in stats" :key="stat.label" class="ex-card ex-stat flex min-w-0 flex-col justify-center">
             <span class="ex-t-body text-muted-foreground">{{ stat.label }}</span>
             <span class="font-mono font-medium leading-tight tracking-tight" :class="stat.words ? 'ex-t-numtext' : 'ex-t-num'">{{ stat.value }}</span>
             <span class="ex-t-body text-muted-foreground">{{ stat.sub }}</span>
           </li>
         </ul>
+        <p v-else class="ex-t-body m-0 text-muted-foreground">{{ resultsLine }}</p>
       </div>
     </main>
 
@@ -519,11 +535,13 @@ const runModel = computed(() => evaluation.value?.run.model ?? null)
       <span class="ml-auto font-mono">{{ host }}</span>
     </footer>
   </div>
+  </div>
 </template>
 
 <style scoped>
-/* One design pixel is --u, set on the root element from the window size. */
-.ex { --pad: calc(36 * var(--u)); }
+/* The outer element fills the window and clips; the stage inside it is a fixed 1920 x 1080 box,
+   centred and scaled by the script. One design pixel is --u, which is 1 px on the stage. */
+.ex { --u: 1px; --pad: calc(36 * var(--u)); width: 1920px; height: 1080px; left: 50%; top: 50%; transform-origin: center center; }
 .ex-header { gap: calc(20 * var(--u)); padding: calc(28 * var(--u)) var(--pad) calc(16 * var(--u)); }
 .ex-header-right { gap: calc(28 * var(--u)); }
 .ex-logo { width: calc(64 * var(--u)); height: calc(64 * var(--u)); border-radius: calc(16 * var(--u)); }
@@ -544,10 +562,19 @@ const runModel = computed(() => evaluation.value?.run.model ?? null)
 .ex-tier { gap: calc(10 * var(--u)); min-height: calc(48 * var(--u)); padding: 0 calc(20 * var(--u)); border-radius: 999px; }
 .ex-tier-icon { width: calc(22 * var(--u)); height: calc(22 * var(--u)); }
 .ex-sections { gap: calc(16 * var(--u)); }
+/* The incident card does not scroll, so a long explanation is cut with an ellipsis instead. The
+   card holds about 16 lines of 28 px text below its head (about 636 px with the error line shown):
+   4 lines for each of the three sections with their headings, or 15 for unlabelled text. */
+.ex-clamp-section, .ex-clamp-whole { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+.ex-clamp-section { -webkit-line-clamp: 4; line-clamp: 4; }
+.ex-clamp-whole { -webkit-line-clamp: 15; line-clamp: 15; }
 .ex-results { gap: calc(20 * var(--u)); }
 .ex-results-head { gap: calc(8 * var(--u)) calc(24 * var(--u)); }
-.ex-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: calc(20 * var(--u)); }
-.ex-stat { gap: calc(6 * var(--u)); }
+/* Every tile has the same fixed size, a third of the 1848 px between the page margins less the
+   gaps, whatever the count. The list is as wide as --cols tiles and centred, so the tiles wrap into
+   rows of that many (3 + 3, 3 + 2, 2 + 2, or one row) and each row is centred. */
+.ex-stats { --tile: calc((1848 * var(--u) - 2 * 20 * var(--u)) / 3); flex-wrap: wrap; justify-content: center; align-content: center; gap: calc(20 * var(--u)); width: calc(var(--cols) * var(--tile) + (var(--cols) - 1) * 20 * var(--u)); margin-inline: auto; }
+.ex-stat { gap: calc(6 * var(--u)); width: var(--tile); height: calc(330 * var(--u)); }
 
 .ex-t-hero { font-size: calc(104 * var(--u)); }
 .ex-t-num { font-size: calc(88 * var(--u)); }
