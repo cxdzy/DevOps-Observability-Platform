@@ -303,3 +303,76 @@ export interface IncidentTimeline {
   points: AnomalyPoint[]
   steps: TimelineStep[]
 }
+
+// GET /api/evaluation: a saved detection report (scripts/detection_report.py --save). Rates are
+// fractions from 0 to 1, not percent. A field the report could not compute is null.
+export interface EvaluationRun {
+  run_id: string
+  // Time of the run in ms.
+  time: number | null
+  // The scored period, ISO text in UTC.
+  since: string | null
+  until: string | null
+  scored_minutes: number | null
+  injections: number | null
+  detected: number | null
+  detection_rate: number | null
+  flagged_minutes: number | null
+  normal_minutes: number | null
+  false_alarms: number | null
+  false_alarm_rate: number | null
+  top_normal_score: number | null
+  p99_normal_score: number | null
+  threshold: number | null
+  // Threshold minus the highest normal score.
+  margin: number | null
+  ramp_injections: number | null
+  warned_before_flag: number | null
+  lead_median_min: number | null
+  lead_max_min: number | null
+  false_ew_minutes: number | null
+  excluded: number | null
+  model: string | null
+}
+
+export interface EvaluationFault {
+  fault: string | null
+  injections: number | null
+  detected: number | null
+  detection_rate: number | null
+  median_peak_score: number | null
+  missed: number | null
+  missed_example: string | null
+}
+
+export interface EvaluationDay {
+  // The UTC day, for example 2026-11-10.
+  day: string | null
+  time: number | null
+  scored_minutes: number | null
+  normal_minutes: number | null
+  false_alarms: number | null
+  false_alarm_rate: number | null
+  flagged_minutes: number | null
+  injections: number | null
+}
+
+export interface EvaluationRunSummary {
+  run_id: string
+  since: string | null
+  until: string | null
+  injections: number | null
+}
+
+export interface Evaluation {
+  run_id: string
+  run: EvaluationRun
+  runs: EvaluationRunSummary[]
+  faults: EvaluationFault[]
+  days: EvaluationDay[]
+  // Median minutes from the start of an incident to the action that brought the service back, for
+  // the run's period. null when the data could not be read.
+  mttr: { median_minutes: number | null, count: number } | null
+  // Counts over everything stored, for the objectives table. null when they could not be read.
+  evidence: { ci_deployments: number, explanations: number, actions: { ran: number, restart_worked: number, rollback_worked: number } } | null
+}

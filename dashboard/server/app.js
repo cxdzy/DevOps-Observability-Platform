@@ -8,6 +8,7 @@ const { createOverview, loadIncidents, SERVERS } = require("./overview");
 const { createResources, HOURS: RESOURCE_HOURS } = require("./resources");
 const { loadRemediation } = require("./remediation");
 const { loadEvents } = require("./events");
+const { loadEvaluation, parseParams: parseEvaluationParams } = require("./evaluation");
 const { loadStatus } = require("./status");
 const { loadTimeline, parseParams: parseTimelineParams } = require("./timeline");
 const { createModel } = require("./model");
@@ -134,6 +135,21 @@ function createApp(deps) {
     if (hours === null) return;
     try {
       res.json(await loadRemediation(query, hours));
+    } catch (err) {
+      res.status(502).json({ error: "influxdb unreachable" });
+    }
+  });
+
+  // A saved detection report (scripts/detection_report.py --save). run is optional and must be a
+  // UTC time like 2026-11-11T04:30:00Z; it is checked first, so a bad request sends no query. The
+  // default is the latest run. 404 when no run is stored or the run asked for does not exist.
+  app.get("/api/evaluation", async (req, res) => {
+    const params = parseEvaluationParams(req.query);
+    if (params.error) return res.status(400).json({ error: params.error });
+    try {
+      const result = await loadEvaluation(query, params.run);
+      if (!result) return res.status(404).json({ error: params.run ? "run not found" : "no saved report yet" });
+      res.json(result);
     } catch (err) {
       res.status(502).json({ error: "influxdb unreachable" });
     }

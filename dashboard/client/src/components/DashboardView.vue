@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
 import AnomalyView from '@/components/AnomalyView.vue'
 import AppHeader from '@/components/AppHeader.vue'
 import AppSidebar from '@/components/AppSidebar.vue'
+import ChartLoadError from '@/components/ChartLoadError.vue'
+import ChartSkeleton from '@/components/ChartSkeleton.vue'
 import ChatView from '@/components/ChatView.vue'
 import IncidentsView from '@/components/IncidentsView.vue'
 import ModelView from '@/components/ModelView.vue'
@@ -11,24 +13,49 @@ import RemediationView from '@/components/RemediationView.vue'
 import ResourcesView from '@/components/ResourcesView.vue'
 import { useRangeData } from '@/composables/useRangeData'
 
-const TABS = ['overview', 'resources', 'anomaly', 'incidents', 'remediation', 'chat', 'model'] as const
+// The Evaluation view is downloaded only when it is first opened, so it does not grow the main bundle.
+const EvaluationView = defineAsyncComponent({
+  loader: () => import('@/components/EvaluationView.vue'),
+  loadingComponent: ChartSkeleton,
+  errorComponent: ChartLoadError,
+  delay: 0,
+  timeout: 30000,
+})
+
+const TABS = ['overview', 'resources', 'anomaly', 'incidents', 'remediation', 'chat', 'evaluation', 'model'] as const
 type Tab = typeof TABS[number]
-const TITLES: Record<Tab, string> = { overview: 'Overview', resources: 'Resources', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', model: 'Model' }
+const TITLES: Record<Tab, string> = { overview: 'Overview', resources: 'Resources', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', evaluation: 'Evaluation', model: 'Model' }
 // Breadcrumb group, the same grouping as the sidebar.
-const GROUPS: Record<Tab, string> = { overview: 'Monitoring', resources: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', model: 'System' }
+const GROUPS: Record<Tab, string> = { overview: 'Monitoring', resources: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', evaluation: 'Results', model: 'System' }
+
+// The hash is the view name, optionally followed by "?" and the view's own state, for example
+// #evaluation?run=2026-11-11T04:30:00Z. The view is read from the part before the "?".
+function hashParts(): { name: string, query: string } {
+  const hash = window.location.hash.slice(1)
+  const at = hash.indexOf('?')
+  return at === -1 ? { name: hash, query: '' } : { name: hash.slice(0, at), query: hash.slice(at + 1) }
+}
 
 function tabFromHash(): Tab {
-  const name = window.location.hash.slice(1)
+  const { name } = hashParts()
   return (TABS as readonly string[]).includes(name) ? (name as Tab) : 'overview'
 }
 
 // The selected view is kept in the URL hash, so a reload or a shared link opens the same view.
-// The sidebar links change the hash; an unknown hash is replaced with the default view.
+// The sidebar links change the hash; an unknown hash is replaced with the default view. A hash
+// that already names the view, with or without a query, is left as it is.
 const tab = ref<Tab>(tabFromHash())
+// The text after the "?", passed to the view. A view that changes its own state rewrites the hash
+// with history.replaceState, which does not fire hashchange, so the view also sends the new text
+// back (v-model:query). That keeps this in step, so a pasted link to an earlier state still changes it.
+const viewQuery = ref(hashParts().query)
 watch(tab, (name) => {
-  if (window.location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`)
+  if (hashParts().name !== name) history.replaceState(null, '', `#${name}`)
 })
-const onHashChange = () => { tab.value = tabFromHash() }
+const onHashChange = () => {
+  tab.value = tabFromHash()
+  viewQuery.value = hashParts().query
+}
 onMounted(() => window.addEventListener('hashchange', onHashChange))
 onUnmounted(() => window.removeEventListener('hashchange', onHashChange))
 
@@ -121,6 +148,7 @@ function openIncident(start: number) {
         />
         <RemediationView v-else-if="tab === 'remediation'" @refreshed="onViewRefreshed" />
         <ChatView v-else-if="tab === 'chat'" @status="assistantReady = $event" @open-incident="openIncident" />
+        <EvaluationView v-else-if="tab === 'evaluation'" v-model:query="viewQuery" @refreshed="onViewRefreshed" />
         <ModelView v-else-if="tab === 'model'" @refreshed="onViewRefreshed" @champion="championVersion = $event" />
         <IncidentsView
           v-else
