@@ -546,7 +546,7 @@ const maxRejections = computed(() => Math.max(1, ...(ex.value?.rejections ?? [])
 
     <div class="grid grid-cols-[repeat(auto-fit,minmax(min(300px,100%),1fr))] gap-4">
       <section aria-labelledby="llm-rejections-title" class="min-w-0 rounded-xl border border-border p-4">
-        <h2 id="llm-rejections-title" class="text-[15px] font-semibold">Why answers were rejected</h2>
+        <h2 id="llm-rejections-title" class="text-[15px] font-semibold">Why explanations fell back to the template</h2>
         <p class="mb-2 text-xs text-muted-foreground">The fact check of the last try of each explanation that fell back to the template. Numbers are shown as N.</p>
         <p v-if="ex.rejections.length === 0" class="py-4 text-[13px] text-muted-foreground">No rejected answer in this range.</p>
         <ol v-else class="flex flex-col gap-2.5">
@@ -563,7 +563,7 @@ const maxRejections = computed(() => Math.max(1, ...(ex.value?.rejections ?? [])
       </section>
 
       <section aria-labelledby="llm-chat-title" class="min-w-0 rounded-xl border border-border p-4">
-        <h2 id="llm-chat-title" class="text-[15px] font-semibold">Chat answers</h2>
+        <h2 id="llm-chat-title" class="text-[15px] font-semibold">LLM replies and fallbacks</h2>
         <p class="mb-3 text-xs text-muted-foreground">Only questions that go to the model are logged. Commands and template replies never reach it, so they are not counted here.</p>
         <p v-if="chat.replies === 0" class="py-4 text-[13px] text-muted-foreground">No model answer in this range.</p>
         <template v-else>

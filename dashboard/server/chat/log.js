@@ -7,6 +7,9 @@ const { Pool } = require("pg");
 
 const TRACE_NAME = "dashboard-chat";
 
+// A metadata value as a float, or NULL when it is not a JSON number. key is always a constant here.
+const NUMBER = (key) => `(CASE WHEN jsonb_typeof(metadata->'${key}') = 'number' THEN (metadata->>'${key}')::float END)`;
+
 // DATABASE_URL with its database name replaced. pg reads the database from the URL, so the name
 // has to be changed there, not passed next to it. Returns null when either value is missing or the
 // URL does not parse. The URL holds the password, so it is never logged.
@@ -83,11 +86,13 @@ function createChatLog({ pool, log = console.error } = {}) {
     if (!pool) return empty;
     try {
       const { rows } = await pool.query(
+        // Each cast is guarded by jsonb_typeof, as in llm.js, so one row with a value that is not a
+        // number counts as NULL instead of failing the whole query.
         "SELECT count(*) FILTER (WHERE metadata->>'attempt' = '1') AS replies, " +
-          "percentile_cont(0.5) WITHIN GROUP (ORDER BY (metadata->>'reply_s')::float) " +
+          `percentile_cont(0.5) WITHIN GROUP (ORDER BY ${NUMBER("reply_s")}) ` +
           "FILTER (WHERE metadata->>'attempt' = '1') AS median_reply_s, " +
-          "percentile_cont(0.5) WITHIN GROUP (ORDER BY (metadata->>'completion_tokens')::float / " +
-          "NULLIF((metadata->>'eval_duration_ms')::float, 0) * 1000) AS median_tok_s " +
+          `percentile_cont(0.5) WITHIN GROUP (ORDER BY ${NUMBER("completion_tokens")} / ` +
+          `NULLIF(${NUMBER("eval_duration_ms")}, 0) * 1000) AS median_tok_s ` +
           "FROM langfuse.trace WHERE name = $1 AND timestamp_id > (now() AT TIME ZONE 'UTC') - interval '24 hours'",
         [TRACE_NAME]
       );

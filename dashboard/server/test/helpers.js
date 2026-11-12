@@ -26,6 +26,8 @@ async function startApp(options = {}) {
       googleClientSecret: "",
       clientDist: null,
       bcryptCost: 4,
+      // No langfuse pool unless a test passes one, so tests never build a pool from the real environment.
+      llmPool: null,
       ...options.config,
     },
   });
