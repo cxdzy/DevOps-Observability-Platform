@@ -42,6 +42,8 @@ const ALL_NAV = [
       { id: 'evaluation', label: 'Evaluation', icon: 'M4 20V10M10 20V4M16 20v-7M3 20h18M18 5l1.5 1.5L22 4' },
       // A line over a column of bars.
       { id: 'drift', label: 'Drift', icon: 'M4 20V10M10 20V6M16 20v-8M3 8l5-3 5 4 7-5' },
+      // A speech bubble with a spark.
+      { id: 'llm', label: 'LLM', icon: 'M4 5h16v11H9l-5 4zM12 8v5M9.5 10.5h5' },
       // Three steps joined by a line.
       { id: 'pipeline', label: 'Pipeline', icon: 'M5 6h.01M12 12h.01M19 18h.01M5 6c4 0 3 6 7 6s3 6 7 6' },
     ],

@@ -51,6 +51,15 @@ const DriftView = defineAsyncComponent({
   timeout: 30000,
 })
 
+// The LLM view draws ECharts charts too, so it is downloaded only when first opened.
+const LLMView = defineAsyncComponent({
+  loader: () => import('@/components/LLMView.vue'),
+  loadingComponent: ChartSkeleton,
+  errorComponent: ChartLoadError,
+  delay: 0,
+  timeout: 30000,
+})
+
 // Exhibition mode is the full-screen view for the hall screen; it draws its own page and the
 // sidebar and top bar are not shown. It also has ECharts, so it is downloaded only when opened.
 // While its code downloads, or if the download fails, the same dark full-screen frame is shown with
@@ -101,11 +110,11 @@ const ExhibitionView = defineAsyncComponent({
   timeout: 30000,
 })
 
-const TABS = ['overview', 'projects', 'resources', 'anomaly', 'incidents', 'remediation', 'chat', 'evaluation', 'drift', 'pipeline', 'model', 'settings', 'exhibition'] as const
+const TABS = ['overview', 'projects', 'resources', 'anomaly', 'incidents', 'remediation', 'chat', 'evaluation', 'drift', 'llm', 'pipeline', 'model', 'settings', 'exhibition'] as const
 type Tab = typeof TABS[number]
-const TITLES: Record<Tab, string> = { overview: 'Overview', projects: 'Projects', resources: 'Resources', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', evaluation: 'Evaluation', drift: 'Drift', pipeline: 'Pipeline', model: 'Model', settings: 'Settings', exhibition: 'Exhibition mode' }
+const TITLES: Record<Tab, string> = { overview: 'Overview', projects: 'Projects', resources: 'Resources', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', evaluation: 'Evaluation', drift: 'Drift', llm: 'LLM', pipeline: 'Pipeline', model: 'Model', settings: 'Settings', exhibition: 'Exhibition mode' }
 // Breadcrumb group, the same grouping as the sidebar.
-const GROUPS: Record<Tab, string> = { overview: 'Monitoring', projects: 'Monitoring', resources: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', evaluation: 'Results', drift: 'Results', pipeline: 'Results', model: 'System', settings: 'System', exhibition: 'Results' }
+const GROUPS: Record<Tab, string> = { overview: 'Monitoring', projects: 'Monitoring', resources: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', evaluation: 'Results', drift: 'Results', llm: 'Results', pipeline: 'Results', model: 'System', settings: 'System', exhibition: 'Results' }
 
 // The hash is the view name, optionally followed by "?" and the view's own state, for example
 // #evaluation?run=2026-11-11T04:30:00Z. The view is read from the part before the "?".
@@ -232,6 +241,7 @@ function openIncident(start: number) {
         <EvaluationView v-else-if="tab === 'evaluation'" v-model:query="viewQuery" @refreshed="onViewRefreshed" />
         <ModelView v-else-if="tab === 'model'" @refreshed="onViewRefreshed" @champion="championVersion = $event" />
         <DriftView v-else-if="tab === 'drift'" @refreshed="onViewRefreshed" />
+        <LLMView v-else-if="tab === 'llm'" @refreshed="onViewRefreshed" />
         <PipelineView v-else-if="tab === 'pipeline'" v-model:query="viewQuery" @refreshed="onViewRefreshed" />
         <SettingsView v-else-if="tab === 'settings'" v-model:query="viewQuery" @refreshed="onViewRefreshed" />
         <IncidentsView

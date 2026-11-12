@@ -687,3 +687,84 @@ export function toSettingsLogRow(v: unknown): SettingsLogRow {
     detail: str(r.detail),
   }
 }
+
+// GET /api/llm?days=1|7|30 (dashboard/server/llm.js), read from the call log in PostgreSQL. Times are ms,
+// durations in ms unless the name says _s. A rate is a fraction from 0 to 1, or null when there is nothing to
+// divide. No prompt, answer or user id is part of it.
+export interface LlmExplanationDay {
+  // Start of the UTC day.
+  day: number
+  count: number
+  llm: number
+  template: number
+  firstTry: number
+  medianMs: number | null
+  p95Ms: number | null
+}
+
+export interface LlmChatDay {
+  day: number
+  replies: number
+  llm: number
+  fallback: number
+  checked: number
+  passed: number
+  checkRate: number | null
+  medianReplyS: number | null
+  medianTokS: number | null
+}
+
+export interface LlmModelCount { model: string | null, count: number }
+
+export interface LlmRecentCall {
+  time: number | null
+  trace: 'explanation' | 'chat'
+  model: string | null
+  latencyMs: number | null
+  tokens: number | null
+  // llm or template for an explanation.
+  source: string | null
+  // llm or fallback for a chat reply.
+  kind: string | null
+  attempts: number | null
+  // Chat calls only: whether the answer passed the fact check.
+  checkPassed: boolean | null
+  // Why the explanation was rejected (last attempt), when it was.
+  rejected: string | null
+}
+
+export interface LlmResponse {
+  days: number
+  // Start of the first UTC day and end of the last, in ms.
+  from: number
+  to: number
+  explanations: {
+    total: number
+    llm: number
+    template: number
+    firstTry: number
+    firstTryRate: number | null
+    templateRate: number | null
+    medianMs: number | null
+    p95Ms: number | null
+    medianTokens: number | null
+    attempts: { attempts: number, count: number }[]
+    rejections: { reason: string, count: number }[]
+    models: LlmModelCount[]
+    daily: LlmExplanationDay[]
+  }
+  chat: {
+    replies: number
+    llm: number
+    fallback: number
+    checked: number
+    passed: number
+    checkRate: number | null
+    medianReplyS: number | null
+    medianTokS: number | null
+    kinds: { kind: string, count: number }[]
+    models: LlmModelCount[]
+    daily: LlmChatDay[]
+  }
+  recent: LlmRecentCall[]
+}

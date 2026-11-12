@@ -18,6 +18,8 @@ const { createModel } = require("./model");
 const { createDeployments, DAYS: DEPLOYMENT_DAYS } = require("./deployments");
 const { createProjects } = require("./projects");
 const { createChatRouter } = require("./routes/chat");
+const { createChatLog, createPool } = require("./chat/log");
+const { loadLlm, DAYS: LLM_DAYS } = require("./llm");
 
 // "node must be main or old", from the active server keys.
 function nodeMessage(keys) {
@@ -61,7 +63,8 @@ function securityHeaders(https) {
 // Trusts no proxy; used when no trusted set is passed.
 const TRUST_NOBODY = { has: () => false };
 
-// deps: { db, query, influxUrl, config, trusted, now, log, oidc, prometheus, mlflow, registryPrometheus }
+// deps: { db, query, influxUrl, config, trusted, now, log, oidc, prometheus, mlflow, registryPrometheus, llmPool }
+// llmPool: a pg pool for the langfuse database; tests pass a fake or null. Defaults to LANGFUSE_DB_NAME and DATABASE_URL.
 // prometheus: a client from prometheus.js; tests pass a stub. Defaults to PROMETHEUS_URL.
 // resourcesPrometheus: the same for /api/resources, which has its own allow list.
 // registryPrometheus: the same for the settings routes (checks and container names).
@@ -179,8 +182,16 @@ function createApp(deps) {
     }
   });
 
+  // One pool for the langfuse call log, shared by the chat route (which writes to it) and the LLM view
+  // (which reads it). Tests pass deps.llmPool or config.llmPool (a fake, or null for "not configured",
+  // like config.chat). Null when the database settings are missing.
+  let llmPool = deps.llmPool !== undefined ? deps.llmPool : config.llmPool;
+  if (llmPool === undefined) llmPool = createPool(process.env);
+
   // Chat assistant (6B-3). config.chat lets tests pass fake clients.
-  app.use("/api/chat", createChatRouter({ query, now, appOrigin: config.appOrigin, ...config.chat }));
+  const chatDeps = { query, now, appOrigin: config.appOrigin, ...config.chat };
+  if (!chatDeps.chatLog) chatDeps.chatLog = createChatLog({ pool: llmPool });
+  app.use("/api/chat", createChatRouter(chatDeps));
 
   app.get("/api/incidents", async (req, res) => {
     const hours = hoursParam(req, res);
@@ -340,6 +351,22 @@ function createApp(deps) {
       res.json(await loadDrift(query, days, now()));
     } catch (err) {
       res.status(502).json({ error: "influxdb unreachable" });
+    }
+  });
+
+  // LLM view, read from the call log. days must be exactly one of the fixed values; anything else is a 400
+  // and no query is sent. No prompt, answer or user id is ever selected (see llm.js).
+  app.get("/api/llm", async (req, res) => {
+    const raw = req.query.days === undefined ? "7" : req.query.days;
+    const days = typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : NaN;
+    if (!LLM_DAYS.includes(days)) {
+      return res.status(400).json({ error: `days must be one of ${LLM_DAYS.join(", ")}` });
+    }
+    if (!llmPool) return res.status(503).json({ error: "LLM logging is not configured" });
+    try {
+      res.json(await loadLlm(llmPool, days, now()));
+    } catch (err) {
+      res.status(502).json({ error: "the call log is unreachable" });
     }
   });
 
