@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS project_containers (
 -- project per server only while its link is not released. Databases made before this change had
 -- UNIQUE (server_key, container_name); it is dropped once, only if it exists.
 ALTER TABLE project_containers ADD COLUMN IF NOT EXISTS released_at timestamptz;
-DO $
+DO $$
 DECLARE c record;
 BEGIN
   FOR c IN
@@ -69,7 +69,7 @@ BEGIN
     EXECUTE format('ALTER TABLE project_containers DROP CONSTRAINT %I', c.conname);
   END LOOP;
 END
-$;
+$$;
 CREATE UNIQUE INDEX IF NOT EXISTS project_containers_live_idx
   ON project_containers (server_key, container_name) WHERE released_at IS NULL;
 CREATE TABLE IF NOT EXISTS settings_log (
