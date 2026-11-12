@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ProjectContainer, ProjectRow, ProjectStatus, StripState } from '@/types'
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { Skeleton } from '@/components/ui/skeleton'
 import { api, usePoll } from '@/composables/useApi'
 import { clockTime, shortDate } from '@/lib/format'
@@ -157,14 +157,53 @@ function cell(state: StripState): StripState {
 function cellY(state: StripState): number {
   return (14 - CELL_HEIGHT[cell(state)]) / 2
 }
+// When the strip column gets narrow, pairs of cells are merged so no drawn cell is under 3 px:
+// 96 cells of 15 minutes, then 48 of 30 minutes, then 24 of 1 hour. Each cell takes 4 units of the
+// strip and is drawn 3 units wide. All rows share the column, so its header is measured once.
+const MIN_CELL_PX = 3
+const MERGES = [1, 2, 4] as const
+type Merge = typeof MERGES[number]
+const MERGE_LABEL: Record<Merge, string> = { 1: '15 minutes', 2: '30 minutes', 4: '1 hour' }
+// A merged cell shows its most important state.
+const RANK: StripState[] = ['down', 'incident', 'deploy', 'restart', 'up', 'nodata']
+
+const stripHead = ref<HTMLElement | null>(null)
+const stripWidth = ref<number | null>(null)
+let observer: ResizeObserver | null = null
+watch(stripHead, (el) => {
+  observer?.disconnect()
+  observer = null
+  if (!el || typeof ResizeObserver === 'undefined') return
+  observer = new ResizeObserver(() => { stripWidth.value = el.getBoundingClientRect().width })
+  observer.observe(el)
+})
+onUnmounted(() => observer?.disconnect())
+
+// Until the column is measured, the full 96 cells are drawn.
+const merge = computed<Merge>(() => {
+  const w = stripWidth.value
+  if (!w) return 1
+  return MERGES.find(m => (w / (96 / m)) * 0.75 >= MIN_CELL_PX) ?? 4
+})
+function mergedStrip(p: ProjectRow): StripState[] {
+  const m = merge.value
+  if (m === 1) return p.strip
+  const out: StripState[] = []
+  for (let i = 0; i < p.strip.length; i += m) {
+    const group = p.strip.slice(i, i + m).map(cell)
+    out.push(RANK.find(s => group.includes(s)) ?? 'nodata')
+  }
+  return out
+}
 function stripLabel(p: ProjectRow): string {
-  const count = (s: StripState) => p.strip.filter(c => c === s).length
+  const cells = mergedStrip(p)
+  const size = MERGE_LABEL[merge.value]
   const parts: string[] = []
   for (const s of ['incident', 'down', 'deploy', 'restart', 'nodata'] as const) {
-    const n = count(s)
-    if (n) parts.push(`${n} ${CELL_NAME[s]} ${n === 1 ? 'period' : 'periods'} of 15 minutes`)
+    const n = cells.filter(c => c === s).length
+    if (n) parts.push(`${n} ${CELL_NAME[s]} ${n === 1 ? 'period' : 'periods'}`)
   }
-  return `${p.name}, last 24 hours: ${parts.length ? parts.join(', ') : 'up the whole time'}`
+  return `${p.name}, last 24 hours in cells of ${size}: ${parts.length ? parts.join(', ') : 'up the whole time'}`
 }
 
 const LEGEND: { state: StripState, label: string }[] = [
@@ -296,7 +335,7 @@ const GRID = 'grid grid-cols-[minmax(0,1.3fr)_120px_minmax(0,1fr)_minmax(0,1.2fr
         <div class="relative max-md:overflow-x-auto">
           <div class="max-md:min-w-[640px]">
             <div :class="GRID" class="bg-chip px-4 py-2 text-xs font-medium text-muted-foreground">
-              <span>Project</span><span>Status</span><span>Last deploy</span><span>Last 24 hours</span>
+              <span>Project</span><span>Status</span><span>Last deploy</span><span ref="stripHead">Last 24 hours</span>
             </div>
             <button
               v-for="p in projects"
@@ -323,9 +362,9 @@ const GRID = 'grid grid-cols-[minmax(0,1.3fr)_120px_minmax(0,1fr)_minmax(0,1.2fr
                 </template>
                 <span v-else class="text-muted-foreground">No deploy recorded</span>
               </span>
-              <svg viewBox="0 0 384 14" width="100%" preserveAspectRatio="none" class="block h-3.5" role="img" :aria-label="stripLabel(p)">
+              <svg :viewBox="`0 0 ${mergedStrip(p).length * 4} 14`" width="100%" preserveAspectRatio="none" class="block h-3.5" role="img" :aria-label="stripLabel(p)">
                 <rect
-                  v-for="(state, i) in p.strip"
+                  v-for="(state, i) in mergedStrip(p)"
                   :key="i"
                   :x="i * 4"
                   :y="cellY(state)"
@@ -346,7 +385,7 @@ const GRID = 'grid grid-cols-[minmax(0,1.3fr)_120px_minmax(0,1fr)_minmax(0,1.2fr
             {{ l.label }}
           </li>
         </ul>
-        <p class="border-t border-border px-4 py-2.5 text-xs text-muted-foreground">Each mark is 15 minutes. Times are local{{ zoneSuffix }}.</p>
+        <p class="border-t border-border px-4 py-2.5 text-xs text-muted-foreground">Each mark is {{ MERGE_LABEL[merge] }}. Times are local{{ zoneSuffix }}.</p>
       </section>
 
       <section v-if="selected" :aria-label="`${selected.name} details`" class="flex min-w-0 flex-col gap-4 rounded-xl border border-border p-4">
