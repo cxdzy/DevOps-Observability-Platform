@@ -358,7 +358,7 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin, now =
       const changes = Object.keys(patch).map((c) => `${c} ${server[c] || "none"} to ${patch[c]}`);
       return {
         result: serverView({ ...server, ...patch }),
-        log: { action: "Edited server", target: server.key, detail: changes.join("; ") },
+        log: { action: "Edited server", target: server.name, detail: changes.join("; ") },
       };
     });
     res.json(updated);
@@ -376,7 +376,7 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin, now =
       await ops.updateServer(server.key, { status: "archived" });
       return {
         result: serverView({ ...server, status: "archived" }),
-        log: { action: "Archived server", target: server.key, detail: "Stopped showing it in the dashboard. Its history and log entries are kept." },
+        log: { action: "Archived server", target: server.name, detail: "Stopped showing it in the dashboard. Its history and log entries are kept." },
       };
     });
     res.json(archived);
@@ -420,7 +420,7 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin, now =
       await ops.updateServer(row.key, { status: "active" });
       return {
         result: serverView({ ...row, status: "active" }, { nodeUp: true, cadvisorUp: true, lastSeen: check.node.lastScrape }),
-        log: { action: "Activated server", target: row.key, detail: "Both exporters answered." },
+        log: { action: "Activated server", target: row.name, detail: "Both exporters answered." },
       };
     });
     res.json(activated);
@@ -513,7 +513,7 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin, now =
         log: {
           action: "Added project",
           target: name,
-          detail: `Server ${server.key}, containers ${row.containers.join(", ")}${repoUrl ? `, repository ${repoUrl}` : ""}.`,
+          detail: `Server ${server.name}, containers ${row.containers.join(", ")}${repoUrl ? `, repository ${repoUrl}` : ""}.`,
         },
       };
     });

@@ -32,6 +32,26 @@ async function load() {
 }
 const { refresh } = usePoll(load, 30000)
 
+// Server key to name, archived servers included. Older rows were written with the key ("Server old");
+// they are shown with the name ("Server staging"). Stored rows are never changed. Read once: names do
+// not change, and without the list the rows are shown as stored.
+const serverNames = ref(new Map<string, string>())
+api.get<{ key: string, name: string }[]>('/api/settings/servers').then((res) => {
+  if (!Array.isArray(res.data)) return
+  serverNames.value = new Map(res.data.filter(s => s && s.key && s.name && s.key !== s.name).map(s => [s.key, s.name]))
+}).catch(() => {})
+
+function nameOf(key: string): string {
+  return serverNames.value.get(key) ?? key
+}
+// The target of a server action is a server; in a detail, "Server <key>" and "server <key>" name one.
+function shownTarget(r: SettingsLogRow): string {
+  return /server/i.test(r.action) ? nameOf(r.target) : r.target
+}
+function shownDetail(detail: string): string {
+  return detail.replace(/\b([Ss]erver) ([a-z0-9-]+)\b/g, (whole, word: string, key: string) => (serverNames.value.has(key) ? `${word} ${nameOf(key)}` : whole))
+}
+
 function showMore() {
   limit.value = 200
   loading.value = true
@@ -91,8 +111,8 @@ const canShowMore = computed(() => limit.value === 50 && rows.value.length >= 50
             <span class="truncate" :title="r.userEmail"><span aria-hidden="true">{{ who(r.userEmail) }}</span><span class="sr-only">{{ r.userEmail.toLowerCase() === 'system' ? 'System' : r.userEmail }}</span></span>
             <span class="w-max rounded-full px-2.5 py-0.5 text-xs font-semibold" :class="kindClass(r.action)">{{ r.action }}</span>
             <span class="min-w-0 text-[13px] text-chipfg">
-              <span v-if="r.target" class="font-mono font-medium text-foreground">{{ r.target }}</span>
-              <span v-if="r.target && r.detail">: </span>{{ r.detail }}
+              <span v-if="r.target" class="font-mono font-medium text-foreground">{{ shownTarget(r) }}</span>
+              <span v-if="r.target && r.detail">: </span>{{ shownDetail(r.detail) }}
             </span>
           </div>
         </template>

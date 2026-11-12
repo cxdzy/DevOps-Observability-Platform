@@ -291,8 +291,10 @@ const GRID = 'grid grid-cols-[minmax(0,1.3fr)_120px_minmax(0,1fr)_minmax(0,1.2fr
     <div v-else class="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
       <section aria-labelledby="projects-list-title" class="min-w-0 overflow-hidden rounded-xl border border-border">
         <h2 id="projects-list-title" class="px-4 py-3 text-[15px] font-semibold">All projects</h2>
-        <div class="relative overflow-x-auto">
-          <div class="min-w-[640px]">
+        <!-- Below 768 px the rows keep 640 px and the card scrolls sideways. From 768 px up the columns
+             shrink to the card instead, and the strip's cells get narrower, so the whole 24 h stays in view. -->
+        <div class="relative max-md:overflow-x-auto">
+          <div class="max-md:min-w-[640px]">
             <div :class="GRID" class="bg-chip px-4 py-2 text-xs font-medium text-muted-foreground">
               <span>Project</span><span>Status</span><span>Last deploy</span><span>Last 24 hours</span>
             </div>

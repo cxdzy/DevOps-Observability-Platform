@@ -11,7 +11,7 @@ import { useWheelScrollsPage } from '@/components/ResourceChart.vue'
 import { Skeleton } from '@/components/ui/skeleton'
 import { api, usePoll } from '@/composables/useApi'
 import { MONO, useChartTheme, withAlpha } from '@/lib/chartTheme'
-import { localDateTime } from '@/lib/format'
+import { clockTime, shortDate } from '@/lib/format'
 
 use([BarChart, LineChart, GridComponent, TooltipComponent, DataZoomInsideComponent, DataZoomSliderComponent, CanvasRenderer])
 
@@ -593,13 +593,13 @@ const maxRejections = computed(() => Math.max(1, ...(ex.value?.rejections ?? [])
 
     <section aria-labelledby="llm-recent-title" class="min-w-0 rounded-xl border border-border p-4">
       <h2 id="llm-recent-title" class="text-[15px] font-semibold">Recent calls</h2>
-      <p class="mb-2 text-xs text-muted-foreground">The newest {{ recent.length }} in this range. Times are local{{ zone ? ` (${zone})` : '' }}. Prompts and answers are not shown.</p>
+      <p class="mb-2 text-xs text-muted-foreground">The newest {{ recent.length }} in this range, in local time. Prompts and answers are not shown.</p>
       <p v-if="recent.length === 0" class="py-4 text-[13px] text-muted-foreground">No call in this range.</p>
       <div v-else class="overflow-x-auto">
         <table class="w-full min-w-[640px] text-left text-[13px]">
           <thead>
             <tr class="border-b border-border text-xs text-muted-foreground">
-              <th scope="col" class="py-1.5 pr-3 font-medium">Time</th>
+              <th scope="col" class="py-1.5 pr-3 font-medium">Time{{ zone ? ` (${zone})` : '' }}</th>
               <th scope="col" class="py-1.5 pr-3 font-medium">Call</th>
               <th scope="col" class="py-1.5 pr-3 font-medium">Model</th>
               <th scope="col" class="py-1.5 pr-3 text-right font-medium">Tries</th>
@@ -610,7 +610,7 @@ const maxRejections = computed(() => Math.max(1, ...(ex.value?.rejections ?? [])
           </thead>
           <tbody class="divide-y divide-border">
             <tr v-for="(c, i) in recent" :key="`${c.time}-${i}`">
-              <td class="py-1.5 pr-3 font-mono text-xs">{{ localDateTime(c.time) }}</td>
+              <td class="py-1.5 pr-3 font-mono text-xs">{{ c.time ? `${shortDate(c.time)} ${clockTime(c.time)}` : '-' }}</td>
               <td class="py-1.5 pr-3">
                 <span
                   class="rounded-md px-1.5 py-px text-[11px] font-semibold"
