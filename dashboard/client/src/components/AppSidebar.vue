@@ -20,6 +20,8 @@ const ALL_NAV = [
     label: 'Monitoring',
     items: [
       { id: 'overview', label: 'Overview', icon: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z' },
+      // A stack of layers.
+      { id: 'projects', label: 'Projects', icon: 'M12 3 3 8l9 5 9-5-9-5zM3 13l9 5 9-5M3 17.5l9 5 9-5' },
       // Two stacked servers.
       { id: 'resources', label: 'Resources', icon: 'M4.5 4h15A1.5 1.5 0 0 1 21 5.5v4a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 9.5v-4A1.5 1.5 0 0 1 4.5 4zM4.5 13h15a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-4A1.5 1.5 0 0 1 4.5 13zM7 7.5h.01M7 16.5h.01' },
       { id: 'anomaly', label: 'Anomaly', icon: 'M3 12h4l3-8 4 16 3-8h4' },
@@ -40,6 +42,8 @@ const ALL_NAV = [
       { id: 'evaluation', label: 'Evaluation', icon: 'M4 20V10M10 20V4M16 20v-7M3 20h18M18 5l1.5 1.5L22 4' },
       // A line over a column of bars.
       { id: 'drift', label: 'Drift', icon: 'M4 20V10M10 20V6M16 20v-8M3 8l5-3 5 4 7-5' },
+      // Three steps joined by a line.
+      { id: 'pipeline', label: 'Pipeline', icon: 'M5 6h.01M12 12h.01M19 18h.01M5 6c4 0 3 6 7 6s3 6 7 6' },
     ],
   },
   {

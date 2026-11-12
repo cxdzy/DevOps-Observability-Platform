@@ -9,6 +9,7 @@ import ChatView from '@/components/ChatView.vue'
 import IncidentsView from '@/components/IncidentsView.vue'
 import ModelView from '@/components/ModelView.vue'
 import OverviewView from '@/components/OverviewView.vue'
+import ProjectsView from '@/components/ProjectsView.vue'
 import RemediationView from '@/components/RemediationView.vue'
 import ResourcesView from '@/components/ResourcesView.vue'
 import { useRangeData } from '@/composables/useRangeData'
@@ -16,6 +17,15 @@ import { useRangeData } from '@/composables/useRangeData'
 // The Evaluation view is downloaded only when it is first opened, so it does not grow the main bundle.
 const EvaluationView = defineAsyncComponent({
   loader: () => import('@/components/EvaluationView.vue'),
+  loadingComponent: ChartSkeleton,
+  errorComponent: ChartLoadError,
+  delay: 0,
+  timeout: 30000,
+})
+
+// Pipeline draws an ECharts chart, so the whole view is downloaded only when it is first opened.
+const PipelineView = defineAsyncComponent({
+  loader: () => import('@/components/PipelineView.vue'),
   loadingComponent: ChartSkeleton,
   errorComponent: ChartLoadError,
   delay: 0,
@@ -91,11 +101,11 @@ const ExhibitionView = defineAsyncComponent({
   timeout: 30000,
 })
 
-const TABS = ['overview', 'resources', 'anomaly', 'incidents', 'remediation', 'chat', 'evaluation', 'drift', 'model', 'settings', 'exhibition'] as const
+const TABS = ['overview', 'projects', 'resources', 'anomaly', 'incidents', 'remediation', 'chat', 'evaluation', 'drift', 'pipeline', 'model', 'settings', 'exhibition'] as const
 type Tab = typeof TABS[number]
-const TITLES: Record<Tab, string> = { overview: 'Overview', resources: 'Resources', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', evaluation: 'Evaluation', drift: 'Drift', model: 'Model', settings: 'Settings', exhibition: 'Exhibition mode' }
+const TITLES: Record<Tab, string> = { overview: 'Overview', projects: 'Projects', resources: 'Resources', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', evaluation: 'Evaluation', drift: 'Drift', pipeline: 'Pipeline', model: 'Model', settings: 'Settings', exhibition: 'Exhibition mode' }
 // Breadcrumb group, the same grouping as the sidebar.
-const GROUPS: Record<Tab, string> = { overview: 'Monitoring', resources: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', evaluation: 'Results', drift: 'Results', model: 'System', settings: 'System', exhibition: 'Results' }
+const GROUPS: Record<Tab, string> = { overview: 'Monitoring', projects: 'Monitoring', resources: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', evaluation: 'Results', drift: 'Results', pipeline: 'Results', model: 'System', settings: 'System', exhibition: 'Results' }
 
 // The hash is the view name, optionally followed by "?" and the view's own state, for example
 // #evaluation?run=2026-11-11T04:30:00Z. The view is read from the part before the "?".
@@ -203,6 +213,7 @@ function openIncident(start: number) {
       <div class="flex flex-col gap-5 p-4 md:p-6">
         <!-- v-if, so a hidden view stops polling and the chart is not drawn in a hidden box. -->
         <OverviewView v-if="tab === 'overview'" @refreshed="onViewRefreshed" />
+        <ProjectsView v-else-if="tab === 'projects'" v-model:query="viewQuery" @refreshed="onViewRefreshed" />
         <ResourcesView v-else-if="tab === 'resources'" v-model:query="viewQuery" @refreshed="onViewRefreshed" />
         <AnomalyView
           v-else-if="tab === 'anomaly'"
@@ -221,6 +232,7 @@ function openIncident(start: number) {
         <EvaluationView v-else-if="tab === 'evaluation'" v-model:query="viewQuery" @refreshed="onViewRefreshed" />
         <ModelView v-else-if="tab === 'model'" @refreshed="onViewRefreshed" @champion="championVersion = $event" />
         <DriftView v-else-if="tab === 'drift'" @refreshed="onViewRefreshed" />
+        <PipelineView v-else-if="tab === 'pipeline'" v-model:query="viewQuery" @refreshed="onViewRefreshed" />
         <SettingsView v-else-if="tab === 'settings'" v-model:query="viewQuery" @refreshed="onViewRefreshed" />
         <IncidentsView
           v-else

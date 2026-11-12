@@ -498,9 +498,85 @@ export interface SettingsProject {
   repoUrl: string | null
   deploySource: DeploySource
   automation: Automation
+  // Who rolls the project back: n8n after approval, the project's own pipeline, or nobody.
+  rollback: RollbackSetting
   builtin: boolean
   status: 'active' | 'archived'
   containers: string[]
+}
+
+export type RollbackSetting = 'n8n' | 'own_pipeline' | 'none'
+
+// GET /api/projects (any signed-in user). One row per active project. A cell of the strip is 15 minutes.
+export type ProjectStatus = 'healthy' | 'incident' | 'partial' | 'down' | 'no_data'
+export type StripState = 'up' | 'deploy' | 'restart' | 'incident' | 'down' | 'nodata'
+export interface ProjectContainer {
+  name: string
+  up: boolean | null
+  restarts24h: number | null
+  memBytes: number | null
+  limitBytes: number | null
+}
+// at is a time in milliseconds or ISO text. ref is the commit sha for ci and the image for image.
+export interface ProjectDeploy {
+  at: number | string
+  source: DeploySource
+  ref: string
+}
+// ready is true only for mode n8n when the latest deploy is 15 minutes old or less.
+export interface ProjectRollback {
+  mode: string
+  text: string
+  ready?: boolean
+}
+export interface ProjectRow {
+  key: string
+  name: string
+  server: { key: string, name: string }
+  containers: ProjectContainer[]
+  status: ProjectStatus
+  watchedByModel: boolean
+  automation: string
+  deploySource: DeploySource
+  lastDeploy: ProjectDeploy | null
+  rollback: ProjectRollback
+  strip: StripState[]
+}
+
+// GET /api/deployments?project=<key>&days=7|30|90. latest is the newest run or null.
+export interface DeploymentRun {
+  at: number | string
+  source: DeploySource
+  ref: string
+  previousRef: string | null
+  detail: string | null
+  // The GitHub Actions run id (pipeline_run_id) and branch of a ci run, null for image runs. When
+  // runId is missing or not all digits the run gets no Actions link. For ci runs previousRef is
+  // the previous image.
+  runId?: string | null
+  branch?: string | null
+}
+// week is the Monday as YYYY-MM-DD in UTC; empty weeks are included.
+export interface DeploymentWeek {
+  week: number | string
+  count: number
+}
+export interface DeploymentsResponse {
+  project: string
+  runs: DeploymentRun[]
+  weeks: DeploymentWeek[]
+  latest: DeploymentRun | null
+  rollback: ProjectRollback
+}
+
+// A time that arrives as milliseconds or as ISO text, in milliseconds, or null.
+export function toMs(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  if (typeof v === 'string') {
+    const ms = Date.parse(v)
+    return Number.isNaN(ms) ? null : ms
+  }
+  return null
 }
 
 // GET /api/settings/log?limit=50|200. Newest first. The server sends { id, at (ISO text),
@@ -515,7 +591,7 @@ export interface SettingsLogRow {
 }
 
 // The error body of every failed Settings write. field names the form field it belongs to.
-export type ErrorField = 'name' | 'role' | 'location' | 'address' | 'repo_url' | 'containers' | 'server_key'
+export type ErrorField = 'name' | 'role' | 'location' | 'address' | 'repo_url' | 'containers' | 'server_key' | 'rollback'
 export interface ApiErrorInfo {
   message: string
   field: ErrorField | null
@@ -579,6 +655,7 @@ export function toSettingsProject(v: unknown): SettingsProject {
   const containers = pick(r, 'containers', 'container_names')
   const source = str(pick(r, 'deploySource', 'deploy_source'))
   const automation = str(r.automation)
+  const rollback = str(r.rollback)
   return {
     key: str(r.key),
     name: str(r.name, str(r.key)),
@@ -587,6 +664,9 @@ export function toSettingsProject(v: unknown): SettingsProject {
     repoUrl: strOrNull(pick(r, 'repo_url', 'repoUrl')),
     deploySource: source === 'ci' ? 'ci' : 'image',
     automation: automation === 'approval' ? 'approval' : 'monitored',
+    // An answer without the field is read as the server's default: n8n for the project with
+    // approval, otherwise no rollback (never a pipeline the server did not report).
+    rollback: rollback === 'n8n' || rollback === 'own_pipeline' || rollback === 'none' ? rollback : automation === 'approval' ? 'n8n' : 'none',
     builtin: r.builtin === true,
     status: r.status === 'archived' ? 'archived' : 'active',
     containers: Array.isArray(containers)

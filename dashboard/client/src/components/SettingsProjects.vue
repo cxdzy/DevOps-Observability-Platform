@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ApiErrorInfo, ErrorField, PickableContainer, ServerBrief, SettingsProject } from '@/types'
+import type { ApiErrorInfo, ErrorField, PickableContainer, RollbackSetting, ServerBrief, SettingsProject } from '@/types'
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { Skeleton } from '@/components/ui/skeleton'
 import { api, usePoll } from '@/composables/useApi'
@@ -185,6 +185,34 @@ async function archive() {
   }
 }
 
+// The Rollback choice of a project that is not built in: its own pipeline, or none. Saved at once.
+const rollbackSaving = ref<string | null>(null)
+const rollbackError = ref<{ key: string, message: string } | null>(null)
+function rollbackText(mode: RollbackSetting): string {
+  return mode === 'n8n' ? 'By n8n, after approval on Telegram' : mode === 'none' ? 'None' : 'Handled by its own pipeline'
+}
+async function setRollback(p: SettingsProject, select: HTMLSelectElement) {
+  const value = select.value
+  if ((value !== 'own_pipeline' && value !== 'none') || value === p.rollback) {
+    select.value = p.rollback
+    return
+  }
+  rollbackSaving.value = p.key
+  rollbackError.value = null
+  try {
+    await api.patch(`/api/settings/projects/${encodeURIComponent(p.key)}`, { rollback: value })
+    p.rollback = value
+  } catch (err) {
+    rollbackError.value = { key: p.key, message: apiError(err).message }
+    // The bound value has not changed, so the list would keep showing the refused choice.
+    select.value = p.rollback
+  } finally {
+    rollbackSaving.value = null
+    // A saved or refused change is read back, so the choice shown is what the server holds.
+    refresh()
+  }
+}
+
 function containerSub(c: PickableContainer): string {
   return c.available ? 'Running, not in a project' : (c.reason ?? 'Not available')
 }
@@ -239,7 +267,20 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
             class="w-fit max-w-full rounded-[10px] px-2.5 py-0.5 text-xs leading-snug font-semibold"
             :class="p.automation === 'approval' ? 'bg-okbg text-ok' : 'border border-dashed border-input text-chipfg'"
           >{{ p.automation === 'approval' ? 'Restart and rollback with approval' : 'Monitored only' }}</span>
-          <span class="text-[13px] text-chipfg">{{ p.automation === 'approval' ? 'By n8n, after approval on Telegram' : 'Handled by its own pipeline' }}</span>
+          <span v-if="p.builtin" class="text-[13px] text-chipfg">{{ rollbackText(p.rollback) }}</span>
+          <span v-else class="flex min-w-0 flex-col gap-1">
+            <select
+              class="min-h-8 w-full max-w-[260px] rounded-lg border border-input bg-card px-2 text-[13px] text-foreground disabled:opacity-50 pointer-coarse:min-h-11"
+              :aria-label="`Rollback for ${p.name}`"
+              :value="p.rollback"
+              :disabled="rollbackSaving === p.key"
+              @change="setRollback(p, $event.target as HTMLSelectElement)"
+            >
+              <option value="own_pipeline">Handled by its own pipeline</option>
+              <option value="none">None</option>
+            </select>
+            <span v-if="rollbackError && rollbackError.key === p.key" class="text-xs text-destructive" role="alert">{{ rollbackError.message }}</span>
+          </span>
           <span class="flex justify-end">
             <button v-if="!p.builtin" type="button" class="min-h-8 rounded-md px-2 text-xs text-muted-foreground hover:bg-chip hover:text-foreground pointer-coarse:min-h-11" :aria-label="`Archive ${p.name}`" @click="askArchive(p)">Archive</button>
           </span>
