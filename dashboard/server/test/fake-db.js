@@ -17,6 +17,9 @@ function seedRegistry() {
     projects: SEED_PROJECTS.map((p) => ({ ...p, containers: [...p.containers], released: [], created_at: at, updated_at: at })),
     log: [{ id: 1, at, user_email: SEED_USER, action: "Imported", target: "registry", detail: "Built-in records added: server main, server old, project sample-service" }],
     nextLogId: 2,
+    containerImages: [],
+    detected: [],
+    nextDetectedId: 1,
   };
 }
 
@@ -26,6 +29,9 @@ function cloneRegistry(r) {
     projects: r.projects.map((p) => ({ ...p, containers: [...p.containers], released: p.released.map((x) => ({ ...x })) })),
     log: r.log.map((l) => ({ ...l })),
     nextLogId: r.nextLogId,
+    containerImages: r.containerImages.map((c) => ({ ...c })),
+    detected: r.detected.map((d) => ({ ...d })),
+    nextDetectedId: r.nextDetectedId,
   };
 }
 
@@ -41,7 +47,7 @@ function checkContainers(r, projectKey, serverKey, names) {
 // The same operations as registryOps in db.js, with the same unique rules as the tables.
 function registryOps(r, now) {
   const SERVER_EDITABLE = ["role", "location", "address", "status"];
-  const PROJECT_EDITABLE = ["repo_url", "status"];
+  const PROJECT_EDITABLE = ["repo_url", "status", "rollback"];
   return {
     async listServers() {
       return r.servers.map((s) => ({ ...s }));
@@ -71,7 +77,7 @@ function registryOps(r, now) {
       if (r.projects.some((x) => x.key === p.key || x.name === p.name)) throw uniqueViolation("projects_pkey");
       checkContainers(r, p.key, p.server_key, p.containers || []);
       const { containers, ...row } = p;
-      r.projects.push({ builtin: false, ...row, containers: [...(containers || [])], released: [], created_at: now(), updated_at: now() });
+      r.projects.push({ builtin: false, rollback: "none", ...row, containers: [...(containers || [])], released: [], created_at: now(), updated_at: now() });
     },
     async updateProject(key, patch) {
       const p = r.projects.find((x) => x.key === key);
@@ -96,6 +102,33 @@ function registryOps(r, now) {
       const gone = p.released.map((x) => ({ project_key: p.key, ...x }));
       return [...live, ...gone].sort((a, b) => a.container_name.localeCompare(b.container_name));
     },
+    // The image watcher's tables. Detections can only be inserted, like the real table.
+    async listContainerImages() {
+      return r.containerImages.map((c) => ({ ...c }));
+    },
+    async upsertContainerImage({ serverKey, containerName, image, seenAt }) {
+      const row = r.containerImages.find((c) => c.server_key === serverKey && c.container_name === containerName);
+      if (row) Object.assign(row, { image, seen_at: seenAt || now() });
+      else r.containerImages.push({ server_key: serverKey, container_name: containerName, image, seen_at: seenAt || now() });
+    },
+    async insertDetectedDeployment({ projectKey, serverKey, containerName, oldImage, newImage, detectedAt }) {
+      r.detected.push({
+        id: r.nextDetectedId++,
+        project_key: projectKey,
+        server_key: serverKey,
+        container_name: containerName,
+        old_image: oldImage,
+        new_image: newImage,
+        detected_at: detectedAt || now(),
+      });
+    },
+    async listDetectedDeployments(projectKey, since, limit) {
+      const cutoff = since ? new Date(since).getTime() : null;
+      const rows = r.detected
+        .filter((d) => d.project_key === projectKey && (cutoff === null || new Date(d.detected_at).getTime() > cutoff))
+        .sort((a, b) => new Date(b.detected_at) - new Date(a.detected_at) || b.id - a.id);
+      return (limit ? rows.slice(0, limit) : rows).map((d) => ({ ...d }));
+    },
     async insertLog({ userEmail, action, target, detail }) {
       r.log.push({ id: r.nextLogId++, at: now(), user_email: userEmail, action, target, detail: detail || "" });
     },
@@ -110,6 +143,7 @@ function createFakeDb() {
   const users = [];
   const sessions = new Map();
   let registry = seedRegistry();
+  let watcherBusy = false;
   const now = () => new Date();
 
   return {
@@ -128,6 +162,24 @@ function createFakeDb() {
     },
     async listLog(limit) {
       return registryOps(registry, now).listLog(limit);
+    },
+    async listDetectedDeployments(projectKey, since, limit) {
+      return registryOps(registry, now).listDetectedDeployments(projectKey, since, limit);
+    },
+    // Like the real one: a second caller while the lock is held gets { locked: false } at once. The
+    // work runs on a copy, and only the watcher's two tables are kept when it finishes without
+    // error, so a registry change committed meanwhile is not lost (the lock does not block those).
+    async withWatcherLock(fn) {
+      if (watcherBusy) return { locked: false };
+      watcherBusy = true;
+      try {
+        const copy = cloneRegistry(registry);
+        const value = await fn(registryOps(copy, now));
+        registry = { ...registry, containerImages: copy.containerImages, detected: copy.detected, nextDetectedId: copy.nextDetectedId };
+        return { locked: true, value };
+      } finally {
+        watcherBusy = false;
+      }
     },
     // Runs fn(ops) on a copy of the registry; the copy is kept only when fn finishes without error.
     async transaction(fn) {

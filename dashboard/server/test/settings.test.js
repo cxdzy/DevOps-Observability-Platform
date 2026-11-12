@@ -547,6 +547,7 @@ test("GET /api/settings/projects lists the built-in project", async (t) => {
       repo_url: null,
       deploy_source: "ci",
       automation: "approval",
+      rollback: "n8n",
       builtin: true,
       status: "active",
       containers: ["sample-service"],
@@ -684,6 +685,34 @@ test("editing a project: repository and containers, and the built-in limits", as
   assert.deepEqual(row.containers, ["sample-service"]);
   assert.equal(row.deploy_source, "ci");
   assert.equal(row.automation, "approval");
+});
+
+test("the rollback choice: none for new projects, own_pipeline or none by PATCH, n8n for the built-in only", async (t) => {
+  const s = await setup(t);
+  await addActiveServer(s.app);
+  const created = await (await s.post("/api/settings/projects", { name: "shop", server_key: "shop-node", containers: ["a"] })).json();
+  assert.equal(created.rollback, "none");
+  const own = await s.patch("/api/settings/projects/shop", { rollback: "own_pipeline" });
+  assert.equal(own.status, 200);
+  assert.equal((await own.json()).rollback, "own_pipeline");
+  const list = await (await s.get("/api/settings/projects")).json();
+  assert.equal(list.find((p) => p.key === "shop").rollback, "own_pipeline");
+  // n8n cannot be chosen, and neither can anything else outside the list.
+  for (const value of ["n8n", "auto", "", null, 1]) {
+    const res = await s.patch("/api/settings/projects/shop", { rollback: value });
+    assert.equal(res.status, 400, String(value));
+    assert.equal((await res.json()).field, "rollback");
+  }
+  // The built-in project keeps n8n.
+  const builtin = await s.patch("/api/settings/projects/sample-service", { rollback: "none" });
+  assert.equal(builtin.status, 400);
+  assert.equal((await builtin.json()).field, "rollback");
+  assert.equal((await s.app.db.listProjects()).find((p) => p.key === "sample-service").rollback, "n8n");
+  // The change is logged.
+  const log = await (await s.get("/api/settings/log?limit=200")).json();
+  const entry = log.find((l) => l.action === "Edited project" && /rollback/.test(l.detail));
+  assert.equal(entry.target, "shop");
+  assert.match(entry.detail, /rollback none to own_pipeline/);
 });
 
 test("archiving a project: not for built-ins; it frees the containers and keeps the record", async (t) => {

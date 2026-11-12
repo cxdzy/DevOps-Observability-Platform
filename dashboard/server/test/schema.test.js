@@ -36,3 +36,16 @@ test("SCHEMA has no single $ used as a delimiter", () => {
     assert.ok(!stray.includes("$"), `line ${i + 1} has a single $: ${line}`);
   }
 });
+
+test("SCHEMA adds the rollback column, container_images and detected_deployments safely to repeat", () => {
+  assert.match(SCHEMA, /ALTER TABLE projects ADD COLUMN IF NOT EXISTS rollback text NOT NULL DEFAULT 'none'/);
+  assert.match(SCHEMA, /pg_constraint WHERE conname = 'projects_rollback_check'/);
+  assert.match(SCHEMA, /CHECK \(rollback IN \('n8n', 'own_pipeline', 'none'\)\)/);
+  assert.match(SCHEMA, /CREATE TABLE IF NOT EXISTS container_images \([^;]*PRIMARY KEY \(server_key, container_name\)/);
+  assert.match(SCHEMA, /CREATE TABLE IF NOT EXISTS detected_deployments \(\s*id bigserial PRIMARY KEY/);
+  assert.match(SCHEMA, /UPDATE projects SET rollback = 'n8n' WHERE key = 'sample-service'/);
+});
+
+test("SCHEMA never deletes from or updates detected_deployments", () => {
+  assert.ok(!/(DELETE FROM|UPDATE|TRUNCATE|DROP TABLE)\s+(IF EXISTS\s+)?detected_deployments/i.test(SCHEMA));
+});

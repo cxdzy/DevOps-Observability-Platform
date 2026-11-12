@@ -15,6 +15,8 @@ const { loadStatus } = require("./status");
 const { loadDrift, DAYS: DRIFT_DAYS } = require("./drift");
 const { loadTimeline, parseParams: parseTimelineParams } = require("./timeline");
 const { createModel } = require("./model");
+const { createDeployments, DAYS: DEPLOYMENT_DAYS } = require("./deployments");
+const { createProjects } = require("./projects");
 const { createChatRouter } = require("./routes/chat");
 
 // "node must be main or old", from the active server keys.
@@ -63,6 +65,9 @@ const TRUST_NOBODY = { has: () => false };
 // prometheus: a client from prometheus.js; tests pass a stub. Defaults to PROMETHEUS_URL.
 // resourcesPrometheus: the same for /api/resources, which has its own allow list.
 // registryPrometheus: the same for the settings routes (checks and container names).
+// watcherPrometheus: the same for the image watcher.
+// startWatcher: true or false to force the image watcher on or off. By default it runs, except in
+// a node --test process, so tests never leave a timer behind.
 // mlflow: a client from mlflow.js. Defaults to MLFLOW_URL.
 // config: { appOrigin, cookieSecure, sessionMaxAgeMs, googleClientId, googleClientSecret, clientDist, bcryptCost }
 // trusted: the resolved trusted proxy addresses (security.createTrustedProxies).
@@ -270,6 +275,39 @@ function createApp(deps) {
     }
   });
 
+  // Projects with their container state, status, last deployment, rollback and 24 hour strip.
+  const deployments = createDeployments({ db, registry, query, prometheus: deps.watcherPrometheus, now, log });
+  const projects = createProjects({ registry, resources, deployments, query, now });
+  app.get("/api/projects", async (req, res) => {
+    try {
+      res.json(await projects.load());
+    } catch (err) {
+      res.status(502).json({ error: "prometheus unreachable" });
+    }
+  });
+
+  // Deployments of one project. project must be the key of an active project and days one of the
+  // fixed values (30 when left out); anything else is a 400 and no query is sent.
+  app.get("/api/deployments", async (req, res) => {
+    await registry.load();
+    const key = req.query.project;
+    const project = typeof key === "string" ? registry.current().projects.find((p) => p.status === "active" && p.key === key) : null;
+    if (!project) return res.status(400).json({ error: "project must be the key of an active project" });
+    const raw = req.query.days === undefined ? "30" : req.query.days;
+    const days = typeof raw === "string" && /^\d+$/.test(raw) ? Number(raw) : NaN;
+    if (!DEPLOYMENT_DAYS.includes(days)) {
+      return res.status(400).json({ error: `days must be one of ${DEPLOYMENT_DAYS.join(", ")}` });
+    }
+    try {
+      res.json(await deployments.load(project, days));
+    } catch (err) {
+      res.status(502).json({ error: "deployments unavailable" });
+    }
+  });
+
+  const startWatcher = deps.startWatcher !== undefined ? Boolean(deps.startWatcher) : !process.env.NODE_TEST_CONTEXT;
+  if (startWatcher) deployments.start();
+
   app.get("/api/activity", async (req, res) => {
     try {
       res.json(await overview.activity(now()));
@@ -352,7 +390,7 @@ function createApp(deps) {
     res.status(status).json({ error: status === 500 ? "internal error" : "bad request" });
   });
 
-  return { app, auth, google };
+  return { app, auth, google, deployments, stopWatcher: deployments.stop };
 }
 
 module.exports = { createApp };

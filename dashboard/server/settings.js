@@ -15,6 +15,7 @@ const {
   addressProblem,
   repoUrlProblem,
   containersProblem,
+  rollbackProblem,
 } = require("./registry");
 
 // Image versions for the commands shown in the Add server wizard. They must match the versions
@@ -144,6 +145,7 @@ function projectView(row, serversByKey) {
     repo_url: row.repo_url || null,
     deploy_source: row.deploy_source,
     automation: row.automation,
+    rollback: row.rollback || "none",
     builtin: Boolean(row.builtin),
     status: row.status,
     containers: [...(row.containers || [])],
@@ -500,6 +502,7 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin, now =
         repo_url: repoUrl,
         deploy_source: "image",
         automation: "monitored",
+        rollback: "none",
         builtin: false,
         status: "active",
         containers: [...body.containers],
@@ -519,8 +522,12 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin, now =
 
   router.patch("/projects/:key", ...write, route(async (req, res) => {
     const body = bodyOf(req);
-    if (body.repo_url === undefined && body.containers === undefined) {
-      throw new ApiError(400, "Nothing to change. Send a repository address or a container list.");
+    if (body.repo_url === undefined && body.containers === undefined && body.rollback === undefined) {
+      throw new ApiError(400, "Nothing to change. Send a repository address, a container list or a rollback choice.");
+    }
+    if (body.rollback !== undefined) {
+      const p = rollbackProblem(body.rollback);
+      if (p) throw fail(400, p);
     }
     if (body.repo_url !== undefined) {
       const p = repoUrlProblem(body.repo_url);
@@ -541,8 +548,16 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin, now =
       if (body.containers !== undefined && project.builtin) {
         throw new ApiError(400, "The containers of a built-in project cannot be changed.", "containers");
       }
+      if (body.rollback !== undefined && project.builtin) {
+        throw new ApiError(400, "The rollback of a built-in project cannot be changed.", "rollback");
+      }
       const changes = [];
       const next = { ...project, containers: [...project.containers] };
+      if (body.rollback !== undefined) {
+        next.rollback = body.rollback;
+        await ops.updateProject(project.key, { rollback: body.rollback });
+        changes.push(`rollback ${project.rollback || "none"} to ${body.rollback}`);
+      }
       if (body.repo_url !== undefined) {
         next.repo_url = body.repo_url ? body.repo_url : null;
         await ops.updateProject(project.key, { repo_url: next.repo_url });

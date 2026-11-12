@@ -8,6 +8,9 @@ const KEY_RE = /^[a-z][a-z0-9-]{1,30}$/;
 const JOB_RE = /^[a-z][a-z0-9_-]{0,40}$/;
 const CONTAINER_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
 const ROLES = Object.freeze(["platform", "staging", "application"]);
+const ROLLBACKS = Object.freeze(["n8n", "own_pipeline", "none"]);
+// What a person may choose for a project that is not built in (n8n belongs to the built-in one).
+const ROLLBACK_CHOICES = Object.freeze(["own_pipeline", "none"]);
 const MAX_LOCATION = 60;
 const MAX_REPO_URL = 200;
 const MAX_CONTAINERS = 50;
@@ -224,6 +227,13 @@ function locationProblem(location) {
   return null;
 }
 
+function rollbackProblem(value) {
+  if (!ROLLBACK_CHOICES.includes(value)) {
+    return { error: "The rollback choice must be own_pipeline or none.", field: "rollback" };
+  }
+  return null;
+}
+
 // An IPv4 address in 100.64.0.0/10 (the Tailscale range): the first part is 100 and the second is
 // 64 to 127. Octets must be plain decimal with no leading zeros. Spaces are refused, not trimmed.
 function addressProblem(address) {
@@ -289,9 +299,12 @@ module.exports = {
   addressProblem,
   repoUrlProblem,
   containersProblem,
+  rollbackProblem,
   KEY_RE,
   CONTAINER_RE,
   ROLES,
+  ROLLBACKS,
+  ROLLBACK_CHOICES,
   REGISTRY_NODE_JOB,
   REGISTRY_CADVISOR_JOB,
   CACHE_MS,

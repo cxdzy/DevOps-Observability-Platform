@@ -72,6 +72,36 @@ END
 $$;
 CREATE UNIQUE INDEX IF NOT EXISTS project_containers_live_idx
   ON project_containers (server_key, container_name) WHERE released_at IS NULL;
+-- How a project is rolled back: by the n8n workflow, by the project's own pipeline, or not at
+-- all. Added after the first release, so it is a migration. The built-in project uses n8n.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS rollback text NOT NULL DEFAULT 'none';
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'projects_rollback_check' AND conrelid = 'projects'::regclass) THEN
+    ALTER TABLE projects ADD CONSTRAINT projects_rollback_check CHECK (rollback IN ('n8n', 'own_pipeline', 'none'));
+  END IF;
+END
+$$;
+UPDATE projects SET rollback = 'n8n' WHERE key = 'sample-service' AND builtin AND rollback <> 'n8n';
+-- The image each container ran when the image watcher last saw a change (or first saw it).
+CREATE TABLE IF NOT EXISTS container_images (
+  server_key text NOT NULL REFERENCES servers(key),
+  container_name text NOT NULL,
+  image text NOT NULL,
+  seen_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (server_key, container_name)
+);
+-- One row per image change the watcher detected. Rows are only inserted, never updated or deleted.
+CREATE TABLE IF NOT EXISTS detected_deployments (
+  id bigserial PRIMARY KEY,
+  project_key text NOT NULL REFERENCES projects(key),
+  server_key text NOT NULL REFERENCES servers(key),
+  container_name text NOT NULL,
+  old_image text NOT NULL,
+  new_image text NOT NULL,
+  detected_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS detected_deployments_project_idx ON detected_deployments (project_key, detected_at DESC);
 CREATE TABLE IF NOT EXISTS settings_log (
   id bigserial PRIMARY KEY,
   at timestamptz NOT NULL DEFAULT now(),
@@ -106,7 +136,7 @@ const SEED_SERVERS = Object.freeze([
   Object.freeze({ key: "old", name: "staging", role: "staging", location: "Hetzner, Finland", address: null, builtin: true, status: "active", node_job: "node-exporter-old", cadvisor_job: "cadvisor-old" }),
 ]);
 const SEED_PROJECTS = Object.freeze([
-  Object.freeze({ key: "sample-service", name: "sample-service", server_key: "main", repo_url: null, deploy_source: "ci", automation: "approval", builtin: true, status: "active", containers: Object.freeze(["sample-service"]) }),
+  Object.freeze({ key: "sample-service", name: "sample-service", server_key: "main", repo_url: null, deploy_source: "ci", automation: "approval", rollback: "n8n", builtin: true, status: "active", containers: Object.freeze(["sample-service"]) }),
 ]);
 const SEED_USER = "system";
 
@@ -115,7 +145,7 @@ const USER_COLUMNS = "id, email, role, password_hash, disabled";
 const SERVER_COLUMNS = "key, name, role, location, address, builtin, status, node_job, cadvisor_job, created_at, updated_at";
 // Columns a route may change. The names are fixed here, so they are never taken from a request.
 const SERVER_EDITABLE = ["role", "location", "address", "status"];
-const PROJECT_EDITABLE = ["repo_url", "status"];
+const PROJECT_EDITABLE = ["repo_url", "status", "rollback"];
 
 // Registry reads and writes on one connection (a pool for reads, a client inside a transaction).
 function registryOps(runner) {
@@ -146,7 +176,7 @@ function registryOps(runner) {
     async listProjects() {
       return (
         await q(
-          `SELECT p.key, p.name, p.server_key, p.repo_url, p.deploy_source, p.automation, p.builtin, p.status, p.created_at, p.updated_at,
+          `SELECT p.key, p.name, p.server_key, p.repo_url, p.deploy_source, p.automation, p.rollback, p.builtin, p.status, p.created_at, p.updated_at,
                   COALESCE(array_agg(c.container_name ORDER BY c.container_name) FILTER (WHERE c.container_name IS NOT NULL), '{}') AS containers
              FROM projects p LEFT JOIN project_containers c ON c.project_key = p.key AND c.released_at IS NULL
             GROUP BY p.key ORDER BY p.created_at, p.key`
@@ -165,9 +195,9 @@ function registryOps(runner) {
     },
     async insertProject(p) {
       await q(
-        `INSERT INTO projects (key, name, server_key, repo_url, deploy_source, automation, builtin, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [p.key, p.name, p.server_key, p.repo_url, p.deploy_source, p.automation, Boolean(p.builtin), p.status]
+        `INSERT INTO projects (key, name, server_key, repo_url, deploy_source, automation, rollback, builtin, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [p.key, p.name, p.server_key, p.repo_url, p.deploy_source, p.automation, p.rollback || "none", Boolean(p.builtin), p.status]
       );
       await addContainers(p.key, p.server_key, p.containers || []);
     },
@@ -187,6 +217,36 @@ function registryOps(runner) {
     async listContainerLinks(projectKey) {
       return (
         await q("SELECT project_key, container_name, server_key, released_at FROM project_containers WHERE project_key = $1 ORDER BY container_name", [projectKey])
+      ).rows;
+    },
+    // The image watcher's tables. container_images holds the latest image per container;
+    // detected_deployments is insert only, so there is no update or delete here.
+    async listContainerImages() {
+      return (await q("SELECT server_key, container_name, image, seen_at FROM container_images")).rows;
+    },
+    async upsertContainerImage({ serverKey, containerName, image, seenAt }) {
+      await q(
+        `INSERT INTO container_images (server_key, container_name, image, seen_at) VALUES ($1, $2, $3, COALESCE($4, now()))
+         ON CONFLICT (server_key, container_name) DO UPDATE SET image = EXCLUDED.image, seen_at = EXCLUDED.seen_at`,
+        [serverKey, containerName, image, seenAt || null]
+      );
+    },
+    async insertDetectedDeployment({ projectKey, serverKey, containerName, oldImage, newImage, detectedAt }) {
+      await q(
+        `INSERT INTO detected_deployments (project_key, server_key, container_name, old_image, new_image, detected_at)
+         VALUES ($1, $2, $3, $4, $5, COALESCE($6, now()))`,
+        [projectKey, serverKey, containerName, oldImage, newImage, detectedAt || null]
+      );
+    },
+    // Newest first. since is a Date or null for no lower bound; limit is a whole number or null.
+    async listDetectedDeployments(projectKey, since, limit) {
+      return (
+        await q(
+          `SELECT id, project_key, server_key, container_name, old_image, new_image, detected_at FROM detected_deployments
+            WHERE project_key = $1 AND ($2::timestamptz IS NULL OR detected_at > $2::timestamptz)
+            ORDER BY detected_at DESC, id DESC LIMIT $3`,
+          [projectKey, since || null, limit || null]
+        )
       ).rows;
     },
     // The only write to settings_log is this insert. There is no update or delete anywhere.
@@ -223,6 +283,9 @@ async function seedRegistry(ops) {
 
 // Lock id for the advisory lock that makes registry writes run one at a time.
 const REGISTRY_LOCK = 7351001;
+// A different lock for the image watcher, so it never waits for a registry write and two
+// dashboards do not both write detections.
+const WATCHER_LOCK = 7351002;
 
 function createDb(pool) {
   async function one(text, params) {
@@ -252,6 +315,32 @@ function createDb(pool) {
     }
   }
 
+  // Runs fn(ops) only when no other process holds the watcher lock; otherwise returns
+  // { locked: false } at once without waiting. The lock lasts for the transaction.
+  async function withWatcherLock(fn) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const got = await client.query("SELECT pg_try_advisory_xact_lock($1) AS ok", [WATCHER_LOCK]);
+      if (!got.rows[0] || got.rows[0].ok !== true) {
+        await client.query("ROLLBACK");
+        return { locked: false };
+      }
+      const value = await fn(registryOps(client));
+      await client.query("COMMIT");
+      return { locked: true, value };
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // The original error is the one that matters.
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   const reads = registryOps(pool);
 
   return {
@@ -266,6 +355,8 @@ function createDb(pool) {
     },
 
     transaction,
+    withWatcherLock,
+    listDetectedDeployments: reads.listDetectedDeployments,
     listServers: reads.listServers,
     listProjects: reads.listProjects,
     listLog: reads.listLog,
@@ -353,4 +444,4 @@ function isValidDatabaseUrl(value) {
   }
 }
 
-module.exports = { createDb, isValidDatabaseUrl, SCHEMA, SEED_SERVERS, SEED_PROJECTS, SEED_USER };
+module.exports = { createDb, isValidDatabaseUrl, SCHEMA, SEED_SERVERS, SEED_PROJECTS, SEED_USER, REGISTRY_LOCK, WATCHER_LOCK };
