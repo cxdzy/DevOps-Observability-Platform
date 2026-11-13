@@ -119,6 +119,17 @@ function iso(value) {
   return value ? new Date(value).toISOString() : null;
 }
 
+// The labels Settings shows for stored values. The change log writes these, not the stored values.
+// SettingsLog.vue has the same list to show older rows, which were written with the stored values.
+const LABELS = {
+  rollback: { n8n: "By n8n after approval", own_pipeline: "Handled by its own pipeline", none: "None" },
+  automation: { monitored: "Monitored only", approval: "Restart and rollback with approval" },
+  deploy_source: { ci: "CI events", image: "Image changes" },
+};
+function label(field, value) {
+  return LABELS[field][value] || value;
+}
+
 // The server as the API returns it. up is { nodeUp, cadvisorUp, lastSeen } or left out.
 function serverView(row, up = {}) {
   return {
@@ -556,7 +567,7 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin, now =
       if (body.rollback !== undefined) {
         next.rollback = body.rollback;
         await ops.updateProject(project.key, { rollback: body.rollback });
-        changes.push(`rollback ${project.rollback || "none"} to ${body.rollback}`);
+        changes.push(`rollback ${label("rollback", project.rollback || "none")} to ${label("rollback", body.rollback)}`);
       }
       if (body.repo_url !== undefined) {
         next.repo_url = body.repo_url ? body.repo_url : null;
@@ -615,4 +626,4 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin, now =
   return router;
 }
 
-module.exports = { createSettingsRouter, commandFor, queriesFor, explainScrapeError, PLATFORM_CONTAINERS, NODE_EXPORTER_IMAGE, CADVISOR_IMAGE };
+module.exports = { createSettingsRouter, LABELS, commandFor, queriesFor, explainScrapeError, PLATFORM_CONTAINERS, NODE_EXPORTER_IMAGE, CADVISOR_IMAGE };

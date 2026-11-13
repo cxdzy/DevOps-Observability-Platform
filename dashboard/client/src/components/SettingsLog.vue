@@ -48,8 +48,23 @@ function nameOf(key: string): string {
 function shownTarget(r: SettingsLogRow): string {
   return /server/i.test(r.action) ? nameOf(r.target) : r.target
 }
+// The labels Settings shows for stored values, the same list as LABELS in server/settings.js. New rows
+// are written with the labels; older rows ("rollback none to own_pipeline") are shown with them too.
+const LABELS: Record<string, Record<string, string>> = {
+  rollback: { n8n: 'By n8n after approval', own_pipeline: 'Handled by its own pipeline', none: 'None' },
+  automation: { monitored: 'Monitored only', approval: 'Restart and rollback with approval' },
+  deploy_source: { ci: 'CI events', image: 'Image changes' },
+}
+function labelValues(detail: string): string {
+  return detail.replace(/\b(rollback|automation|deploy_source|deploy source) ([a-z0-9_]+) to ([a-z0-9_]+)(?=;|$)/g, (whole, field: string, from: string, to: string) => {
+    const labels = LABELS[field.replace(' ', '_')]
+    if (!labels || !(from in labels) || !(to in labels)) return whole
+    return `${field} ${labels[from]} to ${labels[to]}`
+  })
+}
 function shownDetail(detail: string): string {
-  return detail.replace(/\b([Ss]erver) ([a-z0-9-]+)\b/g, (whole, word: string, key: string) => (serverNames.value.has(key) ? `${word} ${nameOf(key)}` : whole))
+  const named = detail.replace(/\b([Ss]erver) ([a-z0-9-]+)\b/g, (whole, word: string, key: string) => (serverNames.value.has(key) ? `${word} ${nameOf(key)}` : whole))
+  return labelValues(named)
 }
 
 function showMore() {

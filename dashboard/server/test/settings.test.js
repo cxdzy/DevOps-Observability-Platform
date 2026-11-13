@@ -712,7 +712,7 @@ test("the rollback choice: none for new projects, own_pipeline or none by PATCH,
   const log = await (await s.get("/api/settings/log?limit=200")).json();
   const entry = log.find((l) => l.action === "Edited project" && /rollback/.test(l.detail));
   assert.equal(entry.target, "shop");
-  assert.match(entry.detail, /rollback none to own_pipeline/);
+  assert.match(entry.detail, /rollback None to Handled by its own pipeline/);
 });
 
 test("archiving a project: not for built-ins; it frees the containers and keeps the record", async (t) => {
