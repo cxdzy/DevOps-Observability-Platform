@@ -54,3 +54,18 @@ export function usePoll(load: () => Promise<void>, intervalMs: number, enabled: 
 
   return { refresh: () => run(true) }
 }
+
+// POST /api/chat with the chat's follow-up context. A failed call rejects with { status, data }
+// (status 0 when there was no response), the shape the chat store reads.
+export const CHAT_TIMEOUT_MS = 100000
+export async function postChat<T>(message: string, context: unknown): Promise<T> {
+  try {
+    const { data } = await api.post<T>('/api/chat', { message, context }, { timeout: CHAT_TIMEOUT_MS })
+    return data
+  } catch (err) {
+    if (axios.isAxiosError(err)) {
+      throw { status: err.response?.status ?? 0, data: err.response?.data ?? null, retryAfter: err.response?.headers?.['retry-after'] ?? null }
+    }
+    throw { status: 0, data: null }
+  }
+}

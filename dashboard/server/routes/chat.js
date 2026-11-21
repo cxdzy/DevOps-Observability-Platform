@@ -1,20 +1,27 @@
 // POST /api/chat and GET /api/chat/stats (Phase 6, 6B-3). Mounted after requireAuth, so every
 // request has req.user. The assistant is read-only: action requests get a fixed reply and nothing
 // is called, and the only writes are the two langfuse log inserts in chat/log.js.
+// The request may carry the chat's follow-up context (chat/context.js). It is validated, only
+// compared with the server's incident records, and returned updated in every 200 reply.
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const express = require("express");
 const { originAllowed } = require("../security");
 const { parse, ACTION_REPLY, NO_DATA_REPLY } = require("../chat/parser");
-const { createFacts, renderLines, fmtTime, pyFixed, INCIDENTS_LISTED } = require("../chat/facts");
+const { createFacts, renderLines, fmtTime, pyFixed, contextLine, withContextLine, INCIDENTS_LISTED } = require("../chat/facts");
 const { checkAnswer } = require("../chat/check");
 const { createOllama, OllamaError } = require("../chat/ollama");
 const { createLimits } = require("../chat/limits");
 const { createChatLog, createPool } = require("../chat/log");
+const { validateContext, resolveIncident, neighbour, aboutIncident, withShown } = require("../chat/context");
+const { FOLLOWUP_TEMPLATES, whichText, endText, loadDetail, CHOICES } = require("../chat/templates");
+const { loadIncidents } = require("../overview");
 
 const SYSTEM_PROMPT = fs.readFileSync(path.join(__dirname, "..", "chat", "system_prompt.txt"), "utf8").trim();
 const MAX_CHARS = 500;
+// The incident window of the facts (chat/facts.js).
+const INCIDENT_HOURS = 6;
 // One budget for both model calls, counted from the moment this request gets the model slot.
 // It covers a model switch (cold load) on the first call; the retry runs only if enough is left.
 const CALL_BUDGET_MS = 90 * 1000;
@@ -31,6 +38,8 @@ const SOURCES = {
   status: ["anomaly scores", "incident records", "Prometheus"],
   last_incident: ["incident records"],
   incident_count: ["incident records"],
+  followup: ["incident records"],
+  cause: ["incident records", "anomaly scores"],
   worry: ["anomaly scores", "incident records"],
   health_check: ["Prometheus", "anomaly scores", "the remediation log", "deployment records"],
   llm: ["anomaly scores", "incident records", "the remediation log", "deployment records", "Prometheus"],
@@ -244,18 +253,26 @@ function createChatRouter(deps) {
       const role = user.role === "admin" ? "admin" : "viewer";
       const parsed = parse(message);
       const { intent, lang } = parsed;
-      const reply = (body) => res.json({ incidents: [], sources: [], model: null, ...body, elapsed_s: elapsed() });
+      // Invalid context is treated as empty. Replies that do not talk about an incident return it as it was.
+      const context = validateContext(req.body.context);
+      const reply = (body) => res.json({ incidents: [], sources: [], model: null, context, ...body, elapsed_s: elapsed() });
 
       if (intent === "action") return reply({ kind: "action_unavailable", answer: ACTION_REPLY[role] });
       if (intent === "no_data") return reply({ kind: "guard", answer: NO_DATA_REPLY[lang] });
       if (TEMPLATES[intent]) {
         const f = await facts.gather();
+        const items = f.values.incidents_6h ? f.values.incidents_6h.items : [];
         return reply({
           kind: "template",
           answer: TEMPLATES[intent](f.values, f.snapshotMs, parsed),
           incidents: chipsFor(intent, f.values, f.snapshotMs, ""),
           sources: SOURCES[intent],
+          context: intent === "last_incident" && items[0] ? aboutIncident(context, items[0], "last_incident") : context,
         });
+      }
+      if (intent === "followup") {
+        const f = await facts.gather();
+        return reply(await followUpReply(parsed, context, f));
       }
 
       // A question for the model.
@@ -268,6 +285,7 @@ function createChatRouter(deps) {
       let kind;
       let answer;
       let f;
+      let current = null;
       try {
         // Checked again: another request from the same user may have taken the last question.
         const again = limits.checkRate(user.id);
@@ -275,6 +293,9 @@ function createChatRouter(deps) {
         const deadline = Math.min(Date.now() + CALL_BUDGET_MS, started + REQUEST_BUDGET_MS);
         if (deadline - Date.now() < MIN_FIRST_CALL_MS) return res.status(429).json({ error: BUSY_MESSAGE });
         f = await facts.gather();
+        // The incident the user was just asking about, looked up again in the server's records.
+        current = resolveIncident(context, f.values.incidents_6h ? f.values.incidents_6h.items : []);
+        f.text = withContextLine(f.text, contextLine(current, f.snapshotMs));
 
         for (let attempt = 1; attempt <= 2; attempt += 1) {
           const left = deadline - Date.now();
@@ -309,12 +330,20 @@ function createChatRouter(deps) {
         kind = "fallback";
         answer = fallbackText(f.values, f.snapshotMs, lang);
       }
+      const incidents = chipsFor(kind === "llm" ? "llm" : "status", f.values, f.snapshotMs, answer);
+      // A model answer about exactly one incident makes it the incident under discussion.
+      let nextContext = context;
+      if (kind === "llm" && incidents.length === 1) {
+        const item = f.values.incidents_6h.items.find((i) => i.start_ms === incidents[0].start);
+        if (item) nextContext = aboutIncident(context, item, null);
+      }
       const body = {
         kind,
         answer,
-        incidents: chipsFor(kind === "llm" ? "llm" : "status", f.values, f.snapshotMs, answer),
+        incidents,
         sources: SOURCES.llm,
         model,
+        context: nextContext,
         elapsed_s: elapsed(),
       };
       res.json(body);
@@ -335,11 +364,68 @@ function createChatRouter(deps) {
     }
   });
 
+  // Template answers about the incident in the context. The model is not called and the hourly
+  // limit is not used.
+  async function followUpReply(parsed, context, f) {
+    const { lang, nav } = parsed;
+    const inc = f.values.incidents_6h;
+    const items = inc ? inc.items : [];
+    const current = resolveIncident(context, items);
+    if (!current) {
+      const choices = items.slice(0, CHOICES);
+      return {
+        kind: "template",
+        answer: whichText(inc, lang),
+        incidents: choices.map((i) => ({ start: i.start_ms, tier: i.tier, signal: i.signal, choice: true })),
+        sources: SOURCES.followup,
+        // The incident in the context is gone, or there was none. The question is kept for the choice.
+        context: withShown({ ...context, last_incident: null, last_intent: parsed.topic || context.last_intent }, choices),
+      };
+    }
+    let target = current;
+    if (nav) {
+      target = neighbour(items, current, nav);
+      if (!target) {
+        return {
+          kind: "template",
+          answer: endText(nav, lang),
+          incidents: [{ start: current.start_ms, tier: current.tier }],
+          sources: SOURCES.followup,
+          context: aboutIncident(context, current, context.last_intent),
+        };
+      }
+    }
+    const topic = parsed.topic || context.last_intent || "last_incident";
+    let detail = null;
+    if (topic === "cause") {
+      let raw = null;
+      try {
+        raw = await loadIncidents(deps.query, INCIDENT_HOURS, now());
+      } catch {
+        raw = null;
+      }
+      detail = await loadDetail(deps.query, target, raw, f.values.reference);
+    }
+    return {
+      kind: "template",
+      answer: FOLLOWUP_TEMPLATES[topic](target, detail, f.snapshotMs, lang),
+      incidents: [{ start: target.start_ms, tier: target.tier }],
+      sources: topic === "cause" ? SOURCES.cause : SOURCES.followup,
+      context: aboutIncident(context, target, topic),
+    };
+  }
+
+  // The hourly limit. Retry-After and next_free_at say when the oldest counted question is an hour
+  // old. code tells the client this is not the queue-full 429, which keeps its plain { error } body.
   function rateLimited(res, nextFreeAt) {
     const at = fmtTime(nextFreeAt, now());
+    const free = limits.nextFree(nextFreeAt);
+    res.set("Retry-After", String(free.retryAfterS));
     return res.status(429).json({
       error: `You have used all ${limits.perHour} questions for this hour. The next one is free at ${at} MYT.`,
+      code: "hourly_limit",
       nextFreeAt,
+      next_free_at: free.iso,
     });
   }
 

@@ -201,6 +201,27 @@ function renderFacts(values, snapshotMs) {
   return { text: [header, ...body, FOOTER].join("\n"), lines };
 }
 
+// The optional CONTEXT line for a model question that follows a question about an incident. item
+// is the incident record the server found again (never the browser's values): its tier and signal
+// are checked against the known lists and the time is formatted here, so no free text gets in.
+const CONTEXT_TIERS = ["low", "medium", "high", "none"];
+const CONTEXT_SIGNALS = ["cpu", "memory", "latency", "unclear", "none"];
+
+function contextLine(item, snapshotMs) {
+  if (!item || !Number.isSafeInteger(item.start_ms)) return null;
+  if (!CONTEXT_TIERS.includes(item.tier) || !CONTEXT_SIGNALS.includes(item.signal)) return null;
+  return `CONTEXT: the user was just asking about the incident at ${fmtTime(item.start_ms, snapshotMs)}, ` +
+    `tier ${item.tier}, signal ${item.signal}.`;
+}
+
+// FACTS text with the CONTEXT line inserted before the footer. Without a line the text is
+// returned unchanged.
+function withContextLine(text, line) {
+  if (!line) return text;
+  const at = text.lastIndexOf(`\n${FOOTER}`);
+  return at < 0 ? `${text}\n${line}` : `${text.slice(0, at)}\n${line}${text.slice(at)}`;
+}
+
 // ------------------------------------------------------------------ gathering
 
 function float(value) {
@@ -345,6 +366,6 @@ function createFacts({ query, prometheus, now = Date.now }) {
 }
 
 module.exports = {
-  createFacts, renderFacts, renderLines, toIncidentValues, whatHappened, fmtTime, pyFixed,
-  PROM_QUERIES, VALUE_KEYS, INCIDENTS_LISTED,
+  createFacts, renderFacts, renderLines, toIncidentValues, whatHappened, fmtTime, pyFixed, contextLine, withContextLine,
+  PROM_QUERIES, VALUE_KEYS, INCIDENTS_LISTED, FOOTER,
 };

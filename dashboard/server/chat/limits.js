@@ -50,7 +50,15 @@ function createLimits({ perHour = 20, now = Date.now } = {}) {
     return new Promise((resolve) => waiting.push(() => resolve(once(release))));
   }
 
-  return { checkRate, consume, left, acquire, perHour };
+  // When the hourly limit frees up again: { at, retryAfterS, iso }, with retryAfterS the whole
+  // seconds until the oldest counted question is an hour old (at least 1), for Retry-After.
+  function nextFree(nextFreeAt) {
+    const at = Number.isFinite(Number(nextFreeAt)) ? Number(nextFreeAt) : now() + HOUR_MS;
+    const retryAfterS = Math.max(1, Math.ceil((at - now()) / 1000));
+    return { at, retryAfterS, iso: new Date(at).toISOString() };
+  }
+
+  return { checkRate, consume, left, acquire, nextFree, perHour };
 }
 
 function once(fn) {

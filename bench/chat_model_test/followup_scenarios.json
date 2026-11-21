@@ -1,0 +1,116 @@
+{
+  "about": "Multi-turn follow-up scenarios for the dashboard chat. Times are minutes relative to the test clock (2026-10-30T08:00:00Z, 16:00 MYT). Each turn sends its message with the context the previous reply returned, unless the turn gives context_from (an incident offset, as a choice chip would) or context null. expect lists the facts the reply must state; context_start is the offset of the incident the returned context points at, null for none; context_unchanged means the reply returned the context it was sent.",
+  "clock": "2026-10-30T08:00:00Z",
+  "incidents": [
+    { "offset_min": -180, "tier": "medium", "signal": "memory", "minutes": 3, "peak_score": 0.688, "deployment": 0,
+      "explanation": "What happened: Memory use climbed to 270 MB, about 2.0 times its normal 135 MB.\nLikely cause: Likely a memory leak or a large memory allocation.\nNext step: The container is restarted after approval." },
+    { "offset_min": -120, "tier": "low", "signal": "cpu", "minutes": 2, "peak_score": 0.64, "deployment": 0, "explanation": null },
+    { "offset_min": -60, "tier": "high", "signal": "latency", "minutes": 2, "peak_score": 0.91, "deployment": 1,
+      "explanation": "What happened: Latency rose to 45.0 ms, 30 times its normal level.\nLikely cause: The deployment just before it.\nNext step: Roll back after approval." }
+  ],
+  "minutes": [
+    { "offset_min": -180, "score": 0.62, "threshold": 0.602, "memory_max_mb": 250, "base_memory_max_mb": 135, "cpu_rate": 0.003, "base_cpu_rate": 0.0029, "latency_ms": 1.5, "base_latency_ms": 1.5 },
+    { "offset_min": -179, "score": 0.688, "threshold": 0.602, "memory_max_mb": 270, "base_memory_max_mb": 135, "cpu_rate": 0.003, "base_cpu_rate": 0.0029, "latency_ms": 1.6, "base_latency_ms": 1.5 },
+    { "offset_min": -178, "score": 0.65, "threshold": 0.602, "memory_max_mb": 262, "base_memory_max_mb": 135, "cpu_rate": 0.003, "base_cpu_rate": 0.0029, "latency_ms": 1.5, "base_latency_ms": 1.5 },
+    { "offset_min": -60, "score": 0.91, "threshold": 0.602, "memory_max_mb": 136, "base_memory_max_mb": 135, "cpu_rate": 0.003, "base_cpu_rate": 0.0029, "latency_ms": 45, "base_latency_ms": 1.5 },
+    { "offset_min": -59, "score": 0.8, "threshold": 0.602, "memory_max_mb": 136, "base_memory_max_mb": 135, "cpu_rate": 0.003, "base_cpu_rate": 0.0029, "latency_ms": 30, "base_latency_ms": 1.5 }
+  ],
+  "scenarios": [
+    {
+      "id": "S1", "name": "last incident then cause",
+      "turns": [
+        { "message": "Last incident", "expect": { "kind": "template", "includes": ["15:00", "tier high", "signal latency"], "context_start": -60 } },
+        { "message": "Why did it happen?", "expect": { "kind": "template", "includes": [
+          "The incident at 15:00 (tier high) was triggered by the latency signal.",
+          "Its peak was 45.0 ms, 30.0 times the normal reference of 1.5 ms.",
+          "The peak anomaly score was 0.910 against a threshold of 0.602.",
+          "It was linked to a deployment.",
+          "Stored explanation: What happened: Latency rose to 45.0 ms, 30 times its normal level. Likely cause: The deployment just before it.",
+          "The dashboard has no logs or commit data, so it cannot name a root cause beyond the signal."
+        ], "excludes": ["Next step", "Roll back"], "context_start": -60 } }
+      ]
+    },
+    {
+      "id": "S2", "name": "then start time",
+      "turns": [
+        { "message": "Last incident", "expect": { "kind": "template", "context_start": -60 } },
+        { "message": "When did it start?", "expect": { "kind": "template", "includes": ["The incident at 15:00 started at 15:00 MYT and ended at 15:02 MYT."], "context_start": -60 } }
+      ]
+    },
+    {
+      "id": "S3", "name": "then duration",
+      "turns": [
+        { "message": "Last incident", "expect": { "kind": "template", "context_start": -60 } },
+        { "message": "How many minutes did that incident last?", "expect": { "kind": "template", "includes": ["The incident at 15:00 lasted 2 min, from 15:00 to 15:02 MYT."], "context_start": -60 } }
+      ]
+    },
+    {
+      "id": "S4", "name": "then was it linked to a deployment",
+      "turns": [
+        { "message": "Last incident", "expect": { "kind": "template", "context_start": -60 } },
+        { "message": "Was it linked to a deployment?", "expect": { "kind": "template", "includes": ["Yes. The incident at 15:00 is marked as linked to a deployment."], "context_start": -60 } }
+      ]
+    },
+    {
+      "id": "S5", "name": "then the one before",
+      "turns": [
+        { "message": "Last incident", "expect": { "kind": "template", "context_start": -60 } },
+        { "message": "And the one before?", "expect": { "kind": "template", "includes": ["The incident at 14:00: tier low, signal cpu, 2 min, peak 0.640, closed."], "context_start": -120 } },
+        { "message": "How long did it last?", "expect": { "kind": "template", "includes": ["The incident at 14:00 lasted 2 min, from 14:00 to 14:02 MYT."], "context_start": -120 } },
+        { "message": "the one before", "expect": { "kind": "template", "includes": ["The incident at 13:00 lasted 3 min, from 13:00 to 13:03 MYT."], "context_start": -180 } },
+        { "message": "And the one before?", "expect": { "kind": "template", "includes": ["There is no earlier incident in the last 6 hours."], "context_start": -180 } },
+        { "message": "next one", "expect": { "kind": "template", "includes": ["The incident at 14:00 lasted 2 min"], "context_start": -120 } },
+        { "message": "next one", "expect": { "kind": "template", "includes": ["The incident at 15:00 lasted 2 min"], "context_start": -60 } },
+        { "message": "next one", "expect": { "kind": "template", "includes": ["There is no later incident in the last 6 hours."], "context_start": -60 } }
+      ]
+    },
+    {
+      "id": "S6", "name": "why with no context",
+      "turns": [
+        { "message": "why", "expect": { "kind": "template", "includes": ["Which incident do you mean?"], "choices": [-60, -120, -180], "context_start": null } }
+      ]
+    },
+    {
+      "id": "S7", "name": "Malay follow-up",
+      "turns": [
+        { "message": "Insiden terakhir", "expect": { "kind": "template", "context_start": -60 } },
+        { "message": "Kenapa ia berlaku?", "expect": { "kind": "template", "includes": [
+          "Insiden pada 15:00 (tier high) dicetuskan oleh isyarat latency.",
+          "Puncaknya 45.0 ms, 30.0 kali rujukan normal 1.5 ms.",
+          "Dashboard tiada data log atau commit, jadi ia tidak dapat menamakan punca sebenar selain isyarat itu."
+        ], "context_start": -60 } },
+        { "message": "Berapa lama insiden itu?", "expect": { "kind": "template", "includes": ["Insiden pada 15:00 berlangsung 2 minit, dari 15:00 hingga 15:02 MYT."], "context_start": -60 } }
+      ]
+    },
+    {
+      "id": "S8", "name": "follow-up after a count question keeps the context",
+      "turns": [
+        { "message": "Last incident", "expect": { "kind": "template", "context_start": -60 } },
+        { "message": "How many incidents in the last 6 hours?", "expect": { "kind": "template", "includes": ["3 incidents, high 1, medium 1, low 1."], "context_unchanged": true, "context_start": -60 } },
+        { "message": "How long did it last?", "expect": { "kind": "template", "includes": ["The incident at 15:00 lasted 2 min"], "context_start": -60 } }
+      ]
+    },
+    {
+      "id": "S9", "name": "cause of a memory incident",
+      "turns": [
+        { "message": "What caused it?", "context_from": -180, "expect": { "kind": "template", "includes": [
+          "The incident at 13:00 (tier medium) was triggered by the memory signal.",
+          "Its peak was 270 MB, 2.0 times the normal reference of 135 MB.",
+          "The peak anomaly score was 0.688 against a threshold of 0.602.",
+          "It was not linked to a deployment.",
+          "Likely cause: Likely a memory leak or a large memory allocation."
+        ], "excludes": ["Next step"], "context_start": -180 } }
+      ]
+    },
+    {
+      "id": "S10", "name": "cause of a latency incident chosen from the choice chips",
+      "turns": [
+        { "message": "Why did it happen?", "context": null, "expect": { "kind": "template", "includes": ["Which incident do you mean?"], "choices": [-60, -120, -180], "context_start": null } },
+        { "message": "What caused it?", "context_from": -60, "expect": { "kind": "template", "includes": [
+          "The incident at 15:00 (tier high) was triggered by the latency signal.",
+          "Its peak was 45.0 ms, 30.0 times the normal reference of 1.5 ms."
+        ], "context_start": -60 } }
+      ]
+    }
+  ]
+}

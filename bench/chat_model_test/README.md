@@ -159,3 +159,14 @@ docker run --rm -v "$PWD":/repo -w /repo python:3.12 sh -c \
   "pip install -q pandas==2.2.3 requests==2.32.3 influxdb==5.3.2 pytest && \
    pytest -p no:cacheprovider -q bench/chat_model_test/test_bench.py"
 ```
+
+## Follow-up scenarios
+
+`followup_scenarios.json` is a copy of `dashboard/server/test/fixtures/followup_scenarios.json`,
+the ten multi-turn chat scenarios (last incident then cause, start time, duration, deployment link,
+the one before, "why" with no context, a Malay follow-up, a follow-up after a count question, and the
+cause of a memory and of a latency incident). The server tests run them turn by turn against fixed
+incident data and compare each reply with the `expect` facts. Follow-ups are answered by templates,
+so no model is called. The file is kept here so the replies can be put into a blind sheet and hand
+scored like the model answers. Times are minutes relative to the `clock` value. Keep the two copies
+the same.

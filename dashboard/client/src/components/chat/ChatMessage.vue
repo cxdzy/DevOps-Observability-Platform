@@ -1,41 +1,37 @@
 <script lang="ts">
-export type ReplyKind = 'template' | 'guard' | 'llm' | 'fallback' | 'action_unavailable'
-
-// One line of the conversation. Kept in the Chat view's state only.
-export interface ChatEntry {
-  id: number
-  role: 'user' | 'assistant'
-  text: string
-  kind?: ReplyKind
-  sources?: string[]
-  elapsedS?: number
-  incidents?: { start: number, tier: string | null }[]
-  // The request failed; text is the reason shown to the user.
-  error?: boolean
-}
+export type { ChatEntry, ReplyChip, ReplyKind } from './chatStore'
 </script>
 
 <script setup lang="ts">
+import type { ChatEntry, ReplyChip } from './chatStore'
 import { computed } from 'vue'
 import TierBadge from '@/components/TierBadge.vue'
-import { clockTime } from '@/lib/format'
+import ChatNotice from './ChatNotice.vue'
+import { mytClock } from './chatStore'
 
-const props = defineProps<{ entry: ChatEntry }>()
-const emit = defineEmits<{ openIncident: [start: number] }>()
+const props = defineProps<{ entry: ChatEntry, disabled?: boolean }>()
+const emit = defineEmits<{ openIncident: [start: number], choose: [chip: ReplyChip] }>()
 
-// "From incident records and the remediation log, 11.8 s", plus "template answer" for fixed
-// replies and "fallback answer" when the model's answers failed the check.
+// Template, guard and fallback replies (and the fixed action reply) get the dashed "Template
+// answer" chip; model replies the filled "Local model" chip.
+const source = computed(() => {
+  const k = props.entry.kind
+  if (!k) return null
+  return k === 'llm' ? 'model' : 'template'
+})
+
+// "From incident records and the remediation log, 11.8 s".
 const meta = computed(() => {
   const e = props.entry
   const parts: string[] = []
   const s = e.sources ?? []
   if (s.length) parts.push(`From ${s.length === 1 ? s[0] : `${s.slice(0, -1).join(', ')} and ${s[s.length - 1]}`}`)
   if (e.elapsedS !== undefined) parts.push(`${e.elapsedS.toFixed(1)} s`)
-  if (e.kind === 'fallback') parts.push('fallback answer')
-  else if (e.kind && e.kind !== 'llm') parts.push('template answer')
-  const text = parts.join(', ')
-  return text ? text[0].toUpperCase() + text.slice(1) : ''
+  return parts.join(', ')
 })
+
+const choices = computed(() => (props.entry.incidents ?? []).filter(i => i.choice))
+const links = computed(() => (props.entry.incidents ?? []).filter(i => !i.choice))
 </script>
 
 <template>
@@ -43,6 +39,8 @@ const meta = computed(() => {
   <div v-if="entry.role === 'user'" class="relative max-w-[80%] self-end rounded-[14px_14px_4px_14px] bg-chip px-3.5 py-2.5 break-words whitespace-pre-wrap">
     <span class="sr-only">You: </span>{{ entry.text }}
   </div>
+
+  <ChatNotice v-else-if="entry.notice" :kind="entry.notice" :text="entry.text" />
 
   <div v-else class="flex max-w-[92%] gap-3">
     <span class="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground" aria-hidden="true">
@@ -56,20 +54,48 @@ const meta = computed(() => {
       >
         <span class="sr-only">Assistant: </span>{{ entry.text }}
       </p>
-      <div v-if="entry.incidents?.length" class="flex flex-wrap gap-1.5">
+
+      <div v-if="choices.length" role="group" aria-label="Choose an incident" class="flex flex-wrap gap-1.5">
+        <button
+          v-for="incident in choices"
+          :key="incident.start"
+          type="button"
+          class="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-border px-3 text-xs text-foreground hover:bg-chip disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8"
+          :disabled="disabled"
+          @click="emit('choose', incident)"
+        >
+          <TierBadge :tier="incident.tier" />
+          <span class="font-mono">{{ mytClock(incident.start) }}</span>
+          <span v-if="incident.signal">{{ incident.signal }}</span>
+          <span class="sr-only">, ask what caused it</span>
+        </button>
+      </div>
+
+      <div v-if="links.length" class="flex flex-wrap gap-1.5">
         <a
-          v-for="incident in entry.incidents"
+          v-for="incident in links"
           :key="incident.start"
           href="#incidents"
           class="relative inline-flex min-h-8 items-center gap-1.5 rounded-md border border-border px-2 text-xs text-foreground no-underline hover:bg-chip"
           @click="emit('openIncident', incident.start)"
         >
           <TierBadge :tier="incident.tier" />
-          <span class="font-mono">{{ clockTime(incident.start) }}</span>
+          <span class="font-mono">{{ mytClock(incident.start) }}</span>
           <span class="sr-only">, open in Incidents</span>
         </a>
       </div>
-      <span v-if="meta" class="text-xs text-faint">{{ meta }}</span>
+
+      <div v-if="source || meta" class="flex flex-wrap items-center gap-2 text-xs text-faint">
+        <span
+          v-if="source === 'template'"
+          class="inline-flex items-center rounded-full border border-dashed border-border px-2 py-px text-[11px] font-medium text-muted-foreground"
+        >Template answer</span>
+        <span
+          v-else-if="source === 'model'"
+          class="inline-flex items-center rounded-full bg-chip px-2 py-px text-[11px] font-medium text-foreground"
+        >Local model</span>
+        <span v-if="meta">{{ meta }}</span>
+      </div>
     </div>
   </div>
 </template>
