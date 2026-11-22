@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import type { ContainerForecast, ForecastInfo } from '@/composables/useApi'
 import type { ProjectContainer, ProjectRow, ProjectStatus, StripState } from '@/types'
 import { computed, onUnmounted, ref, watch } from 'vue'
+import ForecastChip from '@/components/ForecastChip.vue'
 import { Skeleton } from '@/components/ui/skeleton'
-import { api, usePoll } from '@/composables/useApi'
+import { api, getForecast, usePoll } from '@/composables/useApi'
 import { clockTime, shortDate } from '@/lib/format'
 import { toMs } from '@/types'
 
@@ -15,9 +17,27 @@ const projects = ref<ProjectRow[]>([])
 const loading = ref(true)
 const failed = ref(false)
 const refreshing = ref(false)
+// The time-to-limit forecast per container. It loads beside the projects and fails on its own.
+const forecast = ref<ForecastInfo | null>(null)
+const forecastLoading = ref(true)
+const forecastFailed = ref(false)
+async function loadForecast() {
+  try {
+    forecast.value = await getForecast()
+    forecastFailed.value = false
+  } catch {
+    forecastFailed.value = true
+  } finally {
+    forecastLoading.value = false
+  }
+}
+function forecastFor(p: ProjectRow, name: string): ContainerForecast | null {
+  return forecast.value?.containers.find(f => f.project === p.key && f.container === name) ?? null
+}
 
 async function load() {
   refreshing.value = true
+  const forecastDone = loadForecast()
   try {
     const res = await api.get<ProjectRow[]>('/api/projects')
     if (!Array.isArray(res.data)) throw new Error('unexpected response')
@@ -34,6 +54,7 @@ async function load() {
     failed.value = true
     emit('refreshed', false)
   } finally {
+    await forecastDone
     refreshing.value = false
     loading.value = false
   }
@@ -421,6 +442,11 @@ const GRID = 'grid grid-cols-[minmax(0,1.3fr)_120px_minmax(0,1fr)_minmax(0,1.2fr
                 <span v-if="limitShare(c) !== null" class="h-1.5 overflow-hidden rounded-full bg-track" role="img" :aria-label="barLabel(limitShare(c) as number)">
                   <span class="block h-1.5 rounded-full" :class="barClass(limitShare(c) as number)" :style="{ width: `${Math.max(2, Math.min(100, limitShare(c) as number))}%` }" />
                 </span>
+              </div>
+              <div class="flex flex-col gap-1">
+                <span class="text-xs text-muted-foreground">Forecast</span>
+                <ForecastChip kind="memory" :item="forecastFor(selected, c.name)" :loading="forecastLoading" :failed="forecastFailed && !forecast" detail />
+                <span v-if="forecastFailed && forecast" class="text-[11px] text-muted-foreground">Could not refresh the forecast. Showing the last loaded values.</span>
               </div>
             </li>
           </ul>

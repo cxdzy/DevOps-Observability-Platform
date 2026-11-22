@@ -49,3 +49,41 @@ test("SCHEMA adds the rollback column, container_images and detected_deployments
 test("SCHEMA never deletes from or updates detected_deployments", () => {
   assert.ok(!/(DELETE FROM|UPDATE|TRUNCATE|DROP TABLE)\s+(IF EXISTS\s+)?detected_deployments/i.test(SCHEMA));
 });
+
+test("SCHEMA adds forecast_events once, with a guarded close_reason check and one open row per key", () => {
+  assert.match(SCHEMA, /CREATE TABLE IF NOT EXISTS forecast_events \(\s*id bigserial PRIMARY KEY/);
+  const body = SCHEMA.match(/CREATE TABLE IF NOT EXISTS forecast_events \(([^;]*?)\n\);/)[1];
+  for (const column of [
+    "resource text NOT NULL CHECK (resource IN ('memory', 'disk', 'restarts'))",
+    "server text NOT NULL",
+    "project text,",
+    "container text,",
+    "mountpoint text,",
+    "opened_at timestamptz NOT NULL",
+    "closed_at timestamptz,",
+    "close_reason text,",
+    "est_minutes_at_open double precision",
+    "est_minutes_latest double precision",
+    "limit_value double precision",
+    "level_at_open double precision",
+    "slope_per_min double precision",
+    "r2 double precision",
+    "window_min double precision",
+    "config_version text NOT NULL",
+  ]) {
+    assert.ok(body.includes(column), column);
+  }
+  assert.match(SCHEMA, /pg_constraint WHERE conname = 'forecast_events_close_reason_check' AND conrelid = 'forecast_events'::regclass/);
+  assert.match(SCHEMA, /CHECK \(close_reason IS NULL OR close_reason IN \('steady', 'estimate_rose', 'container_gone', 'restart_cut'\)\)/);
+  assert.match(SCHEMA, /CREATE UNIQUE INDEX IF NOT EXISTS forecast_events_open_idx\s+ON forecast_events \(resource, server, COALESCE\(container, ''\), COALESCE\(mountpoint, ''\)\) WHERE closed_at IS NULL;/);
+  // No message text: the table has no text column beyond the names and the reason.
+  assert.ok(!/message|text_body|detail|token/i.test(body));
+});
+
+test("the forecast job's database methods only touch forecast_events", () => {
+  const source = require("fs").readFileSync(require("path").join(__dirname, "..", "db.js"), "utf8");
+  const block = source.slice(source.indexOf("const forecast = {"), source.indexOf("return {", source.indexOf("const forecast = {")));
+  const tables = [...block.matchAll(/\b(?:FROM|INTO|UPDATE)\s+([a-z_]+)/g)].map((m) => m[1]);
+  assert.ok(tables.length >= 6);
+  assert.deepEqual([...new Set(tables)], ["forecast_events"]);
+});

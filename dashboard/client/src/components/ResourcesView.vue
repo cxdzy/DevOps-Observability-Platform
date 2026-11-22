@@ -1,13 +1,15 @@
 <script setup lang="ts">
+import type { ForecastInfo } from '@/composables/useApi'
 import type { ResourcesInfo, ServerBrief, ZoomWindow } from '@/types'
 import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import ChartLoadError from '@/components/ChartLoadError.vue'
 import ChartSkeleton from '@/components/ChartSkeleton.vue'
 import ChartToolbar from '@/components/ChartToolbar.vue'
 import ContainersTab from '@/components/ContainersTab.vue'
+import ForecastChip from '@/components/ForecastChip.vue'
 import ResourceGauge from '@/components/ResourceGauge.vue'
 import { Skeleton } from '@/components/ui/skeleton'
-import { api, usePoll } from '@/composables/useApi'
+import { api, getForecast, usePoll } from '@/composables/useApi'
 import { clockTime, shortDate } from '@/lib/format'
 
 // ECharts is large, so the history charts are downloaded only when they are first shown.
@@ -95,9 +97,27 @@ function valid(v: unknown): v is ResourcesInfo {
   return typeof r === 'object' && r !== null && typeof r.now === 'object' && typeof r.facts === 'object' && typeof r.history === 'object' && Array.isArray(r.nodes)
 }
 
+// The time-to-limit forecast of every server. It loads with the node view and fails on its own.
+const forecast = ref<ForecastInfo | null>(null)
+const forecastLoading = ref(true)
+const forecastFailed = ref(false)
+async function loadForecast() {
+  try {
+    forecast.value = await getForecast()
+    forecastFailed.value = false
+  } catch {
+    forecastFailed.value = true
+  } finally {
+    forecastLoading.value = false
+  }
+}
+const serverDisks = computed(() => forecast.value?.disks.filter(d => d.server === node.value) ?? [])
+const serverContainers = computed(() => forecast.value?.containers.filter(c => c.server === node.value) ?? [])
+
 async function load() {
   const wanted = { node: node.value, hours: hours.value }
   loading.value = true
+  const forecastDone = loadForecast()
   try {
     const res = await api.get<ResourcesInfo>('/api/resources', { params: wanted })
     // The selection changed while this was loading; the queued load fetches the new one.
@@ -113,6 +133,7 @@ async function load() {
     failed.value = true
     emit('refreshed', false)
   } finally {
+    await forecastDone
     loading.value = false
   }
 }
@@ -390,6 +411,37 @@ function upText(up: boolean | null) {
           <dd class="mt-0.5 font-mono text-[15px]" :class="f.value === 'No data' ? 'text-muted-foreground' : ''">{{ f.value }}</dd>
         </div>
       </dl>
+    </section>
+
+    <section aria-labelledby="forecast-title" class="flex flex-col gap-3 rounded-xl border border-border p-4">
+      <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="forecast-title" class="text-[15px] font-semibold">Forecast</h2>
+        <span class="text-xs text-muted-foreground">Time to the limit, from the last 6 hours of disk use and 30 minutes of memory</span>
+      </div>
+      <Skeleton v-if="forecastLoading && !forecast" class="h-[72px] rounded-lg" />
+      <p v-else-if="forecastFailed && !forecast" class="text-[13px] text-muted-foreground" role="status">The forecast could not be loaded. Retrying in 30 s.</p>
+      <template v-else>
+        <p v-if="forecastFailed" class="text-xs text-muted-foreground" role="status">Could not refresh the forecast. Showing the last loaded values.</p>
+        <div class="flex flex-col gap-2">
+          <h3 class="text-[13px] font-semibold">Disk</h3>
+          <p v-if="serverDisks.length === 0" class="text-[13px] text-muted-foreground">No data. The forecast has not read this server yet.</p>
+          <ul v-else class="flex flex-col gap-2">
+            <li v-for="d in serverDisks" :key="d.mountpoint">
+              <ForecastChip kind="disk" :item="d" detail />
+            </li>
+          </ul>
+        </div>
+        <div class="flex flex-col gap-2">
+          <h3 class="text-[13px] font-semibold">Containers</h3>
+          <p v-if="serverContainers.length === 0" class="text-[13px] text-muted-foreground">No project container runs on this server.</p>
+          <ul v-else class="flex flex-col divide-y divide-border">
+            <li v-for="c in serverContainers" :key="`${c.project}|${c.container}`" class="flex flex-col gap-1.5 py-2 first:pt-0 last:pb-0 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+              <span class="min-w-0 font-mono text-[13px] [overflow-wrap:anywhere]">{{ c.container }} <span class="font-sans text-xs text-muted-foreground">in {{ c.project }}</span></span>
+              <ForecastChip kind="memory" :item="c" detail />
+            </li>
+          </ul>
+        </div>
+      </template>
     </section>
 
     <section aria-labelledby="history-title" class="flex flex-col gap-3">

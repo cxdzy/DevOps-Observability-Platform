@@ -69,3 +69,46 @@ export async function postChat<T>(message: string, context: unknown): Promise<T>
     throw { status: 0, data: null }
   }
 }
+
+// ---- Forecast (GET /api/forecast). Every value can be null when the data does not have it.
+export type ForecastState = 'ok' | 'no_limit' | 'not_enough_data' | 'warning' | 'restarting' | 'no_data'
+export interface ContainerForecast {
+  server: string
+  server_name: string
+  project: string
+  container: string
+  state: ForecastState
+  reason: string | null
+  est_minutes: number | null
+  limit_mb: number | null
+  level_mb: number | null
+  slope_mb_per_min: number | null
+  r2: number | null
+  restarts: number | null
+  oom: boolean | null
+  since: string | null
+  updated_at: string | null
+}
+export interface DiskForecast {
+  server: string
+  server_name: string
+  mountpoint: string
+  state: ForecastState
+  reason: string | null
+  est_hours: number | null
+  used_pct: number | null
+  slope_pct_per_hour: number | null
+  r2: number | null
+  since: string | null
+  updated_at: string | null
+}
+export interface ForecastInfo {
+  last_run_at: string | null
+  containers: ContainerForecast[]
+  disks: DiskForecast[]
+}
+export async function getForecast(): Promise<ForecastInfo> {
+  const { data } = await api.get<ForecastInfo>('/api/forecast')
+  if (!data || !Array.isArray(data.containers) || !Array.isArray(data.disks)) throw new Error('unexpected response')
+  return data
+}

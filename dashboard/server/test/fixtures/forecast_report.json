@@ -1,0 +1,83 @@
+{
+  "note": "Fixture for scripts/forecast-report.js. Series points are [minutes after from, value]; the test turns them into [ms, value]. Limits and sizes are in bytes.",
+  "from": "2026-11-22T08:00:00Z",
+  "to": "2026-11-22T11:00:00Z",
+  "warnings": [
+    {
+      "id": "1",
+      "resource": "disk",
+      "server": "main",
+      "project": null,
+      "container": null,
+      "mountpoint": "/",
+      "opened_at": "2026-11-22T08:10:00Z",
+      "closed_at": null,
+      "close_reason": null,
+      "est_minutes_at_open": 300,
+      "config_version": "2026-11-22.1"
+    },
+    {
+      "id": "2",
+      "resource": "memory",
+      "server": "old",
+      "project": "bot",
+      "container": "kotone-bot",
+      "mountpoint": null,
+      "opened_at": "2026-11-22T08:30:00Z",
+      "closed_at": "2026-11-22T09:10:00Z",
+      "close_reason": "restart_cut",
+      "est_minutes_at_open": 40,
+      "config_version": "2026-11-22.1"
+    },
+    {
+      "id": "3",
+      "resource": "memory",
+      "server": "old",
+      "project": "bot",
+      "container": "api",
+      "mountpoint": null,
+      "opened_at": "2026-11-22T09:00:00Z",
+      "closed_at": "2026-11-22T09:20:00Z",
+      "close_reason": "steady",
+      "est_minutes_at_open": 30,
+      "config_version": "2026-11-22.1"
+    },
+    {
+      "id": "4",
+      "resource": "restarts",
+      "server": "old",
+      "project": "bot",
+      "container": "kotone-bot",
+      "mountpoint": null,
+      "opened_at": "2026-11-22T09:12:00Z",
+      "closed_at": "2026-11-22T09:40:00Z",
+      "close_reason": "steady",
+      "est_minutes_at_open": null,
+      "config_version": "2026-11-22.1"
+    }
+  ],
+  "history": {
+    "memory|old|kotone-bot": {
+      "ws": [[0, 300000000], [30, 340000000], [60, 370000000], [65, 381000000], [70, 200000000], [180, 210000000]],
+      "limit": [[0, 400000000], [180, 400000000]],
+      "start": [[0, 1795000000], [65, 1795000000], [70, 1795320000], [180, 1795320000]],
+      "oom": [[0, 0], [180, 0]]
+    },
+    "memory|old|api": {
+      "ws": [[0, 250000000], [60, 300000000], [80, 300000000], [180, 300000000]],
+      "limit": [[0, 400000000], [180, 400000000]],
+      "start": [[0, 1795000000], [180, 1795000000]],
+      "oom": [[0, 0], [180, 0]]
+    },
+    "memory|old|worker2": {
+      "ws": [[0, 100000000], [120, 300000000], [150, 382000000], [160, 300000000], [180, 300000000]],
+      "limit": [[0, 400000000], [180, 400000000]],
+      "start": [[0, 1795000000], [180, 1795000000]],
+      "oom": [[0, 0], [180, 0]]
+    },
+    "disk|main|/": {
+      "size": [[0, 100000000000], [180, 100000000000]],
+      "avail": [[0, 9000000000], [60, 7500000000], [120, 6000000000], [130, 5000000000], [180, 4500000000]]
+    }
+  }
+}

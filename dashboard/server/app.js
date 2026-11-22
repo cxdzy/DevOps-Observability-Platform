@@ -20,6 +20,8 @@ const { createProjects } = require("./projects");
 const { createChatRouter } = require("./routes/chat");
 const { createChatLog, createPool } = require("./chat/log");
 const { loadLlm, DAYS: LLM_DAYS } = require("./llm");
+const { createForecastJob } = require("./forecast/job");
+const { createForecastRouter } = require("./routes/forecast");
 
 // "node must be main or old", from the active server keys.
 function nodeMessage(keys) {
@@ -71,6 +73,9 @@ const TRUST_NOBODY = { has: () => false };
 // watcherPrometheus: the same for the image watcher.
 // startWatcher: true or false to force the image watcher on or off. By default it runs, except in
 // a node --test process, so tests never leave a timer behind.
+// forecastPrometheus, forecastJob, forecastToken, startForecast: the forecast job's client, a job to
+// use instead of a new one, the notify token (defaults to FORECAST_NOTIFY_TOKEN) and the same on or
+// off switch as startWatcher.
 // mlflow: a client from mlflow.js. Defaults to MLFLOW_URL.
 // config: { appOrigin, cookieSecure, sessionMaxAgeMs, googleClientId, googleClientSecret, clientDist, bcryptCost }
 // trusted: the resolved trusted proxy addresses (security.createTrustedProxies).
@@ -119,6 +124,15 @@ function createApp(deps) {
     }
     res.json({ status: "ok", time: new Date().toISOString(), influx });
   });
+
+  // The servers and projects registry. Views read the active servers from it instead of constants.
+  const registry = createRegistry({ db, now, log });
+
+  // Forecast: the 60 s job and its routes. The internal route has its own token check, so the router
+  // is mounted before the session check and puts that check on its other routes itself.
+  const forecastJob = deps.forecastJob || createForecastJob({ db, registry, prometheus: deps.forecastPrometheus, now, log });
+  app.use("/api", createForecastRouter({ job: forecastJob, db, auth, trusted: deps.trusted || TRUST_NOBODY, now, token: deps.forecastToken !== undefined ? deps.forecastToken : process.env.FORECAST_NOTIFY_TOKEN }));
+  if (deps.startForecast !== undefined ? Boolean(deps.startForecast) : !process.env.NODE_TEST_CONTEXT) forecastJob.start();
 
   // Everything else under /api needs a session.
   app.use("/api", auth.requireAuth);
@@ -216,9 +230,6 @@ function createApp(deps) {
       res.status(502).json({ error: "influxdb unreachable" });
     }
   });
-
-  // The servers and projects registry. Views read the active servers from it instead of constants.
-  const registry = createRegistry({ db, now, log });
 
   // The active servers for every signed-in user.
   app.get("/api/servers", async (req, res) => {
@@ -417,7 +428,7 @@ function createApp(deps) {
     res.status(status).json({ error: status === 500 ? "internal error" : "bad request" });
   });
 
-  return { app, auth, google, deployments, stopWatcher: deployments.stop };
+  return { app, auth, google, deployments, stopWatcher: deployments.stop, forecastJob };
 }
 
 module.exports = { createApp };

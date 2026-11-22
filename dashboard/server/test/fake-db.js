@@ -145,9 +145,72 @@ function createFakeDb() {
   let registry = seedRegistry();
   let watcherBusy = false;
   const now = () => new Date();
+  // forecast_events, with the same open row rule as forecast_events_open_idx.
+  const forecastEvents = [];
+  let nextForecastId = 1;
+  const forecastKey = (e) => [e.resource, e.server, e.container || "", e.mountpoint || ""].join("|");
+  const copyEvent = (e) => ({ ...e });
 
   return {
     users,
+    forecastEvents,
+    async listOpenForecastEvents() {
+      return forecastEvents.filter((e) => e.closed_at === null).map(copyEvent);
+    },
+    async insertForecastEvent(e) {
+      const key = forecastKey(e);
+      const open = forecastEvents.find((x) => x.closed_at === null && forecastKey(x) === key);
+      if (open) return copyEvent(open);
+      const row = {
+        id: String(nextForecastId++),
+        resource: e.resource,
+        server: e.server,
+        project: e.project ?? null,
+        container: e.container ?? null,
+        mountpoint: e.mountpoint ?? null,
+        opened_at: new Date(e.openedAt),
+        closed_at: null,
+        close_reason: null,
+        est_minutes_at_open: e.estMinutes ?? null,
+        est_minutes_latest: e.estMinutes ?? null,
+        limit_value: e.limitValue ?? null,
+        level_at_open: e.level ?? null,
+        slope_per_min: e.slope ?? null,
+        r2: e.r2 ?? null,
+        window_min: e.windowMin ?? null,
+        config_version: e.configVersion,
+      };
+      forecastEvents.push(row);
+      return copyEvent(row);
+    },
+    async updateForecastEstimate(id, estMinutes) {
+      const row = forecastEvents.find((x) => x.id === String(id) && x.closed_at === null);
+      if (row) row.est_minutes_latest = estMinutes;
+    },
+    async closeForecastEvent(id, closedAt, reason, estMinutes) {
+      const row = forecastEvents.find((x) => x.id === String(id) && x.closed_at === null);
+      if (!row) return;
+      row.closed_at = new Date(closedAt);
+      row.close_reason = reason;
+      if (estMinutes !== null && estMinutes !== undefined) row.est_minutes_latest = estMinutes;
+    },
+    async listForecastEvents(from, to, limit) {
+      const f = new Date(from).getTime();
+      const t = new Date(to).getTime();
+      return forecastEvents
+        .filter((e) => e.opened_at.getTime() < t && (e.closed_at === null || e.closed_at.getTime() >= f))
+        .sort((a, b) => a.opened_at - b.opened_at || Number(a.id) - Number(b.id))
+        .slice(0, limit)
+        .map(copyEvent);
+    },
+    async listNewForecastEvents(since, limit, afterId = null) {
+      const s = new Date(since).getTime();
+      return forecastEvents
+        .filter((e) => e.opened_at.getTime() > s || (afterId !== null && e.opened_at.getTime() === s && Number(e.id) > Number(afterId)))
+        .sort((a, b) => a.opened_at - b.opened_at || Number(a.id) - Number(b.id))
+        .slice(0, limit)
+        .map(copyEvent);
+    },
     sessions,
     // The registry tables, for tests that check what was stored.
     get registry() {

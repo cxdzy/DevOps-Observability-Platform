@@ -127,6 +127,38 @@ BEGIN
   END IF;
 END
 $$;
+-- Time-to-limit warnings from the forecast job (forecast/job.js). One row per warning; at most one
+-- open row (closed_at null) per resource, server, container and mountpoint. No message text.
+CREATE TABLE IF NOT EXISTS forecast_events (
+  id bigserial PRIMARY KEY,
+  resource text NOT NULL CHECK (resource IN ('memory', 'disk', 'restarts')),
+  server text NOT NULL,
+  project text,
+  container text,
+  mountpoint text,
+  opened_at timestamptz NOT NULL,
+  closed_at timestamptz,
+  close_reason text,
+  est_minutes_at_open double precision,
+  est_minutes_latest double precision,
+  limit_value double precision,
+  level_at_open double precision,
+  slope_per_min double precision,
+  r2 double precision,
+  window_min double precision,
+  config_version text NOT NULL
+);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'forecast_events_close_reason_check' AND conrelid = 'forecast_events'::regclass) THEN
+    ALTER TABLE forecast_events ADD CONSTRAINT forecast_events_close_reason_check
+      CHECK (close_reason IS NULL OR close_reason IN ('steady', 'estimate_rose', 'container_gone', 'restart_cut'));
+  END IF;
+END
+$$;
+CREATE UNIQUE INDEX IF NOT EXISTS forecast_events_open_idx
+  ON forecast_events (resource, server, COALESCE(container, ''), COALESCE(mountpoint, '')) WHERE closed_at IS NULL;
+CREATE INDEX IF NOT EXISTS forecast_events_opened_idx ON forecast_events (opened_at);
 `;
 
 // The records the registry starts with. Written on start when missing (and logged once as
@@ -343,6 +375,63 @@ function createDb(pool) {
 
   const reads = registryOps(pool);
 
+  // forecast_events is the only table the forecast job writes. An insert that meets the open row
+  // index (one open row per key) returns the row that is already open instead.
+  const FORECAST_COLUMNS =
+    "id, resource, server, project, container, mountpoint, opened_at, closed_at, close_reason, est_minutes_at_open, est_minutes_latest, " +
+    "limit_value, level_at_open, slope_per_min, r2, window_min, config_version";
+  const forecast = {
+    async listOpenForecastEvents() {
+      return (await pool.query(`SELECT ${FORECAST_COLUMNS} FROM forecast_events WHERE closed_at IS NULL ORDER BY opened_at, id`)).rows;
+    },
+    async insertForecastEvent(e) {
+      const inserted = await one(
+        `INSERT INTO forecast_events (resource, server, project, container, mountpoint, opened_at, est_minutes_at_open, est_minutes_latest,
+                                      limit_value, level_at_open, slope_per_min, r2, window_min, config_version)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13)
+         ON CONFLICT DO NOTHING RETURNING ${FORECAST_COLUMNS}`,
+        [e.resource, e.server, e.project, e.container, e.mountpoint, e.openedAt, e.estMinutes, e.limitValue, e.level, e.slope, e.r2, e.windowMin, e.configVersion]
+      );
+      if (inserted) return inserted;
+      return one(
+        `SELECT ${FORECAST_COLUMNS} FROM forecast_events
+          WHERE closed_at IS NULL AND resource = $1 AND server = $2 AND COALESCE(container, '') = COALESCE($3, '') AND COALESCE(mountpoint, '') = COALESCE($4, '')`,
+        [e.resource, e.server, e.container, e.mountpoint]
+      );
+    },
+    async updateForecastEstimate(id, estMinutes) {
+      await pool.query("UPDATE forecast_events SET est_minutes_latest = $2 WHERE id = $1 AND closed_at IS NULL", [id, estMinutes]);
+    },
+    async closeForecastEvent(id, closedAt, reason, estMinutes) {
+      await pool.query(
+        "UPDATE forecast_events SET closed_at = $2, close_reason = $3, est_minutes_latest = COALESCE($4, est_minutes_latest) WHERE id = $1 AND closed_at IS NULL",
+        [id, closedAt, reason, estMinutes]
+      );
+    },
+    // Warnings that were open at some time between from and to, oldest first.
+    async listForecastEvents(from, to, limit) {
+      return (
+        await pool.query(
+          `SELECT ${FORECAST_COLUMNS} FROM forecast_events
+            WHERE opened_at < $2 AND (closed_at IS NULL OR closed_at >= $1) ORDER BY opened_at, id LIMIT $3`,
+          [from, to, limit]
+        )
+      ).rows;
+    },
+    // Warnings opened after since, oldest first. Rows of one run share opened_at, so afterId pages
+    // through them: with afterId, rows opened exactly at since count only when their id is larger.
+    async listNewForecastEvents(since, limit, afterId = null) {
+      return (
+        await pool.query(
+          `SELECT ${FORECAST_COLUMNS} FROM forecast_events
+            WHERE opened_at > $1 OR ($3::bigint IS NOT NULL AND opened_at = $1 AND id > $3::bigint)
+            ORDER BY opened_at, id LIMIT $2`,
+          [since, limit, afterId]
+        )
+      ).rows;
+    },
+  };
+
   return {
     // The schema and the seed run in one transaction under the registry lock, so two processes
     // starting at the same time on an empty database do not race on CREATE TABLE or the triggers,
@@ -356,6 +445,7 @@ function createDb(pool) {
 
     transaction,
     withWatcherLock,
+    ...forecast,
     listDetectedDeployments: reads.listDetectedDeployments,
     listServers: reads.listServers,
     listProjects: reads.listProjects,

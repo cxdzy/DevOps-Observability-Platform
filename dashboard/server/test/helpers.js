@@ -40,6 +40,9 @@ async function startApp(options = {}) {
     now: () => clock.t,
     log: (line) => logs.push(line),
     oidc: options.oidc,
+    // The forecast job and notify token; tests never read FORECAST_NOTIFY_TOKEN from the environment.
+    forecastJob: options.forecastJob,
+    forecastToken: options.forecastToken === undefined ? "" : options.forecastToken,
     // By default the test client (127.0.0.1) plays the trusted proxy, so tests can choose the client
     // address with CF-Connecting-IP. trustLoopback: false makes it an untrusted direct caller.
     trusted: { has: (ip) => options.trustLoopback !== false && ip === "127.0.0.1" },
