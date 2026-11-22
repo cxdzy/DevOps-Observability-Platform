@@ -814,3 +814,13 @@ test("store: the Malay word list matches the server parser", async () => {
   assert.equal(isMalay("Berapa lama insiden itu?"), true);
   assert.equal(isMalay("How long did it last?"), false);
 });
+
+// ------------------------------------------------------------------ bench copy
+
+test("the bench copy of the follow-up scenarios is the same as the test fixture", () => {
+  const fs = require("fs");
+  const read = (...parts) => fs.readFileSync(path.join(__dirname, ...parts), "utf8").replace(/\r\n/g, "\n");
+  const fixture = read("fixtures", "followup_scenarios.json");
+  const bench = read("..", "..", "..", "bench", "chat_model_test", "followup_scenarios.json");
+  assert.equal(bench, fixture, "copy dashboard/server/test/fixtures/followup_scenarios.json to bench/chat_model_test/");
+});
