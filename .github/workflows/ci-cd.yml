@@ -113,6 +113,7 @@ jobs:
               --name sample-service \
               --restart unless-stopped \
               --network fyp-observability_obs-net \
+              --memory 512m --memory-swap 512m \
               -p 127.0.0.1:4000:4000 \
               ${{ needs.build-and-push.outputs.image_tag }}
             docker image prune -f
@@ -168,6 +169,7 @@ jobs:
               --name sample-service \
               --restart unless-stopped \
               --network fyp-observability_obs-net \
+              --memory 512m --memory-swap 512m \
               -p 127.0.0.1:4000:4000 \
               "$ROLLBACK_IMAGE"
             docker image prune -f
