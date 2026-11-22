@@ -152,3 +152,124 @@ test("tier: sentences without both a tier and a time are left alone", () => {
     "There were 2 medium incidents in the last 6 hours.",
   ]) assert.deepEqual(checkAnswer(neutral, LIVE), [], neutral);
 });
+
+// ------------------------------------------------------------------ absence claims
+
+// The live case at 08:48 MYT: incidents at 08:17 and 08:19 in the last hour, 13 in 6 hours.
+const HOUR = [
+  "FACTS (snapshot 2026-11-22T00:48:00Z, times in MYT, UTC+8)",
+  "anomaly latest: 08:46, score 0.361, threshold 0.458, flagged no, tier none",
+  "incidents last 6 h: 13 (low 5, medium 8, high 0)",
+  "highest peak: 0.718 at 06:32 (tier low, signal cpu)",
+  "- 08:19, tier medium, signal memory, 1 min, peak 0.470, deployment no, closed.",
+  "- 08:17, tier medium, signal memory, 1 min, peak 0.461, deployment no, closed.",
+  "- 07:43, tier medium, signal memory, 2 min, peak 0.500, deployment no, closed.",
+  "- 06:32, tier low, signal cpu, 1 min, peak 0.718, deployment no, closed.",
+  "- (9 older incidents not listed)",
+  "Only the facts above are available. Logs, commit messages and metrics not listed are not available.",
+].join("\n");
+// Quiet: no incident in 6 hours, latest minute not flagged.
+const QUIET = [
+  "FACTS (snapshot 2026-11-22T00:48:00Z, times in MYT, UTC+8)",
+  "anomaly latest: 08:46, score 0.361, threshold 0.458, flagged no, tier none",
+  "incidents last 6 h: 0 (low 0, medium 0, high 0)",
+  "highest peak: none",
+  "Only the facts above are available. Logs, commit messages and metrics not listed are not available.",
+].join("\n");
+// Nothing in the last hour, but an incident earlier in the 6 hours, and the latest minute flagged.
+const EARLIER = [
+  "FACTS (snapshot 2026-11-22T00:48:00Z, times in MYT, UTC+8)",
+  "anomaly latest: 08:46, score 0.512, threshold 0.458, flagged yes, tier low",
+  "incidents last 6 h: 1 (low 1, medium 0, high 0)",
+  "- 06:32, tier low, signal cpu, 1 min, peak 0.718, deployment no, closed.",
+  "Only the facts above are available. Logs, commit messages and metrics not listed are not available.",
+].join("\n");
+
+test("absence: the live false claim fails, in the FACTS window and in a named window", () => {
+  assert.deepEqual(checkAnswer("There were no flagged anomalies or incidents reported.", HOUR),
+    ["says there were no incidents, but the FACTS list 13 in the last 6 h"]);
+  assert.deepEqual(checkAnswer("There were no incidents in the last hour.", HOUR),
+    ["says there were no incidents, but the FACTS list 2 in the last 1 h"]);
+  assert.deepEqual(checkAnswer("Nothing was flagged in the past 30 minutes.", HOUR, "Anything in the last 30 minutes?"),
+    ["says there were no incidents, but the FACTS list 2 in the last 30 min"]);
+  assert.deepEqual(checkAnswer("No anomalies over the last 2 hours; none were reported.", HOUR),
+    ["says there were no incidents, but the FACTS list 3 in the last 2 h"]);
+});
+
+test("absence: correct claims pass", () => {
+  assert.deepEqual(checkAnswer("There were no incidents in the last 6 hours.", QUIET), []);
+  assert.deepEqual(checkAnswer("No anomalies were flagged and none were reported.", QUIET), []);
+  // The named window is quiet even though the 6 hours are not.
+  assert.deepEqual(checkAnswer("There were no incidents in the last hour.", EARLIER), []);
+  assert.deepEqual(checkAnswer("Tiada insiden dalam sejam lepas.", EARLIER), []);
+  assert.deepEqual(checkAnswer("There are no anomalies right now.", HOUR), []);
+});
+
+test("absence: Malay claims", () => {
+  assert.deepEqual(checkAnswer("Tiada insiden dalam sejam lepas.", HOUR), ["says there were no incidents, but the FACTS list 2 in the last 1 h"]);
+  assert.deepEqual(checkAnswer("Tiada anomali yang dilaporkan.", HOUR), ["says there were no incidents, but the FACTS list 13 in the last 6 h"]);
+  assert.deepEqual(checkAnswer("Tiada apa-apa yang ditanda dalam 2 jam lepas.", HOUR), ["says there were no incidents, but the FACTS list 3 in the last 2 h"]);
+  assert.deepEqual(checkAnswer("Tidak ada insiden dalam 6 jam lepas.", QUIET), []);
+  assert.deepEqual(checkAnswer("Tiada apa-apa yang perlu dirisaukan.", HOUR), []);
+});
+
+test("absence: the present is checked against the latest minute only", () => {
+  assert.deepEqual(checkAnswer("Nothing is flagged right now.", EARLIER), ["says nothing is flagged now, but the latest minute is flagged"]);
+  assert.deepEqual(checkAnswer("Tiada anomali sekarang.", HOUR), []);
+});
+
+test("absence: negated, partial and subset sentences are left alone", () => {
+  for (const neutral of [
+    "Not every minute was flagged.",
+    "Not all incidents were linked to a deployment.",
+    "No incident is still open.",
+    "There were no high incidents in the last hour.",
+    "No incident was linked to a deployment.",
+    "There were no memory incidents in the last hour.",
+    "Tiada insiden terbuka.",
+    "Two incidents were flagged in the last hour, at 08:17 and 08:19.",
+  ]) assert.deepEqual(checkAnswer(neutral, HOUR), [], neutral);
+});
+
+test("absence: a false no-incident reply is retried once, then replaced by the fallback, with the reason logged", async (t) => {
+  const { startApp } = require("./helpers");
+  const { RETRY_LINE } = require("../routes/chat");
+  const T = Date.UTC(2026, 9, 30, 8, 0, 0); // the helpers' clock
+  // Two incidents, both inside the last hour from 16:00: 15:00 to 15:02 (closed) and 15:50 (open).
+  const query = async (q) => {
+    if (q.startsWith('SELECT * FROM "anomaly_score"')) {
+      return [{ time: T - 120000, score: 0.347, threshold: 0.602, is_anomaly: 0, tier: "none", model: "v10",
+        cpu_rate: 0.0029, memory_max_mb: 127, latency_ms: 1.5, base_cpu_rate: 0.0028, base_memory_max_mb: 124, base_latency_ms: 1.5 }];
+    }
+    if (q.includes('FROM "incident_explanation"')) {
+      return [{ time: T - 3600000, tier: "medium", signal: "memory", minutes: 2, peak_score: 0.661, deployment: 0, explanation: "What happened: Memory." }];
+    }
+    if (q.includes('FROM "incident_open"')) return [{ time: T - 600000, tier: "low", signal: "cpu", minutes: 1, peak_score: 0.703, deployment: 0 }];
+    return [];
+  };
+  const calls = [];
+  const ollama = {
+    canThink: async () => false,
+    ping: async () => true,
+    async chat(messages) {
+      calls.push(messages);
+      const text = calls.length === 1 ? "There were no flagged anomalies or incidents reported." : "Tiada insiden dalam sejam lepas.";
+      return { text, promptTokens: 1, evalTokens: 1, evalMs: 1, loadMs: 0, latencyMs: 1 };
+    },
+  };
+  const records = [];
+  const chatLog = { enabled: true, async record(c, reply) { records.push({ calls: c, reply }); }, async stats() { return {}; } };
+  const app = await startApp({ query, config: { chat: { prometheus: { query: async () => [] }, ollama, chatLog, env: {}, log: () => {} } } });
+  t.after(app.close);
+  await app.addUser("viewer@example.com", "viewer", "a long enough password");
+  const { cookie } = await app.login("viewer@example.com", "a long enough password");
+  const body = await (await app.request("/api/chat", { json: { message: "Summarise the last hour" }, headers: { cookie } })).json();
+  assert.equal(calls.length, 2);
+  assert.ok(calls[1][1].content.endsWith(`\n${RETRY_LINE}`));
+  assert.equal(body.kind, "fallback");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(records[0].calls.map((c) => [c.attempt, c.checkPassed, c.rejected]), [
+    [1, false, "says there were no incidents, but the FACTS list 2 in the last 6 h"],
+    [2, false, "says there were no incidents, but the FACTS list 2 in the last 1 h"],
+  ]);
+});

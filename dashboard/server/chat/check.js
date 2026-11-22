@@ -3,7 +3,8 @@
 // FACTS or in the user's question as the same token ("34" does not pass because FACTS has "0.347"),
 // and the answer must not claim an action. A sentence that compares a score with the threshold must
 // state the direction the numbers have, and a sentence that gives a tier and a time must match an
-// incident in FACTS. Pure functions, no I/O.
+// incident in FACTS, and a sentence that says there were no incidents must agree with FACTS for its
+// window. Pure functions, no I/O.
 
 const TIME = /(?<![\d:])\d{1,2}:\d{2}(?![\d:])/g;
 const NUMBER = /(?<![\d.])\d+(?:\.\d+)?(?![\d])/g;
@@ -145,6 +146,96 @@ function tierProblems(answer, factsText) {
   return problems;
 }
 
+// ------------------------------------------------------------------ absence claims
+
+// Sentences that say nothing happened: no incidents, no anomalies, nothing flagged.
+const ABSENCE = [
+  /\bno\s+(?:\w+\s+){0,2}?(?:incidents?|anomal(?:y|ies)|flagged\s+minutes?|flags?)\b/i,
+  /\bzero\s+incidents\b/i,
+  /\bnothing\s+(?:\w+\s+){0,2}?flagged\b/i,
+  /\bnone\s+(?:were|was|have\s+been|has\s+been)\s+(?:reported|flagged|recorded|detected)\b/i,
+  /\b(?:tiada|tidak\s+ada)\s+(?:\w+\s+)?(?:insiden|anomali)\b/i,
+  // "tiada apa-apa yang ditanda"; "tiada apa-apa yang perlu dirisaukan" is advice, not a count.
+  /\btiada\s+apa-apa\s+(?:yang\s+)?(?:ditanda|dikesan|berlaku|insiden|anomali)\b/i,
+];
+// A claim about a subset ("no high incidents", "no incident is open", "no incident was linked to a
+// deployment") can be true while other incidents exist, so it is not checked.
+const SUBSET = /\b(?:open|opened|ongoing|active|still|terbuka|deploy\w*|low|medium|high|cpu|memory|memori|latency|latensi|new|other|more|further|lain|baru|unclear|restart\w*|rollback)\b/i;
+// The present ("no anomalies right now") is about the latest scored minute only.
+const PRESENT = /\b(?:now|right\s+now|currently|at\s+the\s+moment|at\s+present|sekarang|kini|pada\s+masa\s+ini)\b/i;
+// A window the sentence names, in minutes.
+const WINDOWS = [
+  [/\b(?:last|past|previous)\s+hour\b|\bsejam\s+(?:lepas|yang\s+lalu)\b|\bsatu\s+jam\s+(?:lepas|yang\s+lalu)\b/i, () => 60],
+  [/\b(?:last|past|previous)\s+(\d+)\s*(?:hours?|hrs?|h)\b|\b(\d+)\s+jam\s+(?:lepas|yang\s+lalu)\b/i, (m) => Number(m[1] || m[2]) * 60],
+  [/\b(?:last|past|previous)\s+(\d+)\s*(?:minutes?|mins?)\b|\b(\d+)\s+minit\s+(?:lepas|yang\s+lalu)\b/i, (m) => Number(m[1] || m[2])],
+  [/\b(?:last|past|previous)\s+(?:half\s+an\s+hour|30\s+minutes)\b|\bsetengah\s+jam\s+lepas\b/i, () => 30],
+];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MYT_MS = 8 * 60 * 60 * 1000;
+
+// What FACTS says about incidents: the snapshot time, the window in hours, the incident count, the
+// listed incidents as { start, end } in ms, and the latest scored minute. null fields are unknown.
+function incidentFacts(factsText) {
+  const text = String(factsText);
+  const snap = /FACTS \(snapshot (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/.exec(text);
+  const snapshotMs = snap ? Date.parse(snap[1]) : null;
+  const head = /^incidents last (\d+) h: (\d+)\b/m.exec(text);
+  const listed = [];
+  if (snapshotMs !== null) {
+    const today = new Date(snapshotMs + MYT_MS);
+    for (const m of text.matchAll(/^- (\d{1,2}):(\d{2})(?: (\d{1,2}) (\w{3}))?, tier \w+, signal \w+, (\d+) min\b/gm)) {
+      const day = m[3] ? Number(m[3]) : today.getUTCDate();
+      const month = m[4] ? MONTHS.indexOf(m[4]) : today.getUTCMonth();
+      if (month < 0) continue;
+      let start = Date.UTC(today.getUTCFullYear(), month, day, Number(m[1]), Number(m[2])) - MYT_MS;
+      if (start > snapshotMs + 60000) start -= 365 * 24 * 60 * 60 * 1000; // a date from last year
+      listed.push({ start, end: start + Number(m[5]) * 60000 });
+    }
+  }
+  const latest = /^anomaly latest: [^\n]*\bflagged (yes|no)\b/m.exec(text);
+  return {
+    snapshotMs,
+    windowH: head ? Number(head[1]) : null,
+    count: head ? Number(head[2]) : null,
+    listed,
+    latestFlagged: latest ? latest[1] === "yes" : null,
+  };
+}
+
+// The minutes of the window a sentence names, or null.
+function namedWindow(sentence) {
+  for (const [pattern, minutes] of WINDOWS) {
+    const m = pattern.exec(sentence);
+    if (m) return minutes(m);
+  }
+  return null;
+}
+
+// A sentence that says there were no incidents, anomalies or flagged minutes fails when FACTS lists
+// at least one in the window it talks about: the window it names, else the FACTS window.
+function absenceProblems(answer, factsText) {
+  const f = incidentFacts(factsText);
+  const problems = [];
+  for (const sentence of sentences(answer)) {
+    if (!ABSENCE.some((p) => p.test(sentence)) || SUBSET.test(sentence)) continue;
+    if (PRESENT.test(sentence)) {
+      if (f.latestFlagged) problems.push("says nothing is flagged now, but the latest minute is flagged");
+      continue;
+    }
+    const minutes = namedWindow(sentence);
+    if (minutes === null || (f.windowH !== null && minutes >= f.windowH * 60)) {
+      if (f.count > 0) problems.push(`says there were no incidents, but the FACTS list ${f.count} in the last ${f.windowH} h`);
+      continue;
+    }
+    if (f.snapshotMs === null) continue;
+    const from = f.snapshotMs - minutes * 60000;
+    const inside = f.listed.filter((i) => i.end >= from).length;
+    const label = minutes % 60 === 0 ? `${minutes / 60} h` : `${minutes} min`;
+    if (inside > 0) problems.push(`says there were no incidents, but the FACTS list ${inside} in the last ${label}`);
+  }
+  return problems;
+}
+
 // Returns the list of problems; an empty list means the answer passed. A number or time the user
 // wrote in the question ("in 24 hours") may be repeated in the answer.
 function checkAnswer(answer, factsText, question = "") {
@@ -158,9 +249,9 @@ function checkAnswer(answer, factsText, question = "") {
   for (const n of found.numbers) if (!factNumbers.has(n)) problems.push(`number ${n} is not in the FACTS or the question`);
   const claim = ACTION_CLAIMS.exec(String(answer));
   if (claim) problems.push(`claims an action ("${claim[1]}")`);
-  problems.push(...directionProblems(answer, factsText), ...tierProblems(answer, factsText));
+  problems.push(...directionProblems(answer, factsText), ...tierProblems(answer, factsText), ...absenceProblems(answer, factsText));
   if (!String(answer).trim()) problems.push("empty answer");
   return problems;
 }
 
-module.exports = { checkAnswer, tokens, directionProblems, tierProblems };
+module.exports = { checkAnswer, tokens, directionProblems, tierProblems, absenceProblems };
