@@ -15,6 +15,10 @@
     { "offset_min": -60, "score": 0.91, "threshold": 0.602, "memory_max_mb": 136, "base_memory_max_mb": 135, "cpu_rate": 0.003, "base_cpu_rate": 0.0029, "latency_ms": 45, "base_latency_ms": 1.5 },
     { "offset_min": -59, "score": 0.8, "threshold": 0.602, "memory_max_mb": 136, "base_memory_max_mb": 135, "cpu_rate": 0.003, "base_cpu_rate": 0.0029, "latency_ms": 30, "base_latency_ms": 1.5 }
   ],
+  "actions": [
+    { "offset_min": -176, "action": "restart", "mode": "approved", "outcome": "success", "service_up": 1 },
+    { "offset_min": -57, "action": "rollback", "mode": "approval", "outcome": "rejected", "service_up": null }
+  ],
   "scenarios": [
     {
       "id": "S1", "name": "last incident then cause",
@@ -110,6 +114,90 @@
           "The incident at 15:00 (tier high) was triggered by the latency signal.",
           "Its peak was 45.0 ms, 30.0 times the normal reference of 1.5 ms."
         ], "context_start": -60 } }
+      ]
+    },
+    {
+      "id": "S11", "name": "was anything restarted, then next and next keep the restart question",
+      "turns": [
+        { "message": "Was anything restarted?", "context_from": -180, "expect": { "kind": "template", "includes": [
+          "For the incident at 13:00: a restart at 13:04 MYT was approved on Telegram and succeeded, and the service was back up 60 s later."
+        ], "context_start": -180 } },
+        { "message": "next one", "expect": { "kind": "template", "includes": ["Nothing was restarted or rolled back for the incident at 14:00."], "context_start": -120 } },
+        { "message": "next one", "expect": { "kind": "template", "includes": [
+          "For the incident at 15:00: a rollback request at 15:03 MYT was rejected, so nothing was rolled back."
+        ], "excludes": ["13:04"], "context_start": -60 } },
+        { "message": "Ada restart tak?", "context_from": -180, "expect": { "kind": "template", "includes": [
+          "Untuk insiden pada 13:00: restart pada 13:04 MYT diluluskan di Telegram dan berjaya, dan servis kembali aktif 60 s kemudian."
+        ], "context_start": -180 } }
+      ]
+    },
+    {
+      "id": "S12", "name": "how high did it go, then the one before keeps the peak question",
+      "turns": [
+        { "message": "Last incident", "expect": { "kind": "template", "context_start": -60 } },
+        { "message": "How high did it go?", "expect": { "kind": "template", "includes": [
+          "The incident at 15:00 peaked at an anomaly score of 0.910 against a threshold of 0.602."
+        ], "context_start": -60 } },
+        { "message": "And the one before?", "expect": { "kind": "template", "includes": [
+          "The incident at 14:00 peaked at an anomaly score of 0.640 against a threshold of no data."
+        ], "context_start": -120 } },
+        { "message": "Setinggi mana ia naik?", "context_from": -180, "expect": { "kind": "template", "includes": [
+          "Insiden pada 13:00 memuncak pada skor anomali 0.688 berbanding ambang 0.602."
+        ], "context_start": -180 } }
+      ]
+    },
+    {
+      "id": "S13", "name": "how serious was it, in Malay, then the one before keeps the tier question",
+      "turns": [
+        { "message": "Insiden terakhir", "expect": { "kind": "template", "context_start": -60 } },
+        { "message": "Teruk tak insiden itu?", "expect": { "kind": "template", "includes": [
+          "Insiden pada 15:00 ialah tier high. Tier high menawarkan rollback ke imej sebelumnya."
+        ], "context_start": -60 } },
+        { "message": "Yang sebelum itu?", "expect": { "kind": "template", "includes": [
+          "Insiden pada 14:00 ialah tier low. Tier low hanya menghantar notifikasi."
+        ], "context_start": -120 } },
+        { "message": "How serious was it?", "context_from": -180, "expect": { "kind": "template", "includes": [
+          "The incident at 13:00 was tier medium. Tier medium offers a container restart."
+        ], "context_start": -180 } }
+      ]
+    },
+    {
+      "id": "S14", "name": "an incident named by time moves the context to it",
+      "turns": [
+        { "message": "Last incident", "expect": { "kind": "template", "context_start": -60 } },
+        { "message": "What caused the incident at 14:00?", "expect": { "kind": "template", "includes": [
+          "The incident at 14:00 (tier low) was triggered by the cpu signal."
+        ], "context_start": -120 } },
+        { "message": "the incident at 13:00", "expect": { "kind": "template", "includes": [
+          "The incident at 13:00: tier medium, signal memory, 3 min, peak 0.688, closed."
+        ], "context_start": -180 } },
+        { "message": "How serious was the 15:00 incident?", "expect": { "kind": "template", "includes": [
+          "The incident at 15:00 was tier high."
+        ], "context_start": -60 } },
+        { "message": "Kenapa yang pukul 13:01?", "expect": { "kind": "template", "includes": [
+          "Insiden pada 13:00 (tier medium) dicetuskan oleh isyarat memory."
+        ], "context_start": -180 } }
+      ]
+    },
+    {
+      "id": "S15", "name": "a named time that matches no incident asks which one",
+      "turns": [
+        { "message": "Last incident", "expect": { "kind": "template", "context_start": -60 } },
+        { "message": "Why did the 18:37 incident happen?", "expect": { "kind": "template", "includes": [
+          "Which incident do you mean? No incident started at 18:37 MYT in the last 6 hours."
+        ], "choices": [-60, -120, -180], "context_start": null } },
+        { "message": "What caused it?", "context_from": -120, "expect": { "kind": "template", "includes": [
+          "The incident at 14:00 (tier low) was triggered by the cpu signal."
+        ], "context_start": -120 } }
+      ]
+    },
+    {
+      "id": "S16", "name": "restart for an incident named by time, then the one after",
+      "turns": [
+        { "message": "Was anything restarted for the incident at 13:00?", "context": null, "expect": { "kind": "template", "includes": [
+          "For the incident at 13:00: a restart at 13:04 MYT"
+        ], "context_start": -180 } },
+        { "message": "the one after", "expect": { "kind": "template", "includes": ["Nothing was restarted or rolled back for the incident at 14:00."], "context_start": -120 } }
       ]
     }
   ]

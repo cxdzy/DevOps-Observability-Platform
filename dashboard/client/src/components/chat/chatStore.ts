@@ -10,6 +10,13 @@ export const RENAME_CHARS = 60
 export const NEW_TITLE = 'New chat'
 export const LIMIT_REASON = `You have ${MAX_CHATS} chats open, the most this page keeps. Delete one to start a new chat.`
 export const CAUSE_QUESTION = 'What caused it?'
+export const CAUSE_QUESTION_MS = 'Apa punca dia?'
+// The server parser's MALAY_WORDS (server/chat/parser.js); a test checks the two lists match. One
+// of these words marks a Malay message, as on the server.
+export const MALAY_WORDS = ['ada', 'apa', 'bila', 'berapa', 'dalam', 'jam', 'lepas', 'tak', 'tidak', 'adakah', 'kenapa',
+  'mengapa', 'bagaimana', 'sekarang', 'memori', 'untuk', 'yang', 'ini', 'itu', 'saya', 'boleh', 'insiden', 'cuaca',
+  'rangkaian', 'masuk', 'sistem', 'risau', 'masalah', 'semalam', 'hari', 'kah', 'tolong', 'jangan', 'payah', 'hentikan', 'semula',
+  'ia', 'dia', 'mana', 'punca', 'puncak', 'setinggi', 'teruk', 'naik', 'pukul']
 const NO_ANSWER = 'The assistant did not answer. Nothing was changed.'
 const QUEUE_FULL = 'The assistant is busy with other questions. Your text is back in the input. Try again in a minute.'
 const MODEL_DOWN = 'The local model did not answer. Nothing was changed.'
@@ -83,6 +90,18 @@ export function hourlyLimitText(nextFreeAt: unknown): string {
   const ms = typeof nextFreeAt === 'string' ? Date.parse(nextFreeAt) : Number.NaN
   if (!Number.isFinite(ms)) return 'You have used all your questions for this hour. Try again later this hour.'
   return `You have used all your questions for this hour. The next one is free at ${mytClock(ms)} MYT.`
+}
+
+// True when the text has one of MALAY_WORDS, split into words the same way as the server parser.
+export function isMalay(text: string): boolean {
+  const clean = text.toLowerCase().replace(/[‘’]/g, "'")
+  return clean.split(/[^\p{L}\p{N}'/-]+/u).some(w => MALAY_WORDS.includes(w))
+}
+
+// The cause question a choice chip sends: Malay after a Malay question in this chat, else English.
+export function causeQuestionFor(chat: Chat): string {
+  const lastUser = [...chat.messages].reverse().find(m => m.role === 'user')
+  return lastUser && isMalay(lastUser.text) ? CAUSE_QUESTION_MS : CAUSE_QUESTION
 }
 
 export function titleFrom(text: string): string {
@@ -236,17 +255,19 @@ export function createChatStore(options: { post: Post, now?: () => number, wrap?
     }
   }
 
-  // An incident choice chip: that incident becomes the context and the cause is asked.
+  // An incident choice chip: that incident becomes the context and the cause is asked, in the
+  // language of the chat's last question.
   function chooseIncident(chip: ReplyChip, id: number = state.activeId): Promise<void> {
     const chat = find(id)
     if (!chat || chat.pending) return Promise.resolve()
+    const question = causeQuestionFor(chat)
     const base: ChatContext = chat.context ?? { last_incident: null, last_intent: null, last_window_h: 6, shown: [] }
     chat.context = {
       ...base,
       last_incident: { start: new Date(chip.start).toISOString(), tier: chip.tier ?? 'none', signal: chip.signal ?? 'unclear' },
       last_intent: 'cause',
     }
-    return send(CAUSE_QUESTION, id)
+    return send(question, id)
   }
 
   return { state, active, find, canCreate, newChat, select, remove, rename, clearContext, busyFor, waitingBehind, send, chooseIncident }

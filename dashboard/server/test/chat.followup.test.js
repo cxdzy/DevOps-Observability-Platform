@@ -7,11 +7,13 @@ const assert = require("node:assert/strict");
 const path = require("path");
 const { pathToFileURL } = require("url");
 const { startApp } = require("./helpers");
-const { parse } = require("../chat/parser");
+const { parse, MALAY_WORDS } = require("../chat/parser");
 const {
-  validateContext, resolveIncident, neighbour, emptyContext, MAX_BYTES,
+  validateContext, resolveIncident, resolveByTime, neighbour, emptyContext, MAX_BYTES,
 } = require("../chat/context");
-const { causeText, summaryText, durationText, explanationText, minutesQuery } = require("../chat/templates");
+const {
+  causeText, summaryText, durationText, peakText, tierText, restartText, explanationText, minutesQuery, restartQueries, loadRestarts,
+} = require("../chat/templates");
 const { contextLine, withContextLine, renderFacts, FOOTER } = require("../chat/facts");
 const { createLimits } = require("../chat/limits");
 const SCENARIOS = require("./fixtures/followup_scenarios.json");
@@ -40,6 +42,15 @@ function fakeQuery(fixture = SCENARIOS) {
     }
     if (q.includes('FROM "incident_explanation"')) {
       return fixture.incidents.map((i) => ({ ...i, time: at(i.offset_min), job: "sample-service" }));
+    }
+    // The restart answer's reads: rows between the query's own bounds.
+    const bounds = /time >= (-?\d+)ms AND time <= (-?\d+)ms/.exec(q);
+    const within = (rows) => rows.filter((r) => bounds && r.time >= Number(bounds[1]) && r.time <= Number(bounds[2]));
+    if (q.includes('FROM "remediation_action"')) {
+      return within((fixture.actions || []).map((r) => ({ ...r, time: at(r.offset_min) })));
+    }
+    if (q.includes('FROM "incident_open"') && bounds) {
+      return within(fixture.incidents.map((i) => ({ time: at(i.offset_min), tier: i.tier, peak_score: i.peak_score })));
     }
     return [];
   };
@@ -103,6 +114,21 @@ const CASES = [
   ["What about the one after?", "followup", null, "next"],
   ["next one", "followup", null, "next"],
   ["Why did the one before happen?", "followup", "cause", "previous"],
+  // restart, peak and tier
+  ["Was anything restarted?", "followup", "restart", null],
+  ["Was it restarted?", "followup", "restart", null],
+  ["Did it get rolled back?", "followup", "restart", null],
+  ["Was there a restart for it?", "followup", "restart", null],
+  ["What action was taken?", "followup", "restart", null],
+  ["Don't restart it, was anything restarted already?", "followup", "restart", null],
+  ["How high did it go?", "followup", "peak", null],
+  ["What was its peak?", "followup", "peak", null],
+  ["What was the peak score of that incident?", "followup", "peak", null],
+  ["How serious was it?", "followup", "tier", null],
+  ["How bad was that?", "followup", "tier", null],
+  ["What tier was it?", "followup", "tier", null],
+  ["Was it serious?", "followup", "tier", null],
+  ["And how serious was the one before?", "followup", "tier", "previous"],
   // Malay
   ["Kenapa ia berlaku?", "followup", "cause", "ms"],
   ["Apakah punca insiden itu?", "followup", "cause", "ms"],
@@ -115,10 +141,31 @@ const CASES = [
   ["Sebelum itu?", "followup", null, "ms-previous"],
   ["Yang selepas itu?", "followup", null, "ms-next"],
   ["Insiden tadi kenapa?", "followup", "cause", "ms"],
-  // Messages that name an incident themselves, or ask about something else, go on
-  ["Why did the 18:37 incident happen?", "llm"],
-  ["What caused the incident at 14:00?", "llm"],
+  ["Ada restart tak?", "followup", "restart", "ms"],
+  ["Adakah ia di-restart?", "followup", "restart", "ms"],
+  ["Ada tindakan untuk insiden itu?", "followup", "restart", "ms"],
+  ["Jangan rollback, ada restart tak?", "followup", "restart", "ms"],
+  ["Setinggi mana ia naik?", "followup", "peak", "ms"],
+  ["Berapa tinggi skor insiden itu?", "followup", "peak", "ms"],
+  ["Apa puncaknya?", "followup", "peak", "ms"],
+  ["Teruk tak?", "followup", "tier", "ms"],
+  ["Teruk tak insiden itu?", "followup", "tier", "ms"],
+  ["Tier apa insiden tersebut?", "followup", "tier", "ms"],
+  ["Serius tak ia?", "followup", "tier", "ms"],
+  ["Apa punca dia?", "followup", "cause", "ms"],
+  // Messages that name an incident without a time, or ask about something else, go on
   ["Why was the memory incident so long?", "llm"],
+  ["Why was it restarted?", "llm"],
+  ["Was the service restarted?", "llm"],
+  ["Was there a restart today?", "llm"],
+  ["How bad is it now?", "llm"],
+  ["Teruk tak sekarang?", "llm"],
+  ["How high is the score?", "llm"],
+  ["What is the peak memory on fyp-main?", "llm"],
+  ["How bad is the latency?", "llm"],
+  ["What was the score at 14:00?", "llm"],
+  ["Why did the service stop during the incident at 14:00?", "llm"],
+  ["Tell me about the incident at 25:00", "llm"],
   ["Did a deployment cause the latency spike?", "llm"],
   ["Was any recent incident linked to a deployment?", "llm"],
   ["Why is the score high?", "llm"],
@@ -142,6 +189,9 @@ const CASES = [
   ["Rollback it", "action"],
   ["Stop it now", "action"],
   ["Tolong mula semula itu", "action"],
+  ["Restart it if it was serious", "action"],
+  ["Rollback the 15:00 incident", "action"],
+  ["How many incidents after 14:00?", "incident_count"],
   ["Don't restart it, just tell me why it happened", "followup", "cause", null],
   ["Jangan restart, kenapa insiden itu berlaku?", "followup", "cause", "ms"],
   // Names restart and has no reference word, so it goes to the model (with the CONTEXT line).
@@ -162,6 +212,34 @@ test(`parser table for follow-ups (${CASES.length} cases)`, () => {
     const expectedNav = nav === "ms-previous" ? "previous" : nav === "ms-next" ? "next" : nav === "ms" ? null : nav;
     assert.equal(r.nav, expectedNav, message);
     assert.equal(r.lang, lang, message);
+    assert.equal(r.time, null, message);
+  }
+});
+
+// Incidents named by their start time: [message, topic, lang, "HH:MM"].
+const TIME_CASES = [
+  ["Why did the 18:37 incident happen?", "cause", "en", "18:37"],
+  ["What caused the incident at 14:00?", "cause", "en", "14:00"],
+  ["the incident at 15:00", null, "en", "15:00"],
+  ["How long did the one at 13:00 last?", "duration", "en", "13:00"],
+  ["Was anything restarted for the incident at 13:00?", "restart", "en", "13:00"],
+  ["How serious was the 15:00 incident?", "tier", "en", "15:00"],
+  ["How high did the incident that started at 9:05 go?", "peak", "en", "09:05"],
+  ["Don't restart it, why did the incident at 14:00 happen?", "cause", "en", "14:00"],
+  ["Kenapa yang pukul 14:00?", "cause", "ms", "14:00"],
+  ["Berapa lama insiden pukul 13:00?", "duration", "ms", "13:00"],
+  ["Setinggi mana insiden pada 15.00?", "peak", "ms", "15:00"],
+  ["Ada restart tak untuk insiden jam 13:00?", "restart", "ms", "13:00"],
+];
+
+test(`parser: incidents named by time (${TIME_CASES.length} cases)`, () => {
+  for (const [message, topic, lang, clock] of TIME_CASES) {
+    const r = parse(message);
+    assert.equal(r.intent, "followup", message);
+    assert.equal(r.topic, topic, message);
+    assert.equal(r.lang, lang, message);
+    const [hour, minute] = clock.split(":").map(Number);
+    assert.deepEqual(r.time, { hour, minute }, message);
   }
 });
 
@@ -192,7 +270,8 @@ test("context: forged or malformed values give the empty context", () => {
     { ...good, last_incident: { ...good.last_incident, start: "2026-02-30T10:00:00Z" } },
     { ...good, last_incident: { ...good.last_incident, start: 1761811200000 } },
     { ...good, last_incident: "the incident at 15:00" },
-    { ...good, last_intent: "restart" },
+    { ...good, last_intent: "action" },
+    { ...good, last_intent: "restart it now" },
     { ...good, last_window_h: "6" },
     { ...good, last_window_h: -1 },
     { ...good, shown: iso(-60) },
@@ -215,6 +294,27 @@ test("resolution: found within the merge window, stale or unknown is not found",
   assert.equal(resolveIncident(validateContext(ctxFor(-7 * 60, "low", "cpu")), ITEMS), null);
   assert.equal(resolveIncident(validateContext(ctxFor(-90, "low", "cpu")), ITEMS), null);
   assert.equal(resolveIncident(emptyContext(), ITEMS), null);
+});
+
+test("context: restart, peak and tier are kept as the last intent", () => {
+  for (const intent of ["restart", "peak", "tier"]) {
+    assert.equal(validateContext(ctxFor(-60, "high", "latency", { last_intent: intent })).last_intent, intent);
+  }
+});
+
+test("resolution by time: the MYT start within 2 minutes, nearest first, none otherwise", () => {
+  // ITEMS start at 15:00, 14:00 and 13:00 MYT.
+  assert.equal(resolveByTime({ hour: 15, minute: 0 }, ITEMS), ITEMS[0]);
+  assert.equal(resolveByTime({ hour: 14, minute: 2 }, ITEMS), ITEMS[1]);
+  assert.equal(resolveByTime({ hour: 12, minute: 58 }, ITEMS), ITEMS[2]);
+  assert.equal(resolveByTime({ hour: 14, minute: 3 }, ITEMS), null);
+  assert.equal(resolveByTime({ hour: 18, minute: 37 }, ITEMS), null);
+  assert.equal(resolveByTime({ hour: 24, minute: 0 }, ITEMS), null);
+  assert.equal(resolveByTime({ hour: "15", minute: 0 }, ITEMS), null);
+  assert.equal(resolveByTime(null, ITEMS), null);
+  // Across midnight MYT: an incident at 23:59 is named by 00:00.
+  const late = { ...ITEMS[0], start_ms: Date.parse("2026-10-29T15:59:00Z") };
+  assert.equal(resolveByTime({ hour: 0, minute: 0 }, [late]), late);
 });
 
 test("previous and next at both ends of the window", () => {
@@ -249,6 +349,69 @@ test("templates in Malay", () => {
   assert.match(causeText(ITEMS[1], null, T, "ms"), /Puncaknya tiada data, tiada data rujukan normal tiada data\./);
   assert.equal(durationText(ITEMS[2], null, T, "ms"), "Insiden pada 13:00 berlangsung 3 minit, dari 13:00 hingga 13:03 MYT.");
   assert.equal(summaryText(ITEMS[1], null, T, "ms"), "Insiden pada 14:00: tier low, isyarat cpu, 2 minit, puncak 0.640, ditutup.");
+});
+
+test("peak template: score and threshold, missing values are no data", () => {
+  assert.equal(peakText(ITEMS[0], { threshold: 0.602 }, T, "en"), "The incident at 15:00 peaked at an anomaly score of 0.910 against a threshold of 0.602.");
+  assert.equal(peakText({ ...ITEMS[0], peak_score: null }, null, T, "en"), "The incident at 15:00 peaked at an anomaly score of no data against a threshold of no data.");
+  assert.equal(peakText(ITEMS[2], { threshold: null }, T, "ms"), "Insiden pada 13:00 memuncak pada skor anomali 0.688 berbanding ambang tiada data.");
+});
+
+test("tier template: what each tier does, missing tier is no data", () => {
+  assert.equal(tierText(ITEMS[1], null, T, "en"), "The incident at 14:00 was tier low. Tier low sends a notification only. Nothing is restarted.");
+  assert.equal(tierText(ITEMS[2], null, T, "en"), "The incident at 13:00 was tier medium. Tier medium offers a container restart.");
+  assert.equal(tierText(ITEMS[0], null, T, "en"), "The incident at 15:00 was tier high. Tier high offers a rollback to the previous image.");
+  assert.equal(tierText({ ...ITEMS[0], tier: null }, null, T, "en"), "The incident at 15:00 has no tier data.");
+  assert.equal(tierText({ ...ITEMS[0], tier: "none" }, null, T, "ms"), "Insiden pada 15:00 tiada data tier.");
+  assert.equal(tierText(ITEMS[2], null, T, "ms"), "Insiden pada 13:00 ialah tier medium. Tier medium menawarkan restart container.");
+});
+
+test("restart template: outcomes in words, none, and no data", () => {
+  const a = (offset, extra) => ({ time: at(offset), action: "restart", mode: "approved", outcome: "success", service_up: 1, ...extra });
+  assert.equal(restartText(ITEMS[2], { restarts: null }, T, "en"), "There is no data on restarts or rollbacks for the incident at 13:00.");
+  assert.equal(restartText(ITEMS[2], null, T, "en"), "There is no data on restarts or rollbacks for the incident at 13:00.");
+  assert.equal(restartText(ITEMS[2], { restarts: [] }, T, "en"), "Nothing was restarted or rolled back for the incident at 13:00.");
+  assert.equal(restartText(ITEMS[2], { restarts: [a(-176)] }, T, "en"),
+    "For the incident at 13:00: a restart at 13:04 MYT was approved on Telegram and succeeded, and the service was back up 60 s later.");
+  const many = [
+    a(-176, { mode: "auto", outcome: "failed", service_up: 0 }),
+    a(-175, { outcome: "expired", service_up: null }),
+    a(-174, { action: "rollback", outcome: "skipped_no_deployment", service_up: null }),
+    a(-173, { outcome: "skipped_cooldown" }),
+  ];
+  assert.equal(restartText(ITEMS[2], { restarts: many }, T, "en"),
+    "For the incident at 13:00: a restart at 13:04 MYT ran automatically and did not succeed, and the service was still down 60 s later; " +
+    "a restart request at 13:05 MYT expired without an answer, so nothing was restarted; " +
+    "a rollback request at 13:06 MYT was skipped because there was no CI deployment in the last 15 minutes. " +
+    "1 more action is on the Remediation page.");
+  assert.equal(restartText(ITEMS[2], { restarts: [a(-176, { outcome: null, mode: null })] }, T, "en"),
+    "For the incident at 13:00: a restart request at 13:04 MYT has no recorded outcome.");
+  assert.equal(restartText(ITEMS[0], { restarts: [a(-57, { action: "rollback", outcome: "rejected" })] }, T, "ms"),
+    "Untuk insiden pada 15:00: permintaan rollback pada 15:03 MYT ditolak, jadi tiada apa yang di-rollback.");
+  assert.equal(restartText(ITEMS[2], { restarts: [] }, T, "ms"), "Tiada restart atau rollback untuk insiden pada 13:00.");
+});
+
+test("the restart queries take only safe integer bounds and read remediation_action and incident_open", () => {
+  const q = restartQueries(at(-180), at(-177));
+  assert.equal(q.actions, 'SELECT "action","mode","outcome","service_up" FROM "remediation_action" ' +
+    `WHERE "job" = 'sample-service' AND time >= ${at(-180)}ms AND time <= ${at(-147)}ms ORDER BY time ASC`);
+  assert.equal(q.opens, 'SELECT "tier","peak_score" FROM "incident_open" ' +
+    `WHERE "job" = 'sample-service' AND time >= ${at(-210)}ms AND time <= ${at(-147)}ms ORDER BY time ASC`);
+  assert.equal(restartQueries("1; DROP", 1000), null);
+  assert.equal(restartQueries(2000, 1000), null);
+});
+
+test("loadRestarts: only actions matched to this incident; a failed read is null", async () => {
+  // A restart 10 minutes after a later incident started belongs to that later incident.
+  const rows = { actions: [{ time: at(-176), outcome: "success" }, { time: at(-165), outcome: "rejected" }],
+    opens: [{ time: at(-180), tier: "medium" }, { time: at(-170), tier: "low" }] };
+  const query = async (q) => (q.includes('"remediation_action"') ? rows.actions : rows.opens);
+  const got = await loadRestarts(query, ITEMS[2]);
+  assert.deepEqual(got.map((x) => x.time), [at(-176)]);
+  // Without an incident_open row the record's own start is used.
+  const noOpen = async (q) => (q.includes('"remediation_action"') ? rows.actions.slice(0, 1) : []);
+  assert.deepEqual((await loadRestarts(noOpen, ITEMS[2])).map((x) => x.time), [at(-176)]);
+  assert.equal(await loadRestarts(async () => { throw new Error("influxdb returned 500"); }, ITEMS[2]), null);
 });
 
 test("stored explanation: the What happened and Likely cause lines only, capped", () => {
@@ -328,6 +491,37 @@ test("route: the cause question reads only the incident's own minutes, nothing f
   assert.deepEqual(minutes, [
     'SELECT "score","threshold","cpu_rate","memory_max_mb","latency_ms","base_cpu_rate","base_memory_max_mb","base_latency_ms" ' +
     `FROM "anomaly_score" WHERE "job" = 'sample-service' AND time >= ${at(-60)}ms AND time < ${at(-58)}ms`,
+  ]);
+  for (const q of query.queries) assert.doesNotMatch(q, /INSERT|DROP|DELETE|INTO/i);
+});
+
+test("route: an incident named by time never calls the model; no match asks which one", async (t) => {
+  const { ask, ollama, stats } = await setup(t, { env: { CHAT_RATE_PER_HOUR: "1" } });
+  const hit = await (await ask("What caused the incident at 14:00?", ctxFor(-60, "high", "latency"))).json();
+  assert.equal(hit.kind, "template");
+  assert.match(hit.answer, /^The incident at 14:00 \(tier low\)/);
+  assert.equal(hit.context.last_incident.start, iso(-120));
+  assert.equal(hit.context.last_intent, "cause");
+  const miss = await (await ask("Why did the 18:37 incident happen?", ctxFor(-60, "high", "latency"))).json();
+  assert.match(miss.answer, /^Which incident do you mean\? No incident started at 18:37 MYT/);
+  assert.deepEqual(miss.incidents.map((i) => i.start), [at(-60), at(-120), at(-180)]);
+  assert.ok(miss.incidents.every((i) => i.choice === true));
+  assert.equal(miss.context.last_incident, null);
+  assert.equal(ollama.calls.length, 0);
+  assert.equal((await stats()).questionsLeft, 1);
+});
+
+test("route: the restart question reads only remediation_action and incident_open around the record", async (t) => {
+  const query = fakeQuery();
+  const { ask } = await setup(t, { query });
+  const before = query.queries.length;
+  const body = await (await ask("Was anything restarted?", ctxFor(-181, "low", "cpu"))).json();
+  assert.match(body.answer, /^For the incident at 13:00: a restart at 13:04 MYT/);
+  assert.deepEqual(body.sources, ["incident records", "the remediation log"]);
+  const extra = query.queries.slice(before).filter((q) => /"(?:remediation_action|incident_open)" WHERE "job"/.test(q));
+  assert.deepEqual(extra.sort(), [
+    `SELECT "action","mode","outcome","service_up" FROM "remediation_action" WHERE "job" = 'sample-service' AND time >= ${at(-180)}ms AND time <= ${at(-147)}ms ORDER BY time ASC`,
+    `SELECT "tier","peak_score" FROM "incident_open" WHERE "job" = 'sample-service' AND time >= ${at(-210)}ms AND time <= ${at(-147)}ms ORDER BY time ASC`,
   ]);
   for (const q of query.queries) assert.doesNotMatch(q, /INSERT|DROP|DELETE|INTO/i);
 });
@@ -581,4 +775,42 @@ test("store: an incident choice chip sets the context and asks for the cause", a
   assert.equal(parse(CAUSE_QUESTION).intent, "followup");
   calls[0].resolve(reply());
   await job;
+});
+
+test("store: a choice chip asks in the language of the chat's last question", async () => {
+  const { createChatStore, CAUSE_QUESTION, CAUSE_QUESTION_MS } = await loadStore();
+  const { post, calls } = controlledPost();
+  const s = createChatStore({ post });
+  const chip = { start: at(-120), tier: "low", signal: "cpu", choice: true };
+  const malay = s.send("Kenapa ia berlaku?");
+  calls[0].resolve(reply({ incidents: [chip] }));
+  await malay;
+  const second = s.chooseIncident(chip);
+  assert.equal(calls[1].message, CAUSE_QUESTION_MS);
+  assert.equal(CAUSE_QUESTION_MS, "Apa punca dia?");
+  const parsed = parse(CAUSE_QUESTION_MS);
+  assert.deepEqual([parsed.intent, parsed.topic, parsed.lang], ["followup", "cause", "ms"]);
+  calls[1].resolve(reply());
+  await second;
+  // The chip's own question was Malay, so the next chip stays Malay; an English question switches back.
+  const english = s.send("Why did it happen?");
+  calls[2].resolve(reply({ incidents: [chip] }));
+  await english;
+  const third = s.chooseIncident(chip);
+  assert.equal(calls[3].message, CAUSE_QUESTION);
+  calls[3].resolve(reply());
+  await third;
+  // A new chat with no question yet asks in English.
+  s.newChat();
+  const fourth = s.chooseIncident(chip);
+  assert.equal(calls[4].message, CAUSE_QUESTION);
+  calls[4].resolve(reply());
+  await fourth;
+});
+
+test("store: the Malay word list matches the server parser", async () => {
+  const { MALAY_WORDS: client, isMalay } = await loadStore();
+  assert.deepEqual([...client].sort(), [...MALAY_WORDS].sort());
+  assert.equal(isMalay("Berapa lama insiden itu?"), true);
+  assert.equal(isMalay("How long did it last?"), false);
 });

@@ -13,7 +13,7 @@ const NOUN_MARKERS = ["a", "an", "the", "last", "latest", "previous", "recent", 
 // A message that starts with one of these is a question about the system, not a request, unless it
 // also contains a request phrase ("can you", "please").
 const QUESTION_STARTS = ["when", "what", "why", "how", "did", "was", "were", "has", "have", "had", "is", "are", "does",
-  "bila", "kenapa", "mengapa", "adakah", "apa", "bagaimana", "berapa"];
+  "bila", "kenapa", "mengapa", "adakah", "apa", "bagaimana", "berapa", "ada"];
 const REQUEST_PHRASES = ["can you", "could you", "would you", "will you", "please", "pls", "tolong", "boleh", "go ahead"];
 
 // Topics the FACTS block never contains. Each is matched as whole words, with an optional plural s.
@@ -40,7 +40,8 @@ const TEMPLATE_INTENTS = {
 // Words that mark a Malay message, for the language of the fixed replies.
 const MALAY_WORDS = ["ada", "apa", "bila", "berapa", "dalam", "jam", "lepas", "tak", "tidak", "adakah", "kenapa",
   "mengapa", "bagaimana", "sekarang", "memori", "untuk", "yang", "ini", "itu", "saya", "boleh", "insiden", "cuaca",
-  "rangkaian", "masuk", "sistem", "risau", "masalah", "semalam", "hari", "kah", "tolong", "jangan", "payah", "hentikan", "semula"];
+  "rangkaian", "masuk", "sistem", "risau", "masalah", "semalam", "hari", "kah", "tolong", "jangan", "payah", "hentikan", "semula",
+  "ia", "dia", "mana", "punca", "puncak", "setinggi", "teruk", "naik", "pukul"];
 
 const ACTION_REPLY = {
   admin: "Restart requests from the dashboard are not connected yet. Use the Telegram approval for now.",
@@ -123,12 +124,12 @@ const SIGNAL_WORDS = { cpu: ["cpu"], memory: ["memory", "memori"], latency: ["la
 // A question for the incident count: "how many (high) incidents", "number of incidents", or in
 // Malay "berapa" with "insiden".
 // "How many minutes did that incident last" and "berapa lama insiden itu" ask for a duration and
-// "pukul berapa" for a time, so those are not counts.
+// "pukul berapa" for a time, and "berapa tinggi" for a peak, so those are not counts.
 const COUNT_PATTERNS = [
   /\bhow\s+many\b(?!\s+(?:minutes?|mins?|hours?|seconds?|secs?)\b)[^?.!]*\bincidents?\b/,
   /\b(number|count|total)\s+of\b[^?.!]*\bincidents?\b/,
-  /(?<!\b(?:pukul|jam)\s)\bberapa\b(?!\s+(?:lama|minit|jam|saat)\b)[^?.!]*\binsiden\b/,
-  /\binsiden\b[^?.!]*(?<!\b(?:pukul|jam)\s)\bberapa\b(?!\s+(?:lama|minit|jam|saat)\b)/,
+  /(?<!\b(?:pukul|jam)\s)\bberapa\b(?!\s+(?:lama|minit|jam|saat|tinggi|teruk)\b)[^?.!]*\binsiden\b/,
+  /\binsiden\b[^?.!]*(?<!\b(?:pukul|jam)\s)\bberapa\b(?!\s+(?:lama|minit|jam|saat|tinggi|teruk)\b)/,
 ];
 // A period longer than the 6 hours FACTS covers.
 const LONGER_PERIOD = /(?<![\p{L}\p{N}])(today|yesterday|week|weeks|month|months|day|days|minggu|hari|semalam|bulan)(?![\p{L}\p{N}])/u;
@@ -184,7 +185,25 @@ const FOLLOWUP_TOPICS = [
   ]],
   ["cause", [
     /\bwhy\b/, /\bcause[ds]?\b/, /\bcausing\b/, /\breason\b/, /\btrigger(?:ed|s)?\b/, /\bwhat\s+happened\b/,
-    /\bkenapa\b/, /\bmengapa\b/, /\bpunca\w*\b/, /\bsebab(?:nya)?\b/, /\bapa\s+yang\s+berlaku\b/,
+    /\bkenapa\b/, /\bmengapa\b/, /\bpunca(?:nya)?\b/, /\bsebab(?:nya)?\b/, /\bapa\s+yang\s+berlaku\b/,
+  ]],
+  // Whether a restart or rollback ran for the incident. "Why did it restart" is a question about the
+  // service and stays with the model (SERVICE_STATE).
+  ["restart", [
+    /\b(?:was|were|has|had)\s+(?:anything|something|it|that|this|the\s+incident)\s+(?:been\s+)?(?:restarted|rolled\s+back)\b/,
+    /\bdid\s+(?:anything|something|it|that|this)\s+get\s+(?:restarted|rolled\s+back)\b/,
+    /\b(?:any|a)\s+(?:restart|rollback)s?\s+(?:for|during|after|because\s+of)\s+(?:it|that|this|the\s+incident)\b/,
+    /\bwhat\s+(?:action|actions|remediation)\b/, /\b(?:action|actions)\s+(?:was|were)\s+taken\b/,
+    /\bada\s+(?:apa-apa\s+)?(?:restart|rollback|tindakan)\b/, /\b(?:di-?restart|di-?rollback|dimulakan\s+semula)\b/,
+  ]],
+  ["peak", [
+    /\bhow\s+high\b/, /\bpeak(?:ed)?\b/, /\bhighest\s+score\b/, /\bmax(?:imum)?\s+score\b/,
+    /\bsetinggi\s+mana\b/, /\bberapa\s+tinggi\b/, /\bpuncak(?:nya)?\b/, /\bskor\s+tertinggi\b/,
+  ]],
+  ["tier", [
+    /\bhow\s+(?:serious|bad|severe|critical)\b/, /\bseverity\b/, /\b(?:what|which)\b[^?.!]*\btier\b/,
+    /^(?:is|was)\s+(?:it|that|this)\s+(?:serious|bad|severe|critical)\b/,
+    /\bteruk\b/, /\bserius\b/, /\btahap\b/, /\btier\s+apa\b/,
   ]],
 ];
 const NAV_PATTERNS = {
@@ -197,8 +216,16 @@ const NAV_PATTERNS = {
 const REFERENCE_WORDS = ["it", "that", "this", "the incident", "the one before", "the one after", "itu", "tersebut",
   "tadi", "sebelum itu", "selepas itu"];
 // A message that names an incident (or a set of incidents) itself is not about the one in the
-// context. An HH:MM time always counts, even next to a reference word ("the incident at 18:37").
+// context. A time that does not name an incident ("what was the score at 14:00") goes to the model.
 const TIME_IN_MESSAGE = /(?<![\d:])\d{1,2}[:.]\d{2}(?![\d:])/;
+// An incident named by its start time in MYT: "the incident at 18:37", "the 18:37 incident", "the one
+// at 18:37", "insiden pukul 18:37", "yang pukul 18:37". Groups 1 and 2 are the hours and minutes.
+const CLOCK = String.raw`(\d{1,2})[:.](\d{2})(?![\d:])`;
+const NAMED_TIME = [
+  new RegExp(String.raw`\b(?:incident|insiden|one)\s+(?:at|from|(?:that\s+)?start(?:ed|ing)\s+at|pada|pukul|jam)\s+(?:(?:pukul|jam)\s+)?` + CLOCK),
+  new RegExp(String.raw`(?<![\d:])` + CLOCK + String.raw`\s+(?:incident|insiden)\b`),
+  new RegExp(String.raw`\byang\s+(?:pada\s+)?(?:pukul|jam)\s+` + CLOCK),
+];
 const NAMES_INCIDENT = [
   /\b(?:last|latest|first|newest|oldest|highest|biggest|any|every|all|recent|most\s+recent)\b[^?.!]*\b(?:incident|insiden)\b/,
   /\bincidents\b/,
@@ -213,34 +240,66 @@ const OTHER_SUBJECTS = ["score", "skor", "threshold", "ambang", "node", "nodes",
   "penggunaan"];
 // Questions about the current time, not an incident's start.
 const CLOCK_QUESTION = /\b(?:what\s+time\s+is\s+it|time\s+now|(?:pukul|jam)\s+berapa\s+sekarang)\b/;
+// Questions about the present ("how bad is it now") are about the live values, not a past incident.
+const PRESENT = /\b(?:now|right\s+now|currently|at\s+the\s+moment|sekarang|kini)\b/;
 
 // Questions about the service stopping or going down are not about an incident record ("why did
 // it stop"), so they go on to the model.
 const SERVICE_STATE = /\b(?:stop|stopped|stops|crash|crashed|crashes|down|restart|restarts|restarted|died|berhenti|rosak)\b/;
 
-// Returns { topic, nav, reference } for a follow-up question, else null.
+// The start time an incident is named by, as { hour, minute }, else null. Out of range times are null.
+function namedTime(text) {
+  for (const p of NAMED_TIME) {
+    const m = p.exec(text);
+    if (!m) continue;
+    const hour = Number(m[1]);
+    const minute = Number(m[2]);
+    if (hour > 23 || minute > 59) return null;
+    return { hour, minute, phrase: m[0] };
+  }
+  return null;
+}
+
+// The text with negated verbs removed: "don't restart it, just tell me why" is not a question about
+// the service state.
+function withoutNegated(text) {
+  return text.replace(/\b(?:don't|dont|do not|never|without|jangan|tak payah)\s+\S+/g, " ");
+}
+
+// Returns { topic, nav, reference, time } for a follow-up question, else null. time is set when the
+// message names an incident by its start time; topic is then null for the incident summary.
 function followUp(message) {
   const text = normalise(message).replace(/[?.!]+$/, "").trim();
-  const nav = Object.keys(NAV_PATTERNS).find((n) => NAV_PATTERNS[n].some((p) => p.test(text))) || null;
-  const found = FOLLOWUP_TOPICS.find(([, patterns]) => patterns.some((p) => p.test(text)));
+  const named = namedTime(text);
+  // The words that name the incident ("the incident that started at 9:05") are not the question.
+  const asked = named ? text.replace(named.phrase, " ") : text;
+  const nav = Object.keys(NAV_PATTERNS).find((n) => NAV_PATTERNS[n].some((p) => p.test(asked))) || null;
+  const found = FOLLOWUP_TOPICS.find(([, patterns]) => patterns.some((p) => p.test(asked)));
   const topic = found ? found[0] : null;
+  const serviceState = topic !== "restart" && SERVICE_STATE.test(withoutNegated(asked));
+  if (named) {
+    // "Why did the service stop during the incident at 14:00" is still about the service.
+    if (serviceState) return null;
+    return { topic, nav, reference: true, time: { hour: named.hour, minute: named.minute } };
+  }
   if (!topic && !nav) return null;
   if (TIME_IN_MESSAGE.test(text)) return null;
-  // A negated verb ("don't restart it, just tell me why") is not a question about the service state.
-  const unnegated = text.replace(/\b(?:don't|dont|do not|never|without|jangan|tak payah)\s+\S+/g, " ");
-  if (SERVICE_STATE.test(unnegated) || CLOCK_QUESTION.test(text)) return null;
+  if (serviceState || CLOCK_QUESTION.test(text) || PRESENT.test(text)) return null;
   const reference = nav !== null || containsAny(text, REFERENCE_WORDS);
   if (!reference) {
     if (NAMES_INCIDENT.some((p) => p.test(text))) return null;
-    if (containsAny(text, OTHER_SUBJECTS)) return null;
+    // "Ada restart tak?" asks about this incident's restart, so restart is not another subject there.
+    const subjects = topic === "restart" ? OTHER_SUBJECTS.filter((w) => w !== "restart") : OTHER_SUBJECTS;
+    if (containsAny(text, subjects)) return null;
   }
-  return { topic, nav, reference };
+  return { topic, nav, reference, time: null };
 }
 
 // Returns { intent, lang } with intent one of action, no_data, incident_count, worry, status,
 // last_incident, health_check, followup, llm. incident_count also has tier, signal and longer (a
-// period over 6 hours named); followup has topic (cause, start, duration, deployment or null) and
-// nav (previous, next or null).
+// period over 6 hours named); followup has topic (cause, start, duration, deployment, restart, peak,
+// tier or null), nav (previous, next or null) and time ({ hour, minute } when the message names an
+// incident by its start time, else null).
 function parse(message) {
   const lang = isMalay(message) ? "ms" : "en";
   if (isActionRequest(message)) return { intent: "action", lang };
@@ -251,11 +310,11 @@ function parse(message) {
   const template = templateIntent(message);
   if (template) return { intent: template, lang };
   const follow = followUp(message);
-  if (follow) return { intent: "followup", lang, topic: follow.topic, nav: follow.nav };
+  if (follow) return { intent: "followup", lang, topic: follow.topic, nav: follow.nav, time: follow.time };
   return { intent: "llm", lang };
 }
 
 module.exports = {
   parse, isActionRequest, isNoData, isMalay, templateIntent, countQuestion, isWorry, followUp,
-  NO_DATA_TOPICS, ACTION_WORDS, NEGATIONS, ACTION_REPLY, NO_DATA_REPLY, REFERENCE_WORDS,
+  NO_DATA_TOPICS, ACTION_WORDS, NEGATIONS, ACTION_REPLY, NO_DATA_REPLY, REFERENCE_WORDS, MALAY_WORDS,
 };

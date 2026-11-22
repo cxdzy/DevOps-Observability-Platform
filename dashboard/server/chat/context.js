@@ -14,7 +14,9 @@ const MATCH_WINDOW_MS = 120 * 1000;
 const TIERS = ["low", "medium", "high", "none"];
 const SIGNALS = ["cpu", "memory", "latency", "unclear", "none"];
 // The answer kinds a later "previous" or "next" repeats. last_incident is the incident summary.
-const INTENTS = ["cause", "start", "duration", "deployment", "last_incident"];
+const INTENTS = ["cause", "start", "duration", "deployment", "restart", "peak", "tier", "last_incident"];
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MYT_OFFSET_MS = 8 * 60 * 60 * 1000;
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
 
 function emptyContext() {
@@ -99,6 +101,28 @@ function resolveIncident(context, items) {
   return best;
 }
 
+// The incident record whose start, as an MYT clock time, is nearest to time ({ hour, minute } from
+// the parser) and within MATCH_WINDOW_MS of it. The records cover 6 hours, so a clock time names at
+// most one incident. null when none matches.
+function resolveByTime(time, items) {
+  if (!time || !Array.isArray(items)) return null;
+  const { hour, minute } = time;
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  const target = (hour * 60 + minute) * 60000;
+  const distance = (ms) => {
+    const ofDay = (((ms + MYT_OFFSET_MS) % DAY_MS) + DAY_MS) % DAY_MS;
+    const d = Math.abs(ofDay - target);
+    return Math.min(d, DAY_MS - d);
+  };
+  let best = null;
+  for (const item of items) {
+    if (!Number.isSafeInteger(item.start_ms)) continue;
+    const d = distance(item.start_ms);
+    if (d <= MATCH_WINDOW_MS && (!best || d < distance(best.start_ms))) best = item;
+  }
+  return best;
+}
+
 // The older (previous) or newer (next) neighbour of item in the newest-first list, or null.
 function neighbour(items, item, direction) {
   const i = items.indexOf(item);
@@ -134,6 +158,6 @@ function withShown(context, items) {
 }
 
 module.exports = {
-  validateContext, resolveIncident, neighbour, aboutIncident, withShown, emptyContext, isoMs, incidentRef,
+  validateContext, resolveIncident, resolveByTime, neighbour, aboutIncident, withShown, emptyContext, isoMs, incidentRef,
   MAX_BYTES, MAX_SHOWN, MATCH_WINDOW_MS, TIERS, SIGNALS, INTENTS,
 };

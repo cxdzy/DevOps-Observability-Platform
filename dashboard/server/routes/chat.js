@@ -14,8 +14,8 @@ const { checkAnswer } = require("../chat/check");
 const { createOllama, OllamaError } = require("../chat/ollama");
 const { createLimits } = require("../chat/limits");
 const { createChatLog, createPool } = require("../chat/log");
-const { validateContext, resolveIncident, neighbour, aboutIncident, withShown } = require("../chat/context");
-const { FOLLOWUP_TEMPLATES, whichText, endText, loadDetail, CHOICES } = require("../chat/templates");
+const { validateContext, resolveIncident, resolveByTime, neighbour, aboutIncident, withShown } = require("../chat/context");
+const { FOLLOWUP_TEMPLATES, whichText, endText, loadDetail, loadRestarts, CHOICES } = require("../chat/templates");
 const { loadIncidents } = require("../overview");
 
 const SYSTEM_PROMPT = fs.readFileSync(path.join(__dirname, "..", "chat", "system_prompt.txt"), "utf8").trim();
@@ -40,6 +40,8 @@ const SOURCES = {
   incident_count: ["incident records"],
   followup: ["incident records"],
   cause: ["incident records", "anomaly scores"],
+  peak: ["incident records", "anomaly scores"],
+  restart: ["incident records", "the remediation log"],
   worry: ["anomaly scores", "incident records"],
   health_check: ["Prometheus", "anomaly scores", "the remediation log", "deployment records"],
   llm: ["anomaly scores", "incident records", "the remediation log", "deployment records", "Prometheus"],
@@ -370,12 +372,14 @@ function createChatRouter(deps) {
     const { lang, nav } = parsed;
     const inc = f.values.incidents_6h;
     const items = inc ? inc.items : [];
-    const current = resolveIncident(context, items);
+    // An incident named by its start time ("the incident at 18:37") is looked up by that time; the
+    // context is not used for it.
+    const current = parsed.time ? resolveByTime(parsed.time, items) : resolveIncident(context, items);
     if (!current) {
       const choices = items.slice(0, CHOICES);
       return {
         kind: "template",
-        answer: whichText(inc, lang),
+        answer: whichText(inc, lang, parsed.time || null),
         incidents: choices.map((i) => ({ start: i.start_ms, tier: i.tier, signal: i.signal, choice: true })),
         sources: SOURCES.followup,
         // The incident in the context is gone, or there was none. The question is kept for the choice.
@@ -395,7 +399,8 @@ function createChatRouter(deps) {
         };
       }
     }
-    const topic = parsed.topic || context.last_intent || "last_incident";
+    // A named time without a question word gives the incident summary, not the previous question.
+    const topic = parsed.topic || (parsed.time ? "last_incident" : context.last_intent) || "last_incident";
     let detail = null;
     if (topic === "cause") {
       let raw = null;
@@ -405,12 +410,17 @@ function createChatRouter(deps) {
         raw = null;
       }
       detail = await loadDetail(deps.query, target, raw, f.values.reference);
+    } else if (topic === "peak") {
+      // Only the threshold is used; the stored explanation is not needed.
+      detail = await loadDetail(deps.query, target, [], f.values.reference);
+    } else if (topic === "restart") {
+      detail = { restarts: await loadRestarts(deps.query, target) };
     }
     return {
       kind: "template",
       answer: FOLLOWUP_TEMPLATES[topic](target, detail, f.snapshotMs, lang),
       incidents: [{ start: target.start_ms, tier: target.tier }],
-      sources: topic === "cause" ? SOURCES.cause : SOURCES.followup,
+      sources: SOURCES[topic] || SOURCES.followup,
       context: aboutIncident(context, target, topic),
     };
   }
