@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import { useAuth } from '@/composables/useAuth'
+import { isToggleShortcut, useSidebar } from '@/composables/useSidebar'
 
 const props = defineProps<{
   current: string
@@ -79,15 +80,100 @@ async function signOut() {
     leaving.value = false
   }
 }
+
+// Collapsed icon rail on desktop. Below 768 px the sidebar is the phone top bar whatever is stored,
+// so every rail class and attribute depends on rail, which is false there.
+const { collapsed, desktop, toggle } = useSidebar()
+const rail = computed(() => collapsed.value && desktop.value)
+const toggleLabel = computed(() => (collapsed.value ? 'Expand sidebar' : 'Collapse sidebar'))
+
+// The name a rail icon is read out with and shows in its tooltip, with the count or version that the
+// expanded sidebar shows as text.
+function itemName(id: string, label: string): string {
+  if (id === 'incidents' && props.incidentCount !== null) return `${label}, ${props.incidentCount} in the last ${rangeLabel.value}`
+  if (id === 'model' && props.championVersion) return `${label}, champion version ${props.championVersion}`
+  return label
+}
+const badgeText = (count: number) => (count > 99 ? '99+' : String(count))
+
+// "[" toggles the sidebar. The check returns at once for keys typed into a field (the chat box among
+// them), so typing is never affected; see isToggleShortcut. The listener lives only while the sidebar
+// is shown, so Exhibition mode and the sign-in page do not have it.
+function onKeydown(event: KeyboardEvent) {
+  if (!isToggleShortcut(event, desktop.value, document.activeElement)) return
+  event.preventDefault()
+  toggle()
+}
+onMounted(() => document.addEventListener('keydown', onKeydown))
+onUnmounted(() => document.removeEventListener('keydown', onKeydown))
+
+// Rail tooltips: one label at a time, to the right of the icon, so it never covers the next item.
+// It is drawn at the end of the page with fixed positioning, so the sidebar's clip does not cut it.
+// It shows on hover after a short delay (at once when moving from one icon to the next) and on
+// keyboard focus, not after a mouse click. The pointer can move onto it without closing it. The
+// text is the icon's accessible name, so the tooltip is hidden from screen readers to avoid
+// reading it twice.
+const tip = ref<{ text: string, left: number, top: number } | null>(null)
+let openTimer: number | undefined
+let closeTimer: number | undefined
+const TIP_DELAY_MS = 300
+const TIP_GRACE_MS = 120
+
+// Escape closes the tooltip. This listener exists only while a tooltip is shown, and it neither
+// prevents the default nor stops the key, so Escape still reaches the chat box and any dialog.
+function onTipKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') hideTip()
+}
+function showTip(el: HTMLElement, text: string) {
+  const box = el.getBoundingClientRect()
+  tip.value = { text, left: box.right + 8, top: box.top + box.height / 2 }
+  document.addEventListener('keydown', onTipKeydown)
+}
+function hideTip() {
+  window.clearTimeout(openTimer)
+  window.clearTimeout(closeTimer)
+  tip.value = null
+  document.removeEventListener('keydown', onTipKeydown)
+}
+function tipHover(event: MouseEvent, text: string) {
+  if (!rail.value) return
+  const el = event.currentTarget as HTMLElement
+  window.clearTimeout(openTimer)
+  window.clearTimeout(closeTimer)
+  if (tip.value) showTip(el, text)
+  else openTimer = window.setTimeout(() => showTip(el, text), TIP_DELAY_MS)
+}
+function tipFocus(event: FocusEvent, text: string) {
+  const el = event.currentTarget as HTMLElement
+  if (!rail.value || !el.matches(':focus-visible')) return
+  window.clearTimeout(openTimer)
+  window.clearTimeout(closeTimer)
+  showTip(el, text)
+}
+function tipLeave() {
+  window.clearTimeout(openTimer)
+  window.clearTimeout(closeTimer)
+  closeTimer = window.setTimeout(hideTip, TIP_GRACE_MS)
+}
+function tipKeep() {
+  window.clearTimeout(closeTimer)
+}
+watch([rail, () => props.current], hideTip)
+onUnmounted(hideTip)
 </script>
 
 <template>
-  <aside class="flex flex-col gap-3 md:sticky md:top-2 md:h-[calc(100dvh-1rem)] md:w-[232px] md:shrink-0 md:gap-[18px] md:px-2 md:py-3">
-    <div class="flex items-center gap-2.5 px-2 py-1">
+  <!-- On desktop the width eases between 232 px and the 56 px rail. overflow-x: clip hides the labels
+       while the rail widens; unlike hidden it does not turn the sidebar into a scroll box. -->
+  <aside
+    class="flex flex-col gap-3 md:sticky md:top-2 md:h-[calc(100dvh-1rem)] md:shrink-0 md:gap-[18px] md:overflow-x-clip md:px-2 md:py-3 md:transition-[width] md:duration-150 md:ease-out motion-reduce:transition-none"
+    :class="rail ? 'md:w-14' : 'md:w-[232px]'"
+  >
+    <div class="flex items-center gap-2.5 px-2 py-1" :class="rail && 'md:flex-col md:gap-3 md:px-0'">
       <span class="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground" aria-hidden="true">
         <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4" /></svg>
       </span>
-      <span class="flex min-w-0 flex-col leading-tight">
+      <span class="flex min-w-0 flex-col leading-tight md:whitespace-nowrap" :class="rail && 'md:hidden'">
         <span class="font-semibold">Observability</span>
         <span class="truncate text-xs text-muted-foreground">Predictive monitoring</span>
       </span>
@@ -104,6 +190,28 @@ async function signOut() {
           Log out
         </button>
       </div>
+      <!-- Desktop only. The same button in both states, so it keeps focus after a toggle. -->
+      <button
+        type="button"
+        class="hidden shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-card hover:text-foreground md:flex"
+        :class="rail ? 'size-10' : 'ml-auto size-8'"
+        :aria-label="toggleLabel"
+        :aria-expanded="!collapsed"
+        aria-controls="sidebar-nav"
+        aria-keyshortcuts="["
+        :title="rail ? undefined : `${toggleLabel} ([)`"
+        @click="toggle(); hideTip()"
+        @mouseenter="tipHover($event, `${toggleLabel} ([)`)"
+        @mouseleave="tipLeave"
+        @focus="tipFocus($event, `${toggleLabel} ([)`)"
+        @blur="hideTip"
+      >
+        <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <path d="M9 4v16" />
+          <path :d="collapsed ? 'M13.5 10l2 2-2 2' : 'M15.5 10l-2 2 2 2'" />
+        </svg>
+      </button>
     </div>
 
     <!-- On phones the links scroll sideways; the scroll box clips, so their focus ring sits inside. -->
@@ -112,35 +220,62 @@ async function signOut() {
          scrollbar itself is hidden. -->
     <!-- relative on the row and on each link keeps their absolutely positioned sr-only text inside
          the scrolling row; without it that text is placed against the page and widens it on phones. -->
-    <nav aria-label="Views" class="relative flex gap-1 overflow-x-auto [scrollbar-width:none] md:flex-col md:gap-3.5 md:overflow-visible [&::-webkit-scrollbar]:hidden">
+    <nav id="sidebar-nav" aria-label="Views" class="relative flex gap-1 overflow-x-auto [scrollbar-width:none] md:flex-col md:gap-3.5 md:overflow-visible [&::-webkit-scrollbar]:hidden">
       <div v-for="group in NAV" :key="group.label" class="max-md:contents md:flex md:flex-col md:gap-0.5">
-        <span class="hidden px-2.5 pb-1 text-xs font-medium text-muted-foreground md:block">{{ group.label }}</span>
+        <!-- In the rail the group label becomes a 1 px divider. -->
+        <span v-if="rail" class="mx-2 mb-1 hidden h-px bg-border md:block" aria-hidden="true" />
+        <span v-else class="hidden px-2.5 pb-1 text-xs font-medium whitespace-nowrap text-muted-foreground md:block">{{ group.label }}</span>
         <a
           v-for="item in group.items"
           :key="item.id"
           :href="`#${item.id}`"
-          class="relative flex min-h-11 shrink-0 items-center gap-2.5 rounded-lg px-2.5 py-2 no-underline max-md:[--focus-offset:-2px] md:min-h-0"
-          :class="current === item.id
-            ? 'bg-navon font-medium text-navonfg ring-1 ring-navring'
-            : 'text-muted-foreground hover:bg-card hover:text-foreground'"
+          class="relative flex min-h-11 shrink-0 items-center gap-2.5 rounded-lg px-2.5 py-2 no-underline max-md:[--focus-offset:-2px] md:min-h-0 md:whitespace-nowrap"
+          :class="[
+            current === item.id
+              ? 'bg-navon font-medium text-navonfg ring-1 ring-navring'
+              : 'text-muted-foreground hover:bg-card hover:text-foreground',
+            rail && 'md:size-10 md:justify-center md:p-0',
+          ]"
           :aria-current="current === item.id ? 'page' : undefined"
+          :aria-label="rail ? itemName(item.id, item.label) : undefined"
+          @mouseenter="tipHover($event, itemName(item.id, item.label))"
+          @mouseleave="tipLeave"
+          @focus="tipFocus($event, itemName(item.id, item.label))"
+          @blur="hideTip"
+          @click="hideTip"
         >
-          <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path :d="item.icon" /></svg>
-          {{ item.label }}
-          <span
-            v-if="item.id === 'incidents' && incidentCount !== null"
-            class="ml-auto rounded-full border border-border bg-card px-[7px] font-mono text-[11px] text-foreground"
-            :title="`${incidentCount} in the last ${rangeLabel}`"
-          >
-            {{ incidentCount }}<span class="sr-only"> in the last {{ rangeLabel }}</span>
+          <span class="relative flex shrink-0">
+            <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path :d="item.icon" /></svg>
+            <!-- Rail only: the incident count as a 14 px badge and the champion version as a dot.
+                 The number itself is in the link's name and in its tooltip. -->
+            <span
+              v-if="rail && item.id === 'incidents' && incidentCount"
+              class="absolute -top-2 -right-2.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-primary px-[3px] font-mono text-[10px] leading-none font-medium text-primary-foreground"
+              aria-hidden="true"
+            >{{ badgeText(incidentCount) }}</span>
+            <span
+              v-if="rail && item.id === 'model' && championVersion"
+              class="absolute -top-1 -right-1 size-1.5 rounded-full bg-primary"
+              aria-hidden="true"
+            />
           </span>
-          <span
-            v-if="item.id === 'model' && championVersion"
-            class="ml-auto font-mono text-[11px]"
-            :title="`Champion is version ${championVersion}`"
-          >
-            v{{ championVersion }}<span class="sr-only">, champion version</span>
-          </span>
+          <template v-if="!rail">
+            {{ item.label }}
+            <span
+              v-if="item.id === 'incidents' && incidentCount !== null"
+              class="ml-auto rounded-full border border-border bg-card px-[7px] font-mono text-[11px] text-foreground"
+              :title="`${incidentCount} in the last ${rangeLabel}`"
+            >
+              {{ incidentCount }}<span class="sr-only"> in the last {{ rangeLabel }}</span>
+            </span>
+            <span
+              v-if="item.id === 'model' && championVersion"
+              class="ml-auto font-mono text-[11px]"
+              :title="`Champion is version ${championVersion}`"
+            >
+              v{{ championVersion }}<span class="sr-only">, champion version</span>
+            </span>
+          </template>
         </a>
       </div>
     </nav>
@@ -148,13 +283,41 @@ async function signOut() {
     <!-- Opens the full-screen exhibition view. Dashed, so it reads as a mode and not as a page. -->
     <a
       href="#exhibition"
-      class="mt-auto hidden min-h-9 items-center gap-2.5 rounded-lg border border-dashed border-input px-2.5 py-2 text-[13px] text-foreground no-underline hover:bg-card md:flex"
+      class="mt-auto hidden min-h-9 items-center gap-2.5 rounded-lg border border-dashed border-input px-2.5 py-2 text-[13px] whitespace-nowrap text-foreground no-underline hover:bg-card md:flex"
+      :class="rail && 'md:size-10 md:min-h-0 md:justify-center md:p-0'"
+      :aria-label="rail ? 'Exhibition mode' : undefined"
+      @mouseenter="tipHover($event, 'Exhibition mode')"
+      @mouseleave="tipLeave"
+      @focus="tipFocus($event, 'Exhibition mode')"
+      @blur="hideTip"
+      @click="hideTip"
     >
       <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></svg>
-      Exhibition mode
+      <template v-if="!rail">Exhibition mode</template>
     </a>
 
-    <div v-if="me" class="hidden items-center gap-2.5 rounded-[10px] bg-card p-2 ring-1 ring-border md:flex">
+    <!-- Rail: only the initials square, with a Log out icon button under it. -->
+    <div v-if="me && rail" class="hidden flex-col items-center gap-1.5 md:flex">
+      <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-semibold text-primary-foreground" :title="`${me.email}, ${roleLabel}`">
+        <span aria-hidden="true">{{ initials }}</span>
+        <span class="sr-only">Signed in as {{ me.email }}, {{ roleLabel }}</span>
+      </span>
+      <button
+        type="button"
+        class="flex size-10 items-center justify-center rounded-lg text-muted-foreground hover:bg-card hover:text-foreground disabled:opacity-50"
+        aria-label="Log out"
+        :disabled="leaving"
+        @click="hideTip(); signOut()"
+        @mouseenter="tipHover($event, 'Log out')"
+        @mouseleave="tipLeave"
+        @focus="tipFocus($event, 'Log out')"
+        @blur="hideTip"
+      >
+        <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H3" /></svg>
+      </button>
+    </div>
+
+    <div v-else-if="me" class="hidden items-center gap-2.5 rounded-[10px] bg-card p-2 whitespace-nowrap ring-1 ring-border md:flex">
       <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-semibold text-primary-foreground" aria-hidden="true">
         {{ initials }}
       </span>
@@ -171,5 +334,18 @@ async function signOut() {
         Log out
       </button>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="tip"
+        class="fixed z-50 -translate-y-1/2 rounded-md bg-foreground px-2 py-1 text-xs font-medium whitespace-nowrap text-background"
+        :style="{ left: `${tip.left}px`, top: `${tip.top}px` }"
+        aria-hidden="true"
+        @mouseenter="tipKeep"
+        @mouseleave="tipLeave"
+      >
+        {{ tip.text }}
+      </div>
+    </Teleport>
   </aside>
 </template>
