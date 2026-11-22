@@ -317,7 +317,11 @@ function createChatRouter(deps) {
           // Counted once the model has answered, so a question that got a 503 is not used up.
           if (attempt === 1) limits.consume(user.id);
           const problems = checkAnswer(result.text, f.text, message);
-          calls.push({ ...result, prompt: messages[1].content, answer: result.text, attempt, checkPassed: problems.length === 0 });
+          calls.push({
+            ...result, prompt: messages[1].content, answer: result.text, attempt, checkPassed: problems.length === 0,
+            // The reasons are logged as metadata.rejected, joined like the explainer's, for the LLM view.
+            rejected: problems.join("; "),
+          });
           if (problems.length === 0) {
             kind = "llm";
             answer = result.text;

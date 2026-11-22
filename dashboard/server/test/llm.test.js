@@ -15,7 +15,7 @@ const SECRET_OUTPUT = "SECRET-ANSWER-91bc What happened: memory rose";
 const SECRET_USER = "SECRET-USER-5d20@example.com";
 
 // A fake pg pool. Each query is answered by which SQL constant it is (and which trace name it was
-// given for the models query); every query sent is recorded.
+// given for the models and rejections queries); every query sent is recorded.
 function fakePool({ fail = false, rows = {} } = {}) {
   const sent = [];
   const leak = { input: SECRET_INPUT, output: SECRET_OUTPUT, user_id: SECRET_USER };
@@ -26,10 +26,13 @@ function fakePool({ fail = false, rows = {} } = {}) {
       { day: String(TODAY), total: "22", llm: "19", template: "3", first_try: "15", median_ms: 31000, p95_ms: 70000, ...leak },
     ],
     attempts: [{ attempts: 1, n: "30" }, { attempts: 2, n: "10" }],
-    rejections: [
-      { reason: "the number N is not in the facts", n: "5", ...leak },
-      { reason: "it mentions a deployment, but there was none", n: "2" },
-    ],
+    rejections: {
+      [EXPLAIN_TRACE]: [
+        { reason: "the number N is not in the facts", n: "5", ...leak },
+        { reason: "it mentions a deployment, but there was none", n: "2" },
+      ],
+      [CHAT_TRACE]: [{ reason: "says N is below the threshold N", n: "3", ...leak }],
+    },
     models: { [EXPLAIN_TRACE]: [{ model: "qwen2.5:1.5b", n: "40" }], [CHAT_TRACE]: [{ model: "qwen2.5:1.5b", n: "14" }] },
     chatTotal: [{ replies: "12", llm: "10", fallback: "2", checked: "14", passed: "11", median_reply_s: 6.5, median_tok_s: 8.1, ...leak }],
     chatDaily: [{ day: String(TODAY), replies: "12", llm: "10", fallback: "2", checked: "14", passed: "11", median_reply_s: 6.5, median_tok_s: 8.1 }],
@@ -37,6 +40,7 @@ function fakePool({ fail = false, rows = {} } = {}) {
     recent: [
       { time: String(NOW - 60000), name: EXPLAIN_TRACE, model: "qwen2.5:1.5b", latency_ms: 29400, tokens: 250, source: "llm", kind: null, attempts: "1", check_passed: null, rejected: "", ...leak },
       { time: String(NOW - 120000), name: CHAT_TRACE, model: "qwen2.5:1.5b", latency_ms: 6400, tokens: 60, source: null, kind: "llm", attempts: "1", check_passed: "true", rejected: null, ...leak },
+      { time: String(NOW - 180000), name: CHAT_TRACE, model: "qwen2.5:1.5b", latency_ms: 7100, tokens: 70, source: null, kind: "fallback", attempts: "2", check_passed: "false", rejected: "says 0.718 is below the threshold 0.458", ...leak },
     ],
   };
   const data = { ...defaults, ...rows };
@@ -48,7 +52,7 @@ function fakePool({ fail = false, rows = {} } = {}) {
       for (const [name, text] of Object.entries(SQL)) {
         if (sql === text) {
           const value = data[name];
-          return { rows: name === "models" ? value[params[0]] : value };
+          return { rows: name === "models" || name === "rejections" ? value[params[0]] : value };
         }
       }
       throw new Error("unexpected SQL");
@@ -102,7 +106,7 @@ test("every query is parameterised with a constant trace name and a UTC start", 
   const pool = fakePool();
   const get = await signedIn(t, pool);
   assert.equal((await get("/api/llm?days=7")).status, 200);
-  assert.equal(pool.sent.length, 10);
+  assert.equal(pool.sent.length, 11);
   const since = new Date(NOW - 7 * DAY_MS).toISOString().replace("Z", "");
   for (const { sql, params } of pool.sent) {
     assert.match(sql, /\$1/);
@@ -171,22 +175,27 @@ test("the response holds the figures and none of the prompts, answers or user id
   assert.equal(c.medianReplyS, 6.5);
   assert.equal(c.medianTokS, 8.1);
   assert.deepEqual(c.kinds, [{ kind: "llm", count: 10 }, { kind: "fallback", count: 2 }]);
+  // The chat's own rejection reasons, read with the chat trace name, apart from the explainer's.
+  assert.deepEqual(c.rejections, [{ reason: "says N is below the threshold N", count: 3 }]);
+  assert.equal(e.rejections.length, 2);
   assert.equal(c.daily.length, 8);
   assert.equal(c.daily[7].replies, 12);
   assert.equal(c.daily[0].checkRate, null);
-  assert.equal(body.recent.length, 2);
+  assert.equal(body.recent.length, 3);
   assert.deepEqual(body.recent[0], {
     time: NOW - 60000, trace: "explanation", model: "qwen2.5:1.5b", latencyMs: 29400, tokens: 250,
     source: "llm", kind: null, attempts: 1, checkPassed: null, rejected: null,
   });
   assert.equal(body.recent[1].trace, "chat");
   assert.equal(body.recent[1].checkPassed, true);
+  assert.equal(body.recent[2].checkPassed, false);
+  assert.equal(body.recent[2].rejected, "says 0.718 is below the threshold 0.458");
 });
 
 test("an empty call log gives zeros and nulls, never invented values", async () => {
   const empty = {
     explanationTotal: [{ total: "0", llm: "0", template: "0", first_try: "0", median_ms: null, p95_ms: null, median_tokens: null }],
-    explanationDaily: [], attempts: [], rejections: [], models: { [EXPLAIN_TRACE]: [], [CHAT_TRACE]: [] },
+    explanationDaily: [], attempts: [], rejections: { [EXPLAIN_TRACE]: [], [CHAT_TRACE]: [] }, models: { [EXPLAIN_TRACE]: [], [CHAT_TRACE]: [] },
     chatTotal: [{ replies: "0", llm: "0", fallback: "0", checked: "0", passed: "0", median_reply_s: null, median_tok_s: null }],
     chatDaily: [], chatKinds: [], recent: [],
   };
@@ -197,6 +206,7 @@ test("an empty call log gives zeros and nulls, never invented values", async () 
   assert.equal(body.chat.checkRate, null);
   assert.equal(body.chat.medianTokS, null);
   assert.deepEqual(body.recent, []);
+  assert.deepEqual(body.chat.rejections, []);
   // One day back from 08:00 reaches into the day before: two UTC dates.
   assert.equal(body.explanations.daily.length, 2);
 });

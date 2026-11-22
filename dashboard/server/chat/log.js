@@ -34,7 +34,8 @@ function createPool(env = process.env) {
 
 // pool: a pg pool, or null to turn logging off. log: console-style line logger.
 function createChatLog({ pool, log = console.error } = {}) {
-  // calls: [{ prompt, answer, latencyMs, promptTokens, evalTokens, evalMs, loadMs, attempt, checkPassed }]
+  // calls: [{ prompt, answer, latencyMs, promptTokens, evalTokens, evalMs, loadMs, attempt, checkPassed, rejected }]
+  // rejected: the fact check's problems joined with "; " (empty when it passed), as the explainer writes them.
   // reply: { kind, model, userId, role, replyS, anomalyScore }
   async function record(calls, reply) {
     if (!pool) return;
@@ -52,6 +53,7 @@ function createChatLog({ pool, log = console.error } = {}) {
           load_duration_ms: call.loadMs,
           reply_s: reply.replyS,
         };
+        if (call.rejected) metadata.rejected = String(call.rejected);
         const client = await pool.connect();
         try {
           await client.query("BEGIN");

@@ -141,7 +141,7 @@ function callWho(c: LlmRecentCall): string {
   return c.source === 'llm' ? 'Explanation, LLM' : c.source === 'template' ? 'Explanation, template' : 'Explanation'
 }
 function callCheck(c: LlmRecentCall): string {
-  if (c.trace === 'chat') return c.checkPassed === null ? 'No data' : c.checkPassed ? 'Passed' : 'Failed'
+  if (c.trace === 'chat') return c.checkPassed === null ? 'No data' : c.checkPassed ? 'Passed' : c.rejected ? `Failed: ${c.rejected}` : 'Failed'
   if (c.source === 'llm') return c.attempts === null || c.attempts === 1 ? 'Passed' : `Passed on try ${c.attempts}`
   if (c.source === 'template') return c.rejected ? `Failed: ${c.rejected}` : 'Failed every try'
   return 'No data'
@@ -414,6 +414,12 @@ const card = 'rounded-xl border border-border p-4'
 const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
 const noData = 'mt-2.5 text-[22px] font-semibold tracking-[-0.02em]'
 const note = 'rounded-lg bg-chip p-3 text-[13px] text-chipfg'
+// The chat's own rejection reasons (llm.js chat.rejections). Read without a types.ts entry, so an
+// older server that does not send them gives an empty list.
+const chatRejections = computed<{ reason: string, count: number }[]>(() => {
+  const list = (chat.value as { rejections?: unknown } | null)?.rejections
+  return Array.isArray(list) ? list : []
+})
 const maxRejections = computed(() => Math.max(1, ...(ex.value?.rejections ?? []).map(r => r.count)))
 </script>
 
@@ -587,6 +593,16 @@ const maxRejections = computed(() => Math.max(1, ...(ex.value?.rejections ?? [])
             <dt class="text-muted-foreground">Median reply time</dt><dd class="text-right font-mono">{{ chat.medianReplyS === null ? 'No data' : `${chat.medianReplyS.toFixed(1)} s` }}</dd>
             <dt class="text-muted-foreground">Speed</dt><dd class="text-right font-mono">{{ perSecond(chat.medianTokS) }}</dd>
           </dl>
+          <template v-if="chatRejections.length">
+            <h3 class="mt-4 text-[13px] font-semibold">Why answers failed the fact check</h3>
+            <p class="mb-2 text-xs text-muted-foreground">Every rejected try, retries included. Numbers are shown as N.</p>
+            <ol class="flex flex-col gap-1 text-[13px]">
+              <li v-for="(r, i) in chatRejections" :key="r.reason" class="flex items-baseline justify-between gap-3">
+                <span class="min-w-0"><span class="mr-1.5 font-mono text-xs text-faint">{{ i + 1 }}</span>{{ r.reason }}</span>
+                <span class="shrink-0 font-mono">{{ r.count }}</span>
+              </li>
+            </ol>
+          </template>
         </template>
       </section>
     </div>

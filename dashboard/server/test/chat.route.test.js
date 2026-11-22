@@ -139,6 +139,33 @@ test("an answer with a number not in FACTS is retried once, then replaced by the
   assert.equal(chatLog.records[0].reply.kind, "fallback");
 });
 
+test("a wrong direction, then a wrong tier: retried once, then replaced by the fallback", async (t) => {
+  // FACTS here: latest score 0.347, threshold 0.602; incidents at 15:00 (medium) and 15:50 (low).
+  const ollama = fakeOllama(["The latest score 0.347 is above the threshold 0.602.", "The incident at 15:00 was tier low."]);
+  const { ask, chatLog } = await setup(t, { ollama });
+  const body = await (await ask("Is the score over the threshold?")).json();
+  assert.equal(ollama.calls.length, 2);
+  assert.ok(ollama.calls[1].messages[1].content.endsWith(`\n${RETRY_LINE}`));
+  assert.equal(body.kind, "fallback");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(chatLog.records[0].calls.map((c) => [c.attempt, c.checkPassed]), [[1, false], [2, false]]);
+  // The reasons go to the log, where the LLM view lists them.
+  assert.deepEqual(chatLog.records[0].calls.map((c) => c.rejected), [
+    "says 0.347 is above the threshold 0.602",
+    "says tier low at 15:00, which no incident in the FACTS has",
+  ]);
+});
+
+test("a wrong direction that is fixed on the retry is a model answer", async (t) => {
+  const ollama = fakeOllama(["The latest score 0.347 has not reached the threshold 0.602, but 0.703 at 15:50 was tier high.",
+    "The latest score 0.347 is below the threshold 0.602. The incident at 15:50 was tier low."]);
+  const { ask } = await setup(t, { ollama });
+  const body = await (await ask("Is the score over the threshold?")).json();
+  assert.equal(ollama.calls.length, 2);
+  assert.equal(body.kind, "llm");
+  assert.equal(body.answer, "The latest score 0.347 is below the threshold 0.602. The incident at 15:50 was tier low.");
+});
+
 test("the fallback is in Malay for a Malay question", async (t) => {
   const ollama = fakeOllama(["Skor ialah 0.99.", "Skor ialah 0.98."]);
   const { ask } = await setup(t, { ollama });
@@ -422,6 +449,17 @@ test("log: two inserts per call in the explainer's columns, failures are swallow
   assert.deepEqual(writes[1].params, ["trace-1", "generation", "P", "A", 2500, 840, "qwen2.5:1.5b"]);
   // Only the two inserts and the transaction around them.
   for (const s of sql) assert.match(s.text, /^(BEGIN|COMMIT|ROLLBACK|INSERT INTO langfuse\.(trace|observation) )/);
+
+  // A rejected attempt carries the check's reasons as metadata.rejected; a passed one has no key.
+  sql.length = 0;
+  await chatLog.record(
+    [{ prompt: "P", answer: "A", attempt: 1, checkPassed: false, rejected: "says 0.718 is below the threshold 0.458; number 0.99 is not in the FACTS or the question" },
+      { prompt: "P", answer: "B", attempt: 2, checkPassed: true, rejected: "" }],
+    { kind: "llm", model: "qwen2.5:1.5b", userId: 7, role: "viewer", replyS: 9.1, anomalyScore: 0.31 }
+  );
+  const traces = sql.filter((s) => s.text.startsWith("INSERT INTO langfuse.trace")).map((s) => JSON.parse(s.params[2]));
+  assert.equal(traces[0].rejected, "says 0.718 is below the threshold 0.458; number 0.99 is not in the FACTS or the question");
+  assert.equal("rejected" in traces[1], false);
 
   const broken = createChatLog({ pool: { connect: async () => { throw new Error("no route"); } }, log: (l) => logLines.push(l) });
   await broken.record([{ attempt: 1 }], { userId: 1 });

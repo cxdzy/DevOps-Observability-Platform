@@ -52,7 +52,8 @@ const ATTEMPTS_SQL =
   "SELECT (t.metadata->>'attempts')::int AS attempts, count(*) AS n FROM langfuse.trace t " +
   `WHERE ${RANGE} AND t.metadata->>'attempts' ~ '^[0-9]{1,6}$' GROUP BY 1 ORDER BY 1`;
 
-// The explainer stores the problems of the last rejected attempt as one text joined with "; ".
+// The explainer stores the problems of the last rejected attempt as one text joined with "; ", and
+// the chat route the problems of each rejected attempt the same way. Run once per trace name.
 // They are split again here, numbers are replaced by N so that "the number 276 is not in the
 // facts" and "the number 310 is not in the facts" count as one reason, and the text is cut.
 const REJECTIONS_SQL =
@@ -198,6 +199,8 @@ async function loadLlm(pool, days, now) {
   const cDaily = await q(SQL.chatDaily, chat);
   const cKinds = await q(SQL.chatKinds, chat);
   const cModels = await q(SQL.models, chat);
+  // The chat route logs the check's problems of every rejected attempt in the same form.
+  const cRejections = await q(SQL.rejections, chat);
   const recent = await q(SQL.recent, [EXPLAIN_TRACE, since, CHAT_TRACE]);
 
   const e = eTotal[0] || {};
@@ -229,6 +232,7 @@ async function loadLlm(pool, days, now) {
     chat: {
       ...c,
       kinds: cKinds.map((r) => ({ kind: text(r.kind) ?? "unknown", count: count(r.n) })),
+      rejections: cRejections.map((r) => ({ reason: text(r.reason) ?? "unknown", count: count(r.n) })),
       models: models(cModels),
       daily: fillDays(cDaily, from, now, chatFigures, CHAT_EMPTY),
     },

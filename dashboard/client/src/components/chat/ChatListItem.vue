@@ -1,10 +1,31 @@
 <script setup lang="ts">
 import type { Chat } from './chatStore'
-import { nextTick, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
+import { TIER_SHAPE, TIER_STYLE, toTier } from '@/lib/tier'
 import { mytClock, RENAME_CHARS } from './chatStore'
 
 const props = defineProps<{ chat: Chat, active: boolean }>()
 const emit = defineEmits<{ select: [], rename: [title: string], delete: [] }>()
+
+// The incident this chat is talking about (its follow-up context), shown beside the last message
+// time as the tier shape and the incident's start time. No context, no mark.
+const topic = computed(() => {
+  const incident = props.chat.context?.last_incident
+  const ms = incident ? Date.parse(incident.start) : Number.NaN
+  if (!incident || !Number.isFinite(ms)) return null
+  const tier = toTier(incident.tier)
+  return { time: mytClock(ms), tier, shape: TIER_SHAPE[tier], colour: `var(${TIER_STYLE[tier].markerVar})` }
+})
+
+const lastText = computed(() => (props.chat.lastAt ? mytClock(props.chat.lastAt) : 'No messages'))
+
+// "Kenapa?, last message 08:32, talking about the 07:43 medium incident"
+const accessibleName = computed(() => {
+  const parts = [props.chat.title, props.chat.lastAt ? `last message ${lastText.value}` : 'no messages']
+  if (topic.value) parts.push(`talking about the ${topic.value.time}${topic.value.tier === 'none' ? '' : ` ${topic.value.tier}`} incident`)
+  if (props.chat.pending) parts.push('waiting for a reply')
+  return parts.join(', ')
+})
 
 const editing = ref(false)
 const name = ref('')
@@ -46,14 +67,20 @@ async function finish(save: boolean) {
         type="button"
         class="flex min-h-11 min-w-0 flex-1 flex-col items-start justify-center rounded-lg px-2.5 py-1.5 text-left"
         :aria-current="active ? 'true' : undefined"
+        :aria-label="accessibleName"
         @click="emit('select')"
       >
         <span class="flex w-full min-w-0 items-center gap-1.5 text-[13px]" :class="active ? 'font-medium text-foreground' : 'text-foreground'">
           <span class="min-w-0 truncate">{{ chat.title }}</span>
           <span v-if="chat.pending" class="size-1.5 shrink-0 animate-pulse rounded-full bg-primary" aria-hidden="true" />
-          <span v-if="chat.pending" class="sr-only">, waiting for a reply</span>
         </span>
-        <span class="font-mono text-[11px] text-faint">{{ chat.lastAt ? mytClock(chat.lastAt) : 'No messages' }}</span>
+        <span class="flex items-center gap-2 font-mono text-[11px] text-faint" aria-hidden="true">
+          <span>{{ lastText }}</span>
+          <span v-if="topic" class="inline-flex items-center gap-1 text-muted-foreground">
+            <svg class="size-2" viewBox="0 0 12 12"><path :d="topic.shape" :style="{ fill: topic.colour }" /></svg>
+            {{ topic.time }}
+          </span>
+        </span>
       </button>
       <div class="flex shrink-0 items-center pr-1 opacity-100 md:opacity-0 md:group-focus-within:opacity-100 md:group-hover:opacity-100">
         <button
