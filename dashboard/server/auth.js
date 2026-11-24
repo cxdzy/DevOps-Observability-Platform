@@ -19,6 +19,14 @@ const {
 const SESSION_COOKIE_BASE = "dash_session";
 const GENERIC_LOGIN_ERROR = "Invalid email or password";
 const MAX_PASSWORD_LENGTH = 1024;
+// The code of the 403 a user with an admin-set temporary password gets from every other route.
+const PASSWORD_CHANGE_REQUIRED = "password_change_required";
+
+// The answer of /auth/login and /auth/me. must_change_password is added only when it is true, so
+// the answer for everyone else is the same as before the flag existed.
+function meView(email, role, mustChange) {
+  return mustChange ? { email, role, must_change_password: true } : { email, role };
+}
 
 // opts: { db, appOrigin, cookieSecure, trusted (createTrustedProxies), sessionMaxAgeMs = 24 h,
 //         bcryptCost = 12, now = Date.now, log = console.log }
@@ -100,7 +108,9 @@ function createAuth(opts) {
     return session.user;
   }
 
-  function requireAuth(req, res, next) {
+  // A session, whatever the must change password flag says. Only for the routes a user with that
+  // flag may still use: /auth/me, GET /api/account and POST /api/account/password.
+  function requireSession(req, res, next) {
     loadSession(req, res)
       .then((user) => {
         if (!user) return res.status(401).json({ error: "not signed in" });
@@ -108,6 +118,18 @@ function createAuth(opts) {
         next();
       })
       .catch(next);
+  }
+
+  // A session of a user who may use the dashboard. While an admin-set temporary password has not
+  // been changed, every other route answers 403 with PASSWORD_CHANGE_REQUIRED, which the client
+  // turns into the Change password page.
+  function requireAuth(req, res, next) {
+    requireSession(req, res, () => {
+      if (req.user.mustChangePassword) {
+        return res.status(403).json({ error: "Change your password before you continue.", code: PASSWORD_CHANGE_REQUIRED });
+      }
+      next();
+    });
   }
 
   // Use after requireAuth.
@@ -191,7 +213,7 @@ function createAuth(opts) {
       const user = await verifyPassword(email, req.body && req.body.password);
       if (!user) return loginFailed(req, res, email);
       await startSession(req, res, user);
-      res.json({ email: user.email, role: user.role });
+      res.json(meView(user.email, user.role, user.must_change_password === true));
     } catch (err) {
       next(err);
     }
@@ -208,19 +230,24 @@ function createAuth(opts) {
     }
   });
 
-  router.get("/me", requireAuth, (req, res) => {
-    res.json({ email: req.user.email, role: req.user.role });
+  // Not gated: the client reads the flag here to show the Change password page.
+  router.get("/me", requireSession, (req, res) => {
+    res.json(meView(req.user.email, req.user.role, req.user.mustChangePassword === true));
   });
 
   return {
     router,
     requireAuth,
+    requireSession,
     requireRole,
+    stateChanging,
     startSession,
     verifyPassword,
+    limiterDefaults,
+    clientIp: ip,
     sessionCookieName: SESSION_COOKIE,
     GENERIC_LOGIN_ERROR,
   };
 }
 
-module.exports = { createAuth, SESSION_COOKIE_BASE };
+module.exports = { createAuth, SESSION_COOKIE_BASE, PASSWORD_CHANGE_REQUIRED, MAX_PASSWORD_LENGTH };

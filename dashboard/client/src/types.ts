@@ -590,14 +590,36 @@ export interface SettingsLogRow {
   detail: string
 }
 
+// GET /api/settings/users (dashboard/server/routes/users.js). No password or hash is ever part of it.
+export interface SettingsUser {
+  id: string
+  email: string
+  role: 'admin' | 'viewer'
+  method: 'password' | 'google'
+  status: 'active' | 'disabled'
+  mustChangePassword: boolean
+  lastLoginAt: number | null
+  sessions: number
+}
+
+// GET /api/account: the signed-in user's own profile.
+export interface AccountInfo {
+  email: string
+  role: 'admin' | 'viewer'
+  method: 'password' | 'google'
+  mustChangePassword: boolean
+  sessions: number
+}
+
 // The error body of every failed Settings write. field names the form field it belongs to.
 export type ErrorField = 'name' | 'role' | 'location' | 'address' | 'repo_url' | 'containers' | 'server_key' | 'rollback'
+  | 'email' | 'method' | 'confirm' | 'current_password' | 'new_password'
 export interface ApiErrorInfo {
   message: string
   field: ErrorField | null
 }
 
-const FIELDS: readonly string[] = ['name', 'role', 'location', 'address', 'repo_url', 'containers', 'server_key']
+const FIELDS: readonly string[] = ['name', 'role', 'location', 'address', 'repo_url', 'containers', 'server_key', 'email', 'method', 'confirm', 'current_password', 'new_password']
 
 // Reads { error, field? } from a failed call. Without a usable body the message says the call did
 // not work, so a form never shows a blank error.
@@ -672,6 +694,32 @@ export function toSettingsProject(v: unknown): SettingsProject {
     containers: Array.isArray(containers)
       ? containers.map(c => (typeof c === 'string' ? c : str((c as Raw)?.container_name ?? (c as Raw)?.name))).filter(Boolean)
       : [],
+  }
+}
+
+export function toSettingsUser(v: unknown): SettingsUser {
+  const r = (v ?? {}) as Raw
+  const at = Date.parse(str(pick(r, 'last_login_at', 'lastLoginAt')))
+  return {
+    id: str(r.id, String(r.id ?? '')),
+    email: str(r.email),
+    role: r.role === 'admin' ? 'admin' : 'viewer',
+    method: r.method === 'password' ? 'password' : 'google',
+    status: r.status === 'disabled' ? 'disabled' : 'active',
+    mustChangePassword: pick(r, 'must_change_password', 'mustChangePassword') === true,
+    lastLoginAt: Number.isNaN(at) ? null : at,
+    sessions: typeof r.sessions === 'number' ? r.sessions : 0,
+  }
+}
+
+export function toAccountInfo(v: unknown): AccountInfo {
+  const r = (v ?? {}) as Raw
+  return {
+    email: str(r.email),
+    role: r.role === 'admin' ? 'admin' : 'viewer',
+    method: r.method === 'password' ? 'password' : 'google',
+    mustChangePassword: r.must_change_password === true,
+    sessions: typeof r.sessions === 'number' ? r.sessions : 0,
   }
 }
 

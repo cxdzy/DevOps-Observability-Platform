@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions (user_id);
 CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions (expires_at);
+-- Set when an admin creates a password account or resets its password: the user must choose a new
+-- password at the next sign-in. Added after the first release, so it is a migration.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password boolean NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS servers (
   key text PRIMARY KEY CHECK (key ~ '^[a-z][a-z0-9-]{1,30}$'),
@@ -172,7 +175,9 @@ const SEED_PROJECTS = Object.freeze([
 ]);
 const SEED_USER = "system";
 
-const USER_COLUMNS = "id, email, role, password_hash, disabled";
+const USER_COLUMNS = "id, email, role, password_hash, disabled, must_change_password";
+// Columns the user routes may change. The names are fixed here, so they are never taken from a request.
+const USER_EDITABLE = ["role", "disabled", "password_hash", "must_change_password"];
 
 const SERVER_COLUMNS = "key, name, role, location, address, builtin, status, node_job, cadvisor_job, created_at, updated_at";
 // Columns a route may change. The names are fixed here, so they are never taken from a request.
@@ -287,6 +292,49 @@ function registryOps(runner) {
     },
     async listLog(limit) {
       return (await q("SELECT id, at, user_email, action, target, detail FROM settings_log ORDER BY id DESC LIMIT $1", [limit])).rows;
+    },
+
+    // ---- Users, for the Settings and account routes. Inside db.transaction they run on the same
+    // client, so a change, its session revoke and its settings_log row are saved together.
+    // Every user with the number of sessions that have not expired at now (the app clock).
+    async listUsers(now) {
+      return (
+        await q(
+          `SELECT u.id, u.email, u.role, u.disabled, u.must_change_password, u.created_at, u.last_login_at,
+                  (u.password_hash IS NOT NULL) AS has_password,
+                  (SELECT count(*)::int FROM sessions s WHERE s.user_id = u.id AND s.expires_at > $1) AS sessions
+             FROM users u ORDER BY u.created_at, u.id`,
+          [now]
+        )
+      ).rows;
+    },
+    async findUserById(id) {
+      return (await q(`SELECT ${USER_COLUMNS}, created_at, last_login_at FROM users WHERE id = $1`, [id])).rows[0] || null;
+    },
+    async findUserByEmail(email) {
+      return (await q(`SELECT ${USER_COLUMNS} FROM users WHERE email = $1`, [email])).rows[0] || null;
+    },
+    async insertUser({ email, role, passwordHash, mustChangePassword }) {
+      return (
+        await q(
+          `INSERT INTO users (email, role, password_hash, must_change_password) VALUES ($1, $2, $3, $4) RETURNING ${USER_COLUMNS}, created_at, last_login_at`,
+          [email, role, passwordHash, Boolean(mustChangePassword)]
+        )
+      ).rows[0];
+    },
+    async updateUser(id, patch) {
+      const columns = Object.keys(patch).filter((c) => USER_EDITABLE.includes(c));
+      if (!columns.length) return;
+      const sets = columns.map((c, i) => `${c} = $${i + 2}`);
+      await q(`UPDATE users SET ${sets.join(", ")} WHERE id = $1`, [id, ...columns.map((c) => patch[c])]);
+    },
+    async countActiveAdmins() {
+      return (await q("SELECT count(*)::int AS n FROM users WHERE role = 'admin' AND NOT disabled")).rows[0].n;
+    },
+    // Ends every session of a user, or every one but keepIdHash. Returns the number ended.
+    async endUserSessions(userId, keepIdHash = null) {
+      const res = await q("DELETE FROM sessions WHERE user_id = $1 AND ($2::text IS NULL OR id <> $2::text)", [userId, keepIdHash]);
+      return res.rowCount;
     },
   };
 }
@@ -450,6 +498,8 @@ function createDb(pool) {
     listServers: reads.listServers,
     listProjects: reads.listProjects,
     listLog: reads.listLog,
+    listUsers: reads.listUsers,
+    findUserById: reads.findUserById,
 
     findUserByEmail(email) {
       return one(`SELECT ${USER_COLUMNS} FROM users WHERE email = $1`, [email]);
@@ -485,7 +535,7 @@ function createDb(pool) {
     // The session with its user, or null.
     async getSession(idHash) {
       const row = await one(
-        `SELECT s.id, s.created_at, s.expires_at, u.id AS user_id, u.email, u.role, u.disabled
+        `SELECT s.id, s.created_at, s.expires_at, u.id AS user_id, u.email, u.role, u.disabled, u.must_change_password
            FROM sessions s JOIN users u ON u.id = s.user_id
           WHERE s.id = $1`,
         [idHash]
@@ -495,7 +545,7 @@ function createDb(pool) {
         idHash: row.id,
         createdAt: row.created_at,
         expiresAt: row.expires_at,
-        user: { id: row.user_id, email: row.email, role: row.role, disabled: row.disabled },
+        user: { id: row.user_id, email: row.email, role: row.role, disabled: row.disabled, mustChangePassword: row.must_change_password === true },
       };
     },
 

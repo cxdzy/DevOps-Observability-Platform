@@ -3,9 +3,10 @@ import { computed, nextTick, ref, watch } from 'vue'
 import SettingsLog from '@/components/SettingsLog.vue'
 import SettingsProjects from '@/components/SettingsProjects.vue'
 import SettingsServers from '@/components/SettingsServers.vue'
+import SettingsUsers from '@/components/SettingsUsers.vue'
 import { useAuth } from '@/composables/useAuth'
 
-// Settings: servers, projects and the change log. Admin only; a viewer who opens the address sees
+// Settings: servers, projects, users and the change log. Admin only; a viewer who opens the address sees
 // a short notice and nothing is requested. The tab is kept in the hash, #settings?tab=servers.
 const props = defineProps<{ query: string }>()
 const emit = defineEmits<{ 'refreshed': [ok: boolean], 'update:query': [query: string] }>()
@@ -16,7 +17,8 @@ const isAdmin = computed(() => me.value?.role === 'admin')
 const TABS = [
   { key: 'servers', label: 'Servers', text: 'Servers and projects this dashboard watches. Every change is saved with your name in the change log.' },
   { key: 'projects', label: 'Projects', text: 'A project is one or more containers on a server. Nothing is installed: cAdvisor already sees them.' },
-  { key: 'log', label: 'Change log', text: 'Every change to servers and projects, newest first. Entries cannot be edited or deleted.' },
+  { key: 'users', label: 'Users', text: 'Who can sign in to this dashboard. Every change is saved with your name in the change log.' },
+  { key: 'log', label: 'Change log', text: 'Every change to servers, projects and users, newest first. Entries cannot be edited or deleted.' },
 ] as const
 type TabKey = typeof TABS[number]['key']
 
@@ -91,6 +93,7 @@ function onTabKey(event: KeyboardEvent) {
     <div :id="`settings-panel-${tab}`" role="tabpanel" :aria-labelledby="`settings-tab-${tab}`" class="flex flex-col gap-5">
       <SettingsServers v-if="tab === 'servers'" @refreshed="emit('refreshed', $event)" />
       <SettingsProjects v-else-if="tab === 'projects'" :initial-server="serverHint" @refreshed="emit('refreshed', $event)" />
+      <SettingsUsers v-else-if="tab === 'users'" @refreshed="emit('refreshed', $event)" />
       <SettingsLog v-else @refreshed="emit('refreshed', $event)" />
     </div>
   </template>

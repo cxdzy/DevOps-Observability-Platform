@@ -10,9 +10,17 @@ let unauthorizedHandler: (() => void) | null = null
 export function onUnauthorized(handler: () => void) {
   unauthorizedHandler = handler
 }
+// A 403 with this code means the user still has an admin-set temporary password; the auth state
+// then shows the Change password page. Other 403s (a viewer on an admin route) are left alone.
+export const PASSWORD_CHANGE_REQUIRED = 'password_change_required'
+let passwordChangeHandler: (() => void) | null = null
+export function onPasswordChangeRequired(handler: () => void) {
+  passwordChangeHandler = handler
+}
 api.interceptors.response.use(undefined, (error) => {
   const url: string = error?.config?.url ?? ''
   if (error?.response?.status === 401 && !url.startsWith('/auth/')) unauthorizedHandler?.()
+  if (error?.response?.status === 403 && error?.response?.data?.code === PASSWORD_CHANGE_REQUIRED) passwordChangeHandler?.()
   return Promise.reject(error)
 })
 

@@ -181,9 +181,18 @@ onUnmounted(hideTip)
       <div class="ml-auto flex items-center gap-2 md:hidden">
         <span class="rounded-md bg-chip px-2 py-px text-xs font-medium text-chipfg">{{ roleLabel }}</span>
         <ThemeToggle class="size-11 bg-card" />
+        <a
+          href="#account"
+          class="flex size-11 items-center justify-center rounded-lg border border-border no-underline"
+          :class="current === 'account' ? 'bg-navon text-navonfg ring-1 ring-navring' : 'bg-card text-foreground hover:bg-chip'"
+          :aria-current="current === 'account' ? 'page' : undefined"
+          aria-label="Account"
+        >
+          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></svg>
+        </a>
         <button
           type="button"
-          class="min-h-11 rounded-lg border border-border bg-card px-3 text-sm font-medium hover:bg-chip disabled:opacity-50"
+          class="min-h-11 shrink-0 rounded-lg border border-border bg-card px-3 text-sm font-medium whitespace-nowrap hover:bg-chip disabled:opacity-50"
           :disabled="leaving"
           @click="signOut"
         >
@@ -296,12 +305,22 @@ onUnmounted(hideTip)
       <template v-if="!rail">Exhibition mode</template>
     </a>
 
-    <!-- Rail: only the initials square, with a Log out icon button under it. -->
+    <!-- Rail: only the initials square, which opens Account, with a Log out icon button under it. -->
     <div v-if="me && rail" class="hidden flex-col items-center gap-1.5 md:flex">
-      <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-semibold text-primary-foreground" :title="`${me.email}, ${roleLabel}`">
-        <span aria-hidden="true">{{ initials }}</span>
-        <span class="sr-only">Signed in as {{ me.email }}, {{ roleLabel }}</span>
-      </span>
+      <a
+        href="#account"
+        class="flex size-10 items-center justify-center rounded-lg no-underline"
+        :class="current === 'account' ? 'bg-navon ring-1 ring-navring' : 'hover:bg-card'"
+        :aria-current="current === 'account' ? 'page' : undefined"
+        :aria-label="`Account, signed in as ${me.email}, ${roleLabel}`"
+        @mouseenter="tipHover($event, 'Account')"
+        @mouseleave="tipLeave"
+        @focus="tipFocus($event, 'Account')"
+        @blur="hideTip"
+        @click="hideTip"
+      >
+        <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-semibold text-primary-foreground" aria-hidden="true">{{ initials }}</span>
+      </a>
       <button
         type="button"
         class="flex size-10 items-center justify-center rounded-lg text-muted-foreground hover:bg-card hover:text-foreground disabled:opacity-50"
@@ -317,14 +336,23 @@ onUnmounted(hideTip)
       </button>
     </div>
 
+    <!-- The user card. The initials and email open Account (password and sessions). -->
     <div v-else-if="me" class="hidden items-center gap-2.5 rounded-[10px] bg-card p-2 whitespace-nowrap ring-1 ring-border md:flex">
-      <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-semibold text-primary-foreground" aria-hidden="true">
-        {{ initials }}
-      </span>
-      <span class="flex min-w-0 flex-col leading-tight">
-        <span class="truncate text-[13px] font-medium" :title="me.email">{{ me.email }}</span>
-        <span class="text-xs text-muted-foreground">{{ roleLabel }}</span>
-      </span>
+      <a
+        href="#account"
+        class="-m-1 flex min-w-0 items-center gap-2.5 rounded-lg p-1 text-foreground no-underline"
+        :class="current === 'account' ? 'bg-navon ring-1 ring-navring' : 'hover:bg-chip'"
+        :aria-current="current === 'account' ? 'page' : undefined"
+        :title="`Account: ${me.email}`"
+      >
+        <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-semibold text-primary-foreground" aria-hidden="true">
+          {{ initials }}
+        </span>
+        <span class="flex min-w-0 flex-col leading-tight">
+          <span class="truncate text-[13px] font-medium">{{ me.email }}</span>
+          <span class="text-xs text-muted-foreground">{{ roleLabel }}<span class="sr-only">, open account</span></span>
+        </span>
+      </a>
       <button
         type="button"
         class="ml-auto shrink-0 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-chip hover:text-foreground disabled:opacity-50"

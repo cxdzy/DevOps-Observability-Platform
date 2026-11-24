@@ -80,6 +80,13 @@ test("SCHEMA adds forecast_events once, with a guarded close_reason check and on
   assert.ok(!/message|text_body|detail|token/i.test(body));
 });
 
+test("SCHEMA adds must_change_password to users once, safely to repeat", () => {
+  assert.match(SCHEMA, /ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password boolean NOT NULL DEFAULT false;/);
+  // It comes after CREATE TABLE users, so a new database gets the column too.
+  assert.ok(SCHEMA.indexOf("CREATE TABLE IF NOT EXISTS users") < SCHEMA.indexOf("ADD COLUMN IF NOT EXISTS must_change_password"));
+  assert.ok(!/DROP\s+(TABLE|COLUMN)[^;]*users/i.test(SCHEMA));
+});
+
 test("the forecast job's database methods only touch forecast_events", () => {
   const source = require("fs").readFileSync(require("path").join(__dirname, "..", "db.js"), "utf8");
   const block = source.slice(source.indexOf("const forecast = {"), source.indexOf("return {", source.indexOf("const forecast = {")));

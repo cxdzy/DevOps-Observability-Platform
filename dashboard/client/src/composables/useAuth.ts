@@ -1,10 +1,12 @@
 import { ref } from 'vue'
 import axios from 'axios'
-import { api, onUnauthorized } from './useApi'
+import { api, onPasswordChangeRequired, onUnauthorized } from './useApi'
 
 export interface Me {
   email: string
   role: 'admin' | 'viewer'
+  // True while an admin-set temporary password has not been changed. The server sends it only then.
+  must_change_password?: boolean
 }
 
 type Status = 'checking' | 'signed-out' | 'signed-in'
@@ -25,6 +27,15 @@ onUnauthorized(() => {
   me.value = null
   status.value = 'signed-out'
 })
+// Any route refused the session because the password must be changed first: show that page.
+onPasswordChangeRequired(() => {
+  if (me.value) me.value = { ...me.value, must_change_password: true }
+})
+
+// Called after a successful password change; the dashboard opens again.
+function passwordChanged() {
+  if (me.value) me.value = { email: me.value.email, role: me.value.role }
+}
 
 // The server sends a refused Google sign-in to /login?error=denied. Show the message,
 // then put the address back to the page and tab the user started from.
@@ -95,5 +106,5 @@ function rememberTab() {
 }
 
 export function useAuth() {
-  return { status, me, googleEnabled, message, check, login, logout, rememberTab }
+  return { status, me, googleEnabled, message, check, login, logout, rememberTab, passwordChanged }
 }

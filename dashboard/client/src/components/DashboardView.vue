@@ -14,6 +14,15 @@ import RemediationView from '@/components/RemediationView.vue'
 import ResourcesView from '@/components/ResourcesView.vue'
 import { useRangeData } from '@/composables/useRangeData'
 
+// The Account view is downloaded only when it is first opened.
+const AccountView = defineAsyncComponent({
+  loader: () => import('@/components/AccountView.vue'),
+  loadingComponent: ChartSkeleton,
+  errorComponent: ChartLoadError,
+  delay: 0,
+  timeout: 30000,
+})
+
 // The Evaluation view is downloaded only when it is first opened, so it does not grow the main bundle.
 const EvaluationView = defineAsyncComponent({
   loader: () => import('@/components/EvaluationView.vue'),
@@ -110,11 +119,11 @@ const ExhibitionView = defineAsyncComponent({
   timeout: 30000,
 })
 
-const TABS = ['overview', 'projects', 'resources', 'anomaly', 'incidents', 'remediation', 'chat', 'evaluation', 'drift', 'llm', 'pipeline', 'model', 'settings', 'exhibition'] as const
+const TABS = ['overview', 'projects', 'resources', 'anomaly', 'incidents', 'remediation', 'chat', 'evaluation', 'drift', 'llm', 'pipeline', 'model', 'settings', 'account', 'exhibition'] as const
 type Tab = typeof TABS[number]
-const TITLES: Record<Tab, string> = { overview: 'Overview', projects: 'Projects', resources: 'Resources', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', evaluation: 'Evaluation', drift: 'Drift', llm: 'LLM', pipeline: 'Pipeline', model: 'Model', settings: 'Settings', exhibition: 'Exhibition mode' }
+const TITLES: Record<Tab, string> = { overview: 'Overview', projects: 'Projects', resources: 'Resources', anomaly: 'Anomaly', incidents: 'Incidents', remediation: 'Remediation', chat: 'Chat', evaluation: 'Evaluation', drift: 'Drift', llm: 'LLM', pipeline: 'Pipeline', model: 'Model', settings: 'Settings', account: 'Account', exhibition: 'Exhibition mode' }
 // Breadcrumb group, the same grouping as the sidebar.
-const GROUPS: Record<Tab, string> = { overview: 'Monitoring', projects: 'Monitoring', resources: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', evaluation: 'Results', drift: 'Results', llm: 'Results', pipeline: 'Results', model: 'System', settings: 'System', exhibition: 'Results' }
+const GROUPS: Record<Tab, string> = { overview: 'Monitoring', projects: 'Monitoring', resources: 'Monitoring', anomaly: 'Monitoring', incidents: 'Monitoring', remediation: 'Actions', chat: 'Actions', evaluation: 'Results', drift: 'Results', llm: 'Results', pipeline: 'Results', model: 'System', settings: 'System', account: 'System', exhibition: 'Results' }
 
 // The hash is the view name, optionally followed by "?" and the view's own state, for example
 // #evaluation?run=2026-11-11T04:30:00Z. The view is read from the part before the "?".
@@ -244,6 +253,7 @@ function openIncident(start: number) {
         <LLMView v-else-if="tab === 'llm'" @refreshed="onViewRefreshed" />
         <PipelineView v-else-if="tab === 'pipeline'" v-model:query="viewQuery" @refreshed="onViewRefreshed" />
         <SettingsView v-else-if="tab === 'settings'" v-model:query="viewQuery" @refreshed="onViewRefreshed" />
+        <AccountView v-else-if="tab === 'account'" @refreshed="onViewRefreshed" />
         <IncidentsView
           v-else
           v-model:hours="hours"

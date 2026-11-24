@@ -151,7 +151,61 @@ function createFakeDb() {
   const forecastKey = (e) => [e.resource, e.server, e.container || "", e.mountpoint || ""].join("|");
   const copyEvent = (e) => ({ ...e });
 
+  // The user operations of registryOps in db.js, with the same rules (unique email, fixed columns).
+  const USER_EDITABLE = ["role", "disabled", "password_hash", "must_change_password"];
+  const userRow = (u) => ({ ...u });
+  const userOps = {
+    async listUsers(at) {
+      const t = new Date(at).getTime();
+      return users.map((u) => ({
+        id: u.id,
+        email: u.email,
+        role: u.role,
+        disabled: u.disabled,
+        must_change_password: u.must_change_password,
+        created_at: u.created_at,
+        last_login_at: u.last_login_at,
+        has_password: u.password_hash !== null && u.password_hash !== undefined,
+        sessions: [...sessions.values()].filter((s) => s.userId === u.id && s.expiresAt.getTime() > t).length,
+      }));
+    },
+    async findUserById(id) {
+      const u = users.find((x) => x.id === String(id));
+      return u ? userRow(u) : null;
+    },
+    async findUserByEmail(email) {
+      const u = users.find((x) => x.email === email);
+      return u ? userRow(u) : null;
+    },
+    async insertUser({ email, role, passwordHash, mustChangePassword }) {
+      if (users.some((x) => x.email === email)) throw uniqueViolation("users_email_key");
+      const user = { id: String(nextId++), email, role, password_hash: passwordHash, disabled: false, must_change_password: Boolean(mustChangePassword), created_at: now(), last_login_at: null };
+      users.push(user);
+      return userRow(user);
+    },
+    async updateUser(id, patch) {
+      const u = users.find((x) => x.id === String(id));
+      if (!u) return;
+      for (const c of Object.keys(patch)) if (USER_EDITABLE.includes(c)) u[c] = patch[c];
+    },
+    async countActiveAdmins() {
+      return users.filter((u) => u.role === "admin" && !u.disabled).length;
+    },
+    async endUserSessions(userId, keepIdHash = null) {
+      let n = 0;
+      for (const [k, s] of sessions) {
+        if (s.userId === String(userId) && k !== keepIdHash) {
+          sessions.delete(k);
+          n++;
+        }
+      }
+      return n;
+    },
+  };
+
   return {
+    listUsers: userOps.listUsers,
+    findUserById: userOps.findUserById,
     users,
     forecastEvents,
     async listOpenForecastEvents() {
@@ -245,18 +299,29 @@ function createFakeDb() {
       }
     },
     // Runs fn(ops) on a copy of the registry; the copy is kept only when fn finishes without error.
+    // Users and sessions are changed in place and put back as they were when fn throws.
     async transaction(fn) {
       const copy = cloneRegistry(registry);
-      const result = await fn(registryOps(copy, now));
-      registry = copy;
-      return result;
+      const savedUsers = users.map((u) => ({ ...u }));
+      const savedSessions = [...sessions].map(([k, s]) => [k, { ...s }]);
+      try {
+        const result = await fn({ ...registryOps(copy, now), ...userOps });
+        registry = copy;
+        return result;
+      } catch (err) {
+        users.splice(0, users.length, ...savedUsers);
+        sessions.clear();
+        for (const [k, s] of savedSessions) sessions.set(k, s);
+        throw err;
+      }
     },
     async findUserByEmail(email) {
       const u = users.find((x) => x.email === email);
       return u ? { ...u } : null;
     },
-    async createUser({ email, role, passwordHash, disabled = false }) {
-      const user = { id: String(nextId++), email, role, password_hash: passwordHash, disabled, last_login_at: null };
+    async createUser({ email, role, passwordHash, disabled = false, mustChangePassword = false }) {
+      if (users.some((x) => x.email === email)) throw uniqueViolation("users_email_key");
+      const user = { id: String(nextId++), email, role, password_hash: passwordHash, disabled, must_change_password: Boolean(mustChangePassword), created_at: now(), last_login_at: null };
       users.push(user);
       return { ...user };
     },
@@ -280,7 +345,7 @@ function createFakeDb() {
       if (!s) return null;
       const u = users.find((x) => x.id === s.userId);
       if (!u) return null;
-      return { idHash, createdAt: s.createdAt, expiresAt: s.expiresAt, user: { id: u.id, email: u.email, role: u.role, disabled: u.disabled } };
+      return { idHash, createdAt: s.createdAt, expiresAt: s.expiresAt, user: { id: u.id, email: u.email, role: u.role, disabled: u.disabled, mustChangePassword: u.must_change_password === true } };
     },
     async renewSession(idHash, expiresAt) {
       const s = sessions.get(idHash);

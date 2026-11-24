@@ -22,6 +22,7 @@ const { createChatLog, createPool } = require("./chat/log");
 const { loadLlm, DAYS: LLM_DAYS } = require("./llm");
 const { createForecastJob } = require("./forecast/job");
 const { createForecastRouter } = require("./routes/forecast");
+const { createUsersRouter, createAccountRouter } = require("./routes/users");
 
 // "node must be main or old", from the active server keys.
 function nodeMessage(keys) {
@@ -134,7 +135,13 @@ function createApp(deps) {
   app.use("/api", createForecastRouter({ job: forecastJob, db, auth, trusted: deps.trusted || TRUST_NOBODY, now, token: deps.forecastToken !== undefined ? deps.forecastToken : process.env.FORECAST_NOTIFY_TOKEN }));
   if (deps.startForecast !== undefined ? Boolean(deps.startForecast) : !process.env.NODE_TEST_CONTEXT) forecastJob.start();
 
-  // Everything else under /api needs a session.
+  // The signed-in user's own account. Before the gate below, so a user who must change an
+  // admin-set temporary password can still read the profile and change it.
+  const bcryptCost = config.bcryptCost || 12;
+  app.use("/api/account", createAccountRouter({ auth, db, now, bcryptCost }));
+
+  // Everything else under /api needs a session, and a user with a temporary password to change
+  // gets 403 password_change_required.
   app.use("/api", auth.requireAuth);
 
   app.get("/api/anomaly/latest", async (req, res) => {
@@ -237,8 +244,9 @@ function createApp(deps) {
     res.json(registry.current().activeServers.map((s) => ({ key: s.key, name: s.name, role: s.role, location: s.location })));
   });
 
-  // Settings (admin only): servers, projects and the change log.
-  app.use("/api/settings", createSettingsRouter({ auth, db, registry, prometheus: deps.registryPrometheus, appOrigin: config.appOrigin }));
+  // Settings (admin only): users, servers, projects and the change log.
+  app.use("/api/settings/users", createUsersRouter({ auth, db, now, bcryptCost, log }));
+  app.use("/api/settings",createSettingsRouter({ auth, db, registry, prometheus: deps.registryPrometheus, appOrigin: config.appOrigin }));
 
   // Overview data. Each route fails on its own, so one unreachable source does not hide the others.
   const overview = createOverview({ query, prometheus: deps.prometheus, registry });
