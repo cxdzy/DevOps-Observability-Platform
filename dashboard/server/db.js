@@ -94,7 +94,8 @@ CREATE TABLE IF NOT EXISTS container_images (
   seen_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (server_key, container_name)
 );
--- One row per image change the watcher detected. Rows are only inserted, never updated or deleted.
+-- One row per image change the watcher detected. Rows are never updated; they are removed only
+-- together with their project, when an admin deletes an archived project for good.
 CREATE TABLE IF NOT EXISTS detected_deployments (
   id bigserial PRIMARY KEY,
   project_key text NOT NULL REFERENCES projects(key),
@@ -257,7 +258,7 @@ function registryOps(runner) {
       ).rows;
     },
     // The image watcher's tables. container_images holds the latest image per container;
-    // detected_deployments is insert only, so there is no update or delete here.
+    // the watcher only inserts into detected_deployments. Rows go only through deleteProject below.
     async listContainerImages() {
       return (await q("SELECT server_key, container_name, image, seen_at FROM container_images")).rows;
     },
@@ -286,6 +287,55 @@ function registryOps(runner) {
         )
       ).rows;
     },
+    // ---- Permanent delete of an archived project or an archived or pending server. Nothing in
+    // the schema cascades, so the order is explicit. settings_log has no foreign key and is never
+    // touched; forecast_events refers to names as text and stays as history.
+    // What deleting a project removes, counted first so the confirmation can show it. Image rows
+    // are this project's containers on its server that no other project links now.
+    async projectDeleteCounts(projectKey) {
+      const row = (
+        await q(
+          `SELECT (SELECT count(*)::int FROM detected_deployments WHERE project_key = $1) AS deployments,
+                  (SELECT count(*)::int FROM project_containers WHERE project_key = $1) AS links,
+                  (SELECT count(*)::int FROM container_images ci
+                    WHERE EXISTS (SELECT 1 FROM project_containers pc
+                                   WHERE pc.project_key = $1 AND pc.server_key = ci.server_key AND pc.container_name = ci.container_name)
+                      AND NOT EXISTS (SELECT 1 FROM project_containers o
+                                       WHERE o.project_key <> $1 AND o.released_at IS NULL
+                                         AND o.server_key = ci.server_key AND o.container_name = ci.container_name)) AS images`,
+          [projectKey]
+        )
+      ).rows[0];
+      return { deployments: row.deployments, links: row.links, images: row.images };
+    },
+    async deleteProject(projectKey) {
+      const deployments = (await q("DELETE FROM detected_deployments WHERE project_key = $1", [projectKey])).rowCount;
+      const images = (
+        await q(
+          `DELETE FROM container_images ci
+            WHERE EXISTS (SELECT 1 FROM project_containers pc
+                           WHERE pc.project_key = $1 AND pc.server_key = ci.server_key AND pc.container_name = ci.container_name)
+              AND NOT EXISTS (SELECT 1 FROM project_containers o
+                               WHERE o.project_key <> $1 AND o.released_at IS NULL
+                                 AND o.server_key = ci.server_key AND o.container_name = ci.container_name)`,
+          [projectKey]
+        )
+      ).rowCount;
+      const links = (await q("DELETE FROM project_containers WHERE project_key = $1", [projectKey])).rowCount;
+      await q("DELETE FROM projects WHERE key = $1", [projectKey]);
+      return { deployments, links, images };
+    },
+    async serverDeleteCounts(serverKey) {
+      return { images: (await q("SELECT count(*)::int AS n FROM container_images WHERE server_key = $1", [serverKey])).rows[0].n };
+    },
+    // Only called when no project refers to the server, so detected_deployments and
+    // project_containers have no row for it; the image rows of containers seen there go first.
+    async deleteServer(serverKey) {
+      const images = (await q("DELETE FROM container_images WHERE server_key = $1", [serverKey])).rowCount;
+      await q("DELETE FROM servers WHERE key = $1", [serverKey]);
+      return { images };
+    },
+
     // The only write to settings_log is this insert. There is no update or delete anywhere.
     async insertLog({ userEmail, action, target, detail }) {
       await q("INSERT INTO settings_log (user_email, action, target, detail) VALUES ($1, $2, $3, $4)", [userEmail, action, target, detail || ""]);
@@ -498,6 +548,8 @@ function createDb(pool) {
     listServers: reads.listServers,
     listProjects: reads.listProjects,
     listLog: reads.listLog,
+    projectDeleteCounts: reads.projectDeleteCounts,
+    serverDeleteCounts: reads.serverDeleteCounts,
     listUsers: reads.listUsers,
     findUserById: reads.findUserById,
 

@@ -2,13 +2,15 @@
 import type { ApiErrorInfo, ErrorField, SettingsServer } from '@/types'
 import { nextTick, reactive, ref } from 'vue'
 import AddServerWizard from '@/components/AddServerWizard.vue'
+import DeleteConfirm from '@/components/DeleteConfirm.vue'
 import { Skeleton } from '@/components/ui/skeleton'
-import { api, usePoll } from '@/composables/useApi'
+import { api, deleteRegistryItem, getDeletePreview, restoreRegistryItem, usePoll } from '@/composables/useApi'
 import { apiError, toSettingsServer } from '@/types'
 
 // The Servers tab: the table with the two exporter dots, the add server wizard, editing role and
-// location, and archiving. Nothing is deleted; an archived server stops being scraped and keeps
-// its history and its name.
+// location, and archiving. An archived server stops being scraped and keeps its history and its
+// name; it can then be restored (back to pending) or deleted for good. A pending server whose
+// setup was never finished can be deleted directly.
 const emit = defineEmits<{ refreshed: [ok: boolean] }>()
 
 const ROLES = [
@@ -64,6 +66,7 @@ function openWizard(server: SettingsServer | null) {
   rememberOpener()
   closeEdit()
   confirming.value = null
+  removing.value = null
   wizard.value = { server, id: ++wizardId }
 }
 function closeWizard() {
@@ -79,6 +82,7 @@ const editSaving = ref(false)
 function startEdit(s: SettingsServer) {
   wizard.value = null
   confirming.value = null
+  removing.value = null
   editing.value = s
   editForm.role = s.role || 'application'
   editForm.location = s.location
@@ -123,6 +127,7 @@ function askArchive(s: SettingsServer) {
   rememberOpener()
   wizard.value = null
   closeEdit()
+  removing.value = null
   confirming.value = s
   archiveError.value = null
   // Focus goes to Cancel in the confirmation, the safe choice.
@@ -152,6 +157,81 @@ async function archive() {
   }
 }
 
+// Restore and permanent delete. notice: the outcome, shown above the table.
+const notice = ref<{ text: string, error: boolean } | null>(null)
+const removing = ref<{ server: SettingsServer, removes: string[], blocked: string | null } | null>(null)
+const removeError = ref<string | null>(null)
+const removeBusy = ref(false)
+async function askDelete(s: SettingsServer) {
+  rememberOpener()
+  wizard.value = null
+  closeEdit()
+  confirming.value = null
+  notice.value = null
+  try {
+    const p = await getDeletePreview('servers', s.key)
+    const removes = [
+      s.status === 'pending' ? 'The unfinished server record (this cancels its setup)' : 'The server record',
+      'Its entry in the Prometheus targets files, so it is no longer scraped',
+    ]
+    if (p.images) removes.push(`${p.images} stored image record${p.images === 1 ? '' : 's'} of its containers`)
+    removing.value = {
+      server: s,
+      removes,
+      blocked: p.projects.length ? `Delete these projects first: ${p.projects.join(', ')}. Archived projects count too.` : null,
+    }
+    removeError.value = null
+  } catch (err) {
+    notice.value = { text: apiError(err, 'What would be deleted could not be read. Nothing was changed. Try again.').message, error: true }
+    returnFocus()
+  }
+}
+function closeDelete() {
+  removing.value = null
+  removeError.value = null
+  returnFocus()
+}
+async function confirmDelete() {
+  if (!removing.value) return
+  const s = removing.value.server
+  removeBusy.value = true
+  removeError.value = null
+  try {
+    const targets = await deleteRegistryItem('servers', s.key, s.name)
+    removing.value = null
+    // The row is gone, so focus goes to Add server.
+    opener = null
+    returnFocus()
+    notice.value = targets
+      ? { text: `${s.name} was deleted. ${targets}`, error: true }
+      : { text: `${s.name} was deleted. The change log keeps a record of it.`, error: false }
+    refresh()
+  } catch (err) {
+    removeError.value = apiError(err, 'The server could not be deleted. Nothing was changed. Try again.').message
+  } finally {
+    removeBusy.value = false
+  }
+}
+// The key being restored, so a second click while it works sends nothing.
+const restoring = ref<string | null>(null)
+async function restore(s: SettingsServer) {
+  if (restoring.value) return
+  restoring.value = s.key
+  notice.value = null
+  try {
+    const targets = await restoreRegistryItem('servers', s.key)
+    notice.value = targets
+      ? { text: `${s.name} is pending again. ${targets}`, error: true }
+      : { text: `${s.name} is pending again. Use Continue setup to check the connection and finish.`, error: false }
+    refresh()
+  } catch (err) {
+    notice.value = { text: apiError(err, 'The server could not be restored. Try again.').message, error: true }
+  } finally {
+    restoring.value = null
+  }
+}
+const KEEPS = 'Kept: the change log, metrics already in Prometheus until its 15 day retention ends, the history in InfluxDB and past forecast warnings.'
+
 function dotClass(up: boolean | null) {
   return up === true ? 'bg-okdot' : up === false ? 'bg-red' : 'border-2 border-idle'
 }
@@ -180,6 +260,8 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
 </script>
 
 <template>
+  <p v-if="notice" class="text-[13px]" :class="notice.error ? 'text-destructive' : 'text-ok'" :role="notice.error ? 'alert' : 'status'">{{ notice.text }}</p>
+
   <section aria-label="Servers" class="overflow-hidden rounded-xl border border-border">
     <div class="flex items-center justify-between gap-3 px-[18px] py-3.5">
       <span class="text-[15px] font-semibold">Servers</span>
@@ -233,6 +315,8 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
             <button v-if="s.status === 'pending'" type="button" class="min-h-8 rounded-md px-2 text-xs font-medium hover:bg-chip pointer-coarse:min-h-11" @click="openWizard(s)">Continue setup</button>
             <button v-if="s.status !== 'archived'" type="button" class="min-h-8 rounded-md px-2 text-xs text-muted-foreground hover:bg-chip hover:text-foreground pointer-coarse:min-h-11" :aria-label="`Edit ${s.name}`" @click="startEdit(s)">Edit</button>
             <button v-if="s.status !== 'archived' && !s.builtin" type="button" class="min-h-8 rounded-md px-2 text-xs text-muted-foreground hover:bg-chip hover:text-foreground pointer-coarse:min-h-11" :aria-label="`Archive ${s.name}`" @click="askArchive(s)">Archive</button>
+            <button v-if="s.status === 'archived' && !s.builtin" type="button" class="min-h-8 rounded-md px-2 text-xs font-medium text-foreground hover:bg-chip pointer-coarse:min-h-11" :aria-label="`Restore ${s.name}`" :aria-disabled="restoring !== null" @click="restore(s)">{{ restoring === s.key ? 'Restoring' : 'Restore' }}</button>
+            <button v-if="s.status !== 'active' && !s.builtin" type="button" class="min-h-8 rounded-md px-2 text-xs text-destructive hover:bg-chip pointer-coarse:min-h-11" :aria-label="`Delete ${s.name} permanently`" @click="askDelete(s)">Delete permanently</button>
           </span>
         </div>
       </div>
@@ -280,6 +364,20 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
       <button type="button" :class="btn" class="bg-primary text-primary-foreground disabled:opacity-50" :disabled="archiving" @click="archive">{{ archiving ? 'Archiving' : 'Archive server' }}</button>
     </div>
   </div>
+
+  <DeleteConfirm
+    v-if="removing"
+    :key="removing.server.key"
+    kind="server"
+    :name="removing.server.name"
+    :removes="removing.removes"
+    :keeps="KEEPS"
+    :blocked="removing.blocked"
+    :error="removeError"
+    :busy="removeBusy"
+    @confirm="confirmDelete"
+    @cancel="closeDelete"
+  />
 
   <AddServerWizard
     v-if="wizard"

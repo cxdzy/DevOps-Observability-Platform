@@ -44,6 +44,25 @@ function checkContainers(r, projectKey, serverKey, names) {
   }
 }
 
+// Every link of a project (live and released), as { server_key, container_name }.
+function linksOf(p) {
+  return [...p.containers.map((name) => ({ server_key: p.server_key, container_name: name })), ...p.released.map((x) => ({ server_key: x.server_key, container_name: x.container_name }))];
+}
+// True when another project links this image row's container live.
+function liveElsewhere(r, projectKey, ci) {
+  return r.projects.some((o) => o.key !== projectKey && o.server_key === ci.server_key && o.containers.includes(ci.container_name));
+}
+function deleteCounts(r, projectKey) {
+  const p = r.projects.find((x) => x.key === projectKey);
+  if (!p) return { deployments: 0, links: 0, images: 0 };
+  const mine = linksOf(p);
+  return {
+    deployments: r.detected.filter((d) => d.project_key === projectKey).length,
+    links: mine.length,
+    images: r.containerImages.filter((ci) => mine.some((l) => l.server_key === ci.server_key && l.container_name === ci.container_name) && !liveElsewhere(r, projectKey, ci)).length,
+  };
+}
+
 // The same operations as registryOps in db.js, with the same unique rules as the tables.
 function registryOps(r, now) {
   const SERVER_EDITABLE = ["role", "location", "address", "status"];
@@ -128,6 +147,31 @@ function registryOps(r, now) {
         .filter((d) => d.project_key === projectKey && (cutoff === null || new Date(d.detected_at).getTime() > cutoff))
         .sort((a, b) => new Date(b.detected_at) - new Date(a.detected_at) || b.id - a.id);
       return (limit ? rows.slice(0, limit) : rows).map((d) => ({ ...d }));
+    },
+    // Permanent delete, with the same rules and counts as db.js.
+    async projectDeleteCounts(projectKey) {
+      return deleteCounts(r, projectKey);
+    },
+    async deleteProject(projectKey) {
+      const p = r.projects.find((x) => x.key === projectKey);
+      if (!p) return { deployments: 0, links: 0, images: 0 };
+      const counts = deleteCounts(r, projectKey);
+      const mine = linksOf(p);
+      r.containerImages = r.containerImages.filter(
+        (ci) => !(mine.some((l) => l.server_key === ci.server_key && l.container_name === ci.container_name) && !liveElsewhere(r, projectKey, ci))
+      );
+      r.detected = r.detected.filter((d) => d.project_key !== projectKey);
+      r.projects = r.projects.filter((x) => x.key !== projectKey);
+      return counts;
+    },
+    async serverDeleteCounts(serverKey) {
+      return { images: r.containerImages.filter((c) => c.server_key === serverKey).length };
+    },
+    async deleteServer(serverKey) {
+      const images = r.containerImages.filter((c) => c.server_key === serverKey).length;
+      r.containerImages = r.containerImages.filter((c) => c.server_key !== serverKey);
+      r.servers = r.servers.filter((s) => s.key !== serverKey);
+      return { images };
     },
     async insertLog({ userEmail, action, target, detail }) {
       r.log.push({ id: r.nextLogId++, at: now(), user_email: userEmail, action, target, detail: detail || "" });
@@ -279,6 +323,12 @@ function createFakeDb() {
     },
     async listLog(limit) {
       return registryOps(registry, now).listLog(limit);
+    },
+    async projectDeleteCounts(key) {
+      return registryOps(registry, now).projectDeleteCounts(key);
+    },
+    async serverDeleteCounts(key) {
+      return registryOps(registry, now).serverDeleteCounts(key);
     },
     async listDetectedDeployments(projectKey, since, limit) {
       return registryOps(registry, now).listDetectedDeployments(projectKey, since, limit);

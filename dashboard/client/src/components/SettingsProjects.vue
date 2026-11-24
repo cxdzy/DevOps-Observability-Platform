@@ -2,8 +2,9 @@
 import type { ApiErrorInfo, ErrorField, PickableContainer, RollbackSetting, ServerBrief, SettingsProject } from '@/types'
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { Skeleton } from '@/components/ui/skeleton'
+import DeleteConfirm from '@/components/DeleteConfirm.vue'
 import { applyRefresh, untickedText } from '@/composables/containerRefresh'
-import { api, usePoll } from '@/composables/useApi'
+import { api, deleteRegistryItem, getDeletePreview, restoreRegistryItem, usePoll } from '@/composables/useApi'
 import { apiError, toPickableContainer, toSettingsProject } from '@/types'
 
 // The Projects tab: the table, Add project (name, server, repository link, containers picked from
@@ -61,8 +62,11 @@ function onServerKey(event: KeyboardEvent) {
   const group = event.currentTarget as HTMLElement
   nextTick(() => group.querySelector<HTMLElement>('[aria-checked="true"]')?.focus())
 }
-const shown = computed(() => projects.value.filter(p => p.status === 'active'))
-const serverCount = computed(() => new Set(shown.value.map(p => p.serverKey)).size)
+// Active projects first, then the archived ones (faded), which can be restored or deleted.
+const shown = computed(() => [...projects.value.filter(p => p.status === 'active'), ...projects.value.filter(p => p.status === 'archived')])
+const activeProjects = computed(() => projects.value.filter(p => p.status === 'active'))
+const archivedCount = computed(() => projects.value.length - activeProjects.value.length)
+const serverCount = computed(() => new Set(activeProjects.value.map(p => p.serverKey)).size)
 
 // Add project.
 const form = reactive({ name: '', server: '', repoUrl: '' })
@@ -221,6 +225,7 @@ let opener: HTMLElement | null = null
 function askArchive(p: SettingsProject) {
   const el = document.activeElement
   opener = el instanceof HTMLElement && el !== document.body ? el : null
+  removing.value = null
   confirming.value = p
   archiveError.value = null
   // Focus goes to Cancel in the confirmation, the safe choice.
@@ -249,6 +254,87 @@ async function archive() {
     archiving.value = false
   }
 }
+
+// Restore and permanent delete of archived projects. notice: the outcome, shown above the table.
+const notice = ref<{ text: string, error: boolean } | null>(null)
+const removing = ref<{ project: SettingsProject, removes: string[] } | null>(null)
+const removeError = ref<string | null>(null)
+const removeBusy = ref(false)
+const tableHeading = ref<HTMLElement | null>(null)
+let removeOpener: HTMLElement | null = null
+async function askDelete(p: SettingsProject) {
+  const el = document.activeElement
+  removeOpener = el instanceof HTMLElement && el !== document.body ? el : null
+  confirming.value = null
+  notice.value = null
+  try {
+    const preview = await getDeletePreview('projects', p.key)
+    const n = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
+    removing.value = {
+      project: p,
+      removes: [
+        `The project ${p.name} on ${preview.serverName ?? p.serverName}`,
+        `${n(preview.links, 'container link')}; the containers become free to pick again`,
+        `${n(preview.deployments, 'detected deployment')}`,
+        `${n(preview.images, 'stored image record')}`,
+      ],
+    }
+    removeError.value = null
+  } catch (err) {
+    notice.value = { text: apiError(err, 'What would be deleted could not be read. Nothing was changed. Try again.').message, error: true }
+  }
+}
+// Focus goes back to the row's button, or to the table heading when the row is gone.
+function focusAfterRemove(el: HTMLElement | null) {
+  nextTick(() => {
+    if (el && el.isConnected) el.focus()
+    else tableHeading.value?.focus()
+  })
+}
+function closeDelete() {
+  removing.value = null
+  removeError.value = null
+  const el = removeOpener
+  removeOpener = null
+  focusAfterRemove(el)
+}
+async function confirmDelete() {
+  if (!removing.value) return
+  const p = removing.value.project
+  removeBusy.value = true
+  removeError.value = null
+  try {
+    await deleteRegistryItem('projects', p.key, p.name)
+    removing.value = null
+    removeOpener = null
+    focusAfterRemove(null)
+    notice.value = { text: `${p.name} was deleted. Its containers are free to pick again. The change log keeps a record of it.`, error: false }
+    refresh()
+    refreshContainers()
+  } catch (err) {
+    removeError.value = apiError(err, 'The project could not be deleted. Nothing was changed. Try again.').message
+  } finally {
+    removeBusy.value = false
+  }
+}
+// The key being restored, so a second click while it works sends nothing.
+const restoring = ref<string | null>(null)
+async function restoreProject(p: SettingsProject) {
+  if (restoring.value) return
+  restoring.value = p.key
+  notice.value = null
+  try {
+    await restoreRegistryItem('projects', p.key)
+    notice.value = { text: `${p.name} is active again and monitored.`, error: false }
+    refresh()
+    refreshContainers()
+  } catch (err) {
+    notice.value = { text: apiError(err, 'The project could not be restored. Try again.').message, error: true }
+  } finally {
+    restoring.value = null
+  }
+}
+const KEEPS = 'Kept: the change log, metrics already in Prometheus until its 15 day retention ends, the history in InfluxDB and past forecast warnings.'
 
 // The Rollback choice of a project that is not built in: its own pipeline, or none. Saved at once.
 const rollbackSaving = ref<string | null>(null)
@@ -291,11 +377,13 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
 </script>
 
 <template>
+  <p v-if="notice" class="text-[13px]" :class="notice.error ? 'text-destructive' : 'text-ok'" :role="notice.error ? 'alert' : 'status'">{{ notice.text }}</p>
+
   <section aria-label="Projects" class="overflow-hidden rounded-xl border border-border">
     <div class="flex items-center justify-between gap-3 px-[18px] py-3.5">
-      <span class="text-[15px] font-semibold">Projects</span>
+      <span ref="tableHeading" tabindex="-1" class="text-[15px] font-semibold">Projects</span>
       <span v-if="!loading && !failed" class="text-xs text-muted-foreground">
-        {{ shown.length }} project{{ shown.length === 1 ? '' : 's' }} on {{ serverCount }} server{{ serverCount === 1 ? '' : 's' }}
+        {{ activeProjects.length }} project{{ activeProjects.length === 1 ? '' : 's' }} on {{ serverCount }} server{{ serverCount === 1 ? '' : 's' }}{{ archivedCount ? `, ${archivedCount} archived` : '' }}
       </span>
     </div>
     <!-- relative: the sr-only labels inside are position absolute and must stay inside this scroll box -->
@@ -315,10 +403,11 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
         <p v-else-if="shown.length === 0" class="border-t border-border px-[18px] py-6 text-[13px] text-muted-foreground">
           No projects yet. Add one below.
         </p>
-        <div v-for="p in shown" :key="p.key" :class="GRID" class="items-center border-t border-border px-[18px] py-3">
+        <div v-for="p in shown" :key="p.key" :class="[GRID, p.status === 'archived' && 'text-faint']" class="items-center border-t border-border px-[18px] py-3">
           <span class="flex min-w-0 flex-col">
             <span class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
               <span class="min-w-0 font-mono text-[13px] font-medium [overflow-wrap:anywhere]">{{ p.name }}</span>
+              <span v-if="p.status === 'archived'" class="whitespace-nowrap rounded-md bg-chip px-1.5 text-[11px] font-semibold text-chipfg">Archived</span>
               <a v-if="p.repoUrl" :href="p.repoUrl" target="_blank" rel="noopener noreferrer" class="shrink-0 text-xs text-muted-foreground underline">Repository<span class="sr-only"> of {{ p.name }}, opens in a new tab</span></a>
             </span>
             <span class="truncate text-xs text-muted-foreground" :title="containersText(p)">{{ containersText(p) }}</span>
@@ -332,7 +421,7 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
             class="w-fit max-w-full rounded-[10px] px-2.5 py-0.5 text-xs leading-snug font-semibold"
             :class="p.automation === 'approval' ? 'bg-okbg text-ok' : 'border border-dashed border-input text-chipfg'"
           >{{ p.automation === 'approval' ? 'Restart and rollback with approval' : 'Monitored only' }}</span>
-          <span v-if="p.builtin" class="text-[13px] text-chipfg">{{ rollbackText(p.rollback) }}</span>
+          <span v-if="p.builtin || p.status === 'archived'" class="text-[13px]" :class="p.status === 'archived' ? '' : 'text-chipfg'">{{ rollbackText(p.rollback) }}</span>
           <span v-else class="flex min-w-0 flex-col gap-1">
             <select
               class="min-h-8 w-full max-w-[260px] rounded-lg border border-input bg-card px-2 text-[13px] text-foreground disabled:opacity-50 pointer-coarse:min-h-11"
@@ -346,8 +435,12 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
             </select>
             <span v-if="rollbackError && rollbackError.key === p.key" class="text-xs text-destructive" role="alert">{{ rollbackError.message }}</span>
           </span>
-          <span class="flex justify-end">
-            <button v-if="!p.builtin" type="button" class="min-h-8 rounded-md px-2 text-xs text-muted-foreground hover:bg-chip hover:text-foreground pointer-coarse:min-h-11" :aria-label="`Archive ${p.name}`" @click="askArchive(p)">Archive</button>
+          <span class="flex flex-wrap justify-end gap-1">
+            <button v-if="!p.builtin && p.status === 'active'" type="button" class="min-h-8 rounded-md px-2 text-xs text-muted-foreground hover:bg-chip hover:text-foreground pointer-coarse:min-h-11" :aria-label="`Archive ${p.name}`" @click="askArchive(p)">Archive</button>
+            <template v-if="!p.builtin && p.status === 'archived'">
+              <button type="button" class="min-h-8 rounded-md px-2 text-xs font-medium text-foreground hover:bg-chip pointer-coarse:min-h-11" :aria-label="`Restore ${p.name}`" :aria-disabled="restoring !== null" @click="restoreProject(p)">{{ restoring === p.key ? 'Restoring' : 'Restore' }}</button>
+              <button type="button" class="min-h-8 rounded-md px-2 text-xs text-destructive hover:bg-chip pointer-coarse:min-h-11" :aria-label="`Delete ${p.name} permanently`" @click="askDelete(p)">Delete permanently</button>
+            </template>
           </span>
         </div>
       </div>
@@ -365,6 +458,19 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
       <button type="button" :class="btn" class="bg-primary text-primary-foreground disabled:opacity-50" :disabled="archiving" @click="archive">{{ archiving ? 'Archiving' : 'Archive project' }}</button>
     </div>
   </div>
+
+  <DeleteConfirm
+    v-if="removing"
+    :key="removing.project.key"
+    kind="project"
+    :name="removing.project.name"
+    :removes="removing.removes"
+    :keeps="KEEPS"
+    :error="removeError"
+    :busy="removeBusy"
+    @confirm="confirmDelete"
+    @cancel="closeDelete"
+  />
 
   <form aria-label="Add project" class="flex flex-col gap-4 rounded-xl border border-border p-[18px]" novalidate @submit.prevent="save">
     <span class="text-[15px] font-semibold">Add project</span>

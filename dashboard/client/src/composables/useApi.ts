@@ -120,3 +120,38 @@ export async function getForecast(): Promise<ForecastInfo> {
   if (!data || !Array.isArray(data.containers) || !Array.isArray(data.disks)) throw new Error('unexpected response')
   return data
 }
+
+// ---- Delete and restore in Settings (servers and projects). Delete needs the exact name.
+export type RegistryKind = 'servers' | 'projects'
+export interface DeletePreview {
+  name: string
+  status: string
+  // Projects: the server name and what goes with the project. Servers: the projects still on it.
+  serverName: string | null
+  deployments: number
+  links: number
+  images: number
+  projects: string[]
+}
+export async function getDeletePreview(kind: RegistryKind, key: string): Promise<DeletePreview> {
+  const { data } = await api.get<Record<string, unknown>>(`/api/settings/${kind}/${encodeURIComponent(key)}/delete-preview`)
+  const n = (v: unknown) => (typeof v === 'number' ? v : 0)
+  return {
+    name: typeof data?.name === 'string' ? data.name : key,
+    status: typeof data?.status === 'string' ? data.status : '',
+    serverName: typeof data?.server_name === 'string' ? data.server_name : null,
+    deployments: n(data?.deployments),
+    links: n(data?.links),
+    images: n(data?.images),
+    projects: Array.isArray(data?.projects) ? data.projects.filter((p): p is string => typeof p === 'string') : [],
+  }
+}
+// Resolves with the server's sentence about the targets file when it could not be written, else null.
+export async function deleteRegistryItem(kind: RegistryKind, key: string, name: string): Promise<string | null> {
+  const { data } = await api.post<{ targets_error?: string | null }>(`/api/settings/${kind}/${encodeURIComponent(key)}/delete`, { name })
+  return typeof data?.targets_error === 'string' ? data.targets_error : null
+}
+export async function restoreRegistryItem(kind: RegistryKind, key: string): Promise<string | null> {
+  const { data } = await api.post<{ targets_error?: string | null }>(`/api/settings/${kind}/${encodeURIComponent(key)}/restore`, {})
+  return typeof data?.targets_error === 'string' ? data.targets_error : null
+}

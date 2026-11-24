@@ -1,9 +1,11 @@
 // Settings routes (admin only): servers and projects of the registry, and the change log.
 // Every write runs in one database transaction together with its settings_log row, so a change
-// is saved with its log entry or not at all. There is no DELETE route; records are archived.
+// is saved with its log entry or not at all. Records are archived first; an archived record can
+// then be restored or deleted for good (see Delete and restore below).
 // Errors are JSON { error: "<sentence>", field?: "<name>" } so the client can show them next to
 // the field they belong to.
 const express = require("express");
+const { rateLimit } = require("express-rate-limit");
 const { createPrometheus } = require("./prometheus");
 const { originAllowed } = require("./security");
 const {
@@ -193,6 +195,11 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin, now =
         const body = { error: err.message };
         if (err.field) body.field = err.field;
         return res.status(err.status).json(body);
+      }
+      // A foreign key refused a delete: something new refers to the record (for example the image
+      // watcher recorded a deployment a moment ago). The transaction was rolled back.
+      if (err && err.code === "23503") {
+        return res.status(409).json({ error: "Something new refers to this record, so nothing was deleted. Try again." });
       }
       if (err && err.code === "23505") {
         return res.status(409).json({ error: "Another record already uses this name, address or container." });
@@ -609,6 +616,151 @@ function createSettingsRouter({ auth, db, registry, prometheus, appOrigin, now =
       };
     });
     res.json(archived);
+  }));
+
+  // ---- Delete and restore
+  //
+  // Two steps: an item is archived first, and only an archived item (or a server whose setup was
+  // never finished, which is pending) can be deleted. The admin types the exact name, which the
+  // route checks again. Built-in records can be neither archived nor deleted. Every delete and
+  // restore runs in one transaction with its change log row; the log keeps the names as text.
+  // Metrics already in Prometheus, the InfluxDB history and the forecast_events rows are not erased.
+  const destructive = rateLimit({
+    ...auth.limiterDefaults,
+    windowMs: 10 * 60 * 1000,
+    limit: 30,
+    keyGenerator: (req) => `settings-delete|${req.user.id}`,
+  });
+  const removeWrite = [...write, destructive];
+
+  function typedName(req, name) {
+    const typed = bodyOf(req).name;
+    if (typed !== name) throw new ApiError(400, `Type the exact name ${name} to confirm.`, "name");
+  }
+
+  // The targets files are rewritten by the reload after a server write. When that write failed,
+  // the database change stays and the answer says the file must be fixed.
+  function targetsNote() {
+    const status = registry.targetsStatus();
+    return status.ok ? null : `${status.error}. The change was saved; fix the targets folder so the file can be written again.`;
+  }
+
+  // The latest group of released links: the containers the archive released (an archive releases
+  // them all in one statement, so they share one time). Earlier edits released others at other times.
+  function archivedContainers(links) {
+    const released = links.filter((l) => l.released_at);
+    if (!released.length) return [];
+    const last = Math.max(...released.map((l) => new Date(l.released_at).getTime()));
+    return released.filter((l) => new Date(l.released_at).getTime() === last).map((l) => l.container_name).sort();
+  }
+
+  router.get("/projects/:key/delete-preview", route(async (req, res) => {
+    const [servers, projects] = await Promise.all([db.listServers(), db.listProjects()]);
+    const project = findProject(projects, req.params.key);
+    const counts = await db.projectDeleteCounts(project.key);
+    const server = servers.find((s) => s.key === project.server_key);
+    res.json({ name: project.name, status: project.status, server_name: server ? server.name : project.server_key, ...counts });
+  }));
+
+  router.post("/projects/:key/delete", ...removeWrite, route(async (req, res) => {
+    const deleted = await commit(req, async (ops) => {
+      const [servers, projects] = await Promise.all([ops.listServers(), ops.listProjects()]);
+      const project = findProject(projects, req.params.key);
+      if (project.builtin) throw new ApiError(409, "A built-in project cannot be deleted.");
+      if (project.status !== "archived") throw new ApiError(409, "Archive the project first. Only an archived project can be deleted.");
+      typedName(req, project.name);
+      const server = servers.find((s) => s.key === project.server_key);
+      const serverName = server ? server.name : project.server_key;
+      const counts = await ops.deleteProject(project.key);
+      const n = counts.deployments;
+      return {
+        result: { deleted: project.key, name: project.name, ...counts },
+        log: {
+          action: "Deleted project",
+          target: project.name,
+          detail: `Deleted project ${project.name} on ${serverName}, ${n} deployment${n === 1 ? "" : "s"} removed. Container links and stored image history removed. Metrics in Prometheus stay until retention ends.`,
+        },
+      };
+    });
+    res.json(deleted);
+  }));
+
+  router.post("/projects/:key/restore", ...removeWrite, route(async (req, res) => {
+    const restored = await commit(req, async (ops) => {
+      const [servers, projects] = await Promise.all([ops.listServers(), ops.listProjects()]);
+      const project = findProject(projects, req.params.key);
+      if (project.status !== "archived") throw new ApiError(409, "Only an archived project can be restored.");
+      const server = servers.find((s) => s.key === project.server_key);
+      if (!server || server.status !== "active") throw new ApiError(409, `Its server ${server ? server.name : project.server_key} is not active. Restore the server first.`);
+      const names = archivedContainers(await ops.listContainerLinks(project.key));
+      if (!names.length) throw new ApiError(409, "This project has no containers to restore.", "containers");
+      const platform = platformNames();
+      const taken = names
+        .map((name) => {
+          if (platform.has(name)) return `${name} (used by the platform)`;
+          const other = projects.find((p) => p.key !== project.key && p.server_key === server.key && p.status === "active" && p.containers.includes(name));
+          return other ? `${name} (in ${other.name})` : null;
+        })
+        .filter(Boolean);
+      if (taken.length) throw new ApiError(409, `These containers are taken: ${taken.join(", ")}. Free them first.`, "containers");
+      await ops.updateProject(project.key, { status: "active" });
+      await ops.setContainers(project.key, server.key, names);
+      return {
+        result: projectView({ ...project, status: "active", containers: names }, new Map(servers.map((s) => [s.key, s]))),
+        log: { action: "Restored project", target: project.name, detail: `Active again on ${server.name} with containers ${names.join(", ")}.` },
+      };
+    });
+    res.json(restored);
+  }));
+
+  router.get("/servers/:key/delete-preview", route(async (req, res) => {
+    const [servers, projects] = await Promise.all([db.listServers(), db.listProjects()]);
+    const server = findServer(servers, req.params.key);
+    const counts = await db.serverDeleteCounts(server.key);
+    res.json({
+      name: server.name,
+      status: server.status,
+      projects: projects.filter((p) => p.server_key === server.key).map((p) => p.name),
+      ...counts,
+    });
+  }));
+
+  router.post("/servers/:key/delete", ...removeWrite, route(async (req, res) => {
+    const deleted = await commit(req, async (ops) => {
+      const server = findServer(await ops.listServers(), req.params.key);
+      if (server.builtin) throw new ApiError(409, "A built-in server cannot be deleted.");
+      if (server.status === "active") throw new ApiError(409, "Archive the server first. Only an archived server, or one whose setup was not finished, can be deleted.");
+      typedName(req, server.name);
+      const left = (await ops.listProjects()).filter((p) => p.server_key === server.key);
+      if (left.length) throw new ApiError(409, `Delete these projects first: ${left.map((p) => p.name).join(", ")}.`);
+      const counts = await ops.deleteServer(server.key);
+      return {
+        result: { deleted: server.key, name: server.name, ...counts },
+        log: {
+          action: "Deleted server",
+          target: server.name,
+          detail: `Deleted ${server.status === "pending" ? "pending" : "archived"} server ${server.name}. Removed from the Prometheus targets files. Metrics in Prometheus stay until retention ends.`,
+        },
+      };
+    });
+    res.json({ ...deleted, targets_error: targetsNote() });
+  }));
+
+  router.post("/servers/:key/restore", ...removeWrite, route(async (req, res) => {
+    const restored = await commit(req, async (ops) => {
+      const servers = await ops.listServers();
+      const server = findServer(servers, req.params.key);
+      if (server.status !== "archived") throw new ApiError(409, "Only an archived server can be restored.");
+      if (server.address && servers.some((s) => s.key !== server.key && s.address === server.address && s.status !== "archived")) {
+        throw new ApiError(409, "Another server now uses this address. Archive or delete that one first.", "address");
+      }
+      await ops.updateServer(server.key, { status: "pending" });
+      return {
+        result: serverView({ ...server, status: "pending" }),
+        log: { action: "Restored server", target: server.name, detail: "Back to pending. Run the connection check and Finish to make it active again." },
+      };
+    });
+    res.json({ ...restored, targets_error: targetsNote() });
   }));
 
   // ---- Change log
