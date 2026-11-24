@@ -2,6 +2,7 @@
 import type { ApiErrorInfo, ErrorField, PickableContainer, RollbackSetting, ServerBrief, SettingsProject } from '@/types'
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { Skeleton } from '@/components/ui/skeleton'
+import { applyRefresh, untickedText } from '@/composables/containerRefresh'
 import { api, usePoll } from '@/composables/useApi'
 import { apiError, toPickableContainer, toSettingsProject } from '@/types'
 
@@ -78,26 +79,90 @@ const formError = computed(() => (error.value && !error.value.field ? error.valu
 const containers = ref<PickableContainer[]>([])
 const containersState = ref<'idle' | 'loading' | 'failed'>('idle')
 const containersError = ref('')
+// Refresh reads the list again without clearing it, so the ticks and the typed name stay.
+const refreshing = ref(false)
+const refreshError = ref('')
+const unticked = ref('')
+const lastRead = ref<Date | null>(null)
+// Only the newest request may change the list, so a slow answer never overwrites a newer one.
+let requestId = 0
+const READ_FAILED = 'The containers on this server could not be read. cAdvisor may not be answering.'
+
+function timeText(d: Date): string {
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+}
+
+async function readContainers(server: string): Promise<PickableContainer[]> {
+  const res = await api.get<unknown[]>(`/api/settings/servers/${encodeURIComponent(server)}/containers`)
+  if (!Array.isArray(res.data)) throw new Error('unexpected response')
+  return res.data.map(toPickableContainer).filter(c => c.name)
+}
+
+// A full load for a newly chosen server: the list is cleared and a skeleton is shown.
 async function loadContainers() {
+  const id = ++requestId
   const wanted = form.server
   containers.value = []
+  refreshing.value = false
+  refreshError.value = ''
+  unticked.value = ''
+  lastRead.value = null
   if (!wanted) {
     containersState.value = 'idle'
     return
   }
   containersState.value = 'loading'
   try {
-    const res = await api.get<unknown[]>(`/api/settings/servers/${encodeURIComponent(wanted)}/containers`)
-    if (wanted !== form.server) return
-    if (!Array.isArray(res.data)) throw new Error('unexpected response')
-    containers.value = res.data.map(toPickableContainer).filter(c => c.name)
+    const list = await readContainers(wanted)
+    if (id !== requestId) return
+    containers.value = list
     containersState.value = 'idle'
+    lastRead.value = new Date()
   } catch (err) {
-    if (wanted !== form.server) return
-    containersError.value = apiError(err, 'The containers on this server could not be read. cAdvisor may not be answering.').message
+    if (id !== requestId) return
+    containersError.value = apiError(err, READ_FAILED).message
     containersState.value = 'failed'
   }
 }
+
+// Reads the list again for the same server and keeps what still applies. Also run after a save or
+// an archive, where it replaces any refresh still waiting for an answer.
+async function refreshContainers() {
+  if (containersState.value === 'loading' || !form.server) return
+  // Without a list to keep, a refresh is the same as the first load.
+  if (containersState.value === 'failed') return loadContainers()
+  const id = ++requestId
+  const wanted = form.server
+  refreshing.value = true
+  refreshError.value = ''
+  unticked.value = ''
+  let next: PickableContainer[] | null = null
+  let failure = ''
+  try {
+    next = await readContainers(wanted)
+  } catch (err) {
+    failure = apiError(err, READ_FAILED).message
+  }
+  if (id !== requestId || wanted !== form.server) return
+  const out = applyRefresh({ containers: containers.value, picked: picked.value }, next)
+  containers.value = out.containers
+  picked.value = out.picked
+  if (out.ok) {
+    lastRead.value = new Date()
+    unticked.value = untickedText(out.gone, out.blocked)
+  } else {
+    const since = lastRead.value ? ` from ${timeText(lastRead.value)}` : ''
+    refreshError.value = `Refresh failed. ${failure} The list below is the one${since}. Press Refresh to try again.`
+  }
+  refreshing.value = false
+}
+
+// The button stays focusable while it works, so a second press is ignored here instead.
+function onRefresh() {
+  if (!refreshing.value) refreshContainers()
+}
+
+// A new server: its list is read at once and the ticks of the old server are dropped.
 watch(() => form.server, () => {
   picked.value = []
   loadContainers()
@@ -138,7 +203,7 @@ async function save() {
     form.repoUrl = ''
     picked.value = []
     refresh()
-    loadContainers()
+    refreshContainers()
   } catch (err) {
     error.value = apiError(err)
   } finally {
@@ -177,7 +242,7 @@ async function archive() {
     confirming.value = null
     opener = null
     refresh()
-    loadContainers()
+    refreshContainers()
   } catch (err) {
     archiveError.value = apiError(err).message
   } finally {
@@ -354,10 +419,29 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
     </div>
 
     <div class="flex flex-col gap-2">
-      <div class="flex flex-wrap items-baseline justify-between gap-2">
-        <span id="project-containers" class="text-[13px] font-medium">Containers on <span class="font-mono">{{ form.server ? serverName(form.server) : 'the server' }}</span></span>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <span class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <span id="project-containers" class="text-[13px] font-medium">Containers on <span class="font-mono">{{ form.server ? serverName(form.server) : 'the server' }}</span></span>
+          <!-- Same look as Check now in the Add server wizard. aria-disabled, not disabled, while it
+               works, so the button keeps focus. -->
+          <button
+            v-if="form.server"
+            type="button"
+            :class="btn"
+            class="gap-1.5 border border-border hover:bg-chip aria-disabled:cursor-progress"
+            :aria-label="`Refresh containers on ${serverName(form.server)}`"
+            :aria-disabled="refreshing || containersState === 'loading'"
+            @click="onRefresh"
+          >
+            <svg class="size-3.5 shrink-0" :class="refreshing && 'motion-safe:animate-spin'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /></svg>
+            {{ refreshing ? 'Refreshing' : 'Refresh' }}
+          </button>
+          <span class="text-xs text-muted-foreground" role="status">{{ lastRead && !refreshing ? `Updated ${timeText(lastRead)}` : '' }}</span>
+        </span>
         <span class="text-xs text-muted-foreground">From cAdvisor, live. Containers already in a project or used by the platform cannot be picked.</span>
       </div>
+      <p v-if="refreshError" class="text-[13px] text-destructive" role="alert">{{ refreshError }}</p>
+      <p v-if="unticked" class="text-[13px] text-muted-foreground" role="status">{{ unticked }}</p>
       <div v-if="containersState === 'loading'" class="grid grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-2" role="status" aria-label="Loading containers">
         <Skeleton v-for="i in 4" :key="i" class="h-[52px] rounded-[10px]" />
       </div>
@@ -366,9 +450,13 @@ const btn = 'inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 t
         <button type="button" :class="btn" class="border border-border hover:bg-chip" @click="loadContainers">Try again</button>
       </div>
       <p v-else-if="containers.length === 0" class="rounded-[10px] border border-dashed border-input px-4 py-3 text-[13px] text-muted-foreground">
-        {{ form.server ? 'cAdvisor sees no containers on this server.' : 'Choose a server to see its containers.' }}
+        <template v-if="form.server">
+          cAdvisor sees no containers on this server.<br>
+          Start the container on the server, then press Refresh.
+        </template>
+        <template v-else>Choose a server to see its containers.</template>
       </p>
-      <div v-else role="group" aria-labelledby="project-containers" class="grid grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-2">
+      <div v-else role="group" aria-labelledby="project-containers" :aria-busy="refreshing" class="grid grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-2">
         <button
           v-for="c in containers"
           :key="c.name"
