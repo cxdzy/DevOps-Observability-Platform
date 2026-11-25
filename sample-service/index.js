@@ -52,35 +52,8 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'sample-service' });
 });
 
-// R3 TEST ONLY. This release carries a runaway CPU loop: after every /metrics response (Prometheus
-// scrapes every 15 seconds) the service burns CPU for up to 7000 ms, about 0.47 of one core. The work
-// runs after the response, in 50 ms slices, so request latency stays normal. Every burn stops at a
-// fixed deadline and only one burn runs at a time, so it can never hang the service. Skipped under
-// Jest. Revert the commit that adds it once the R3 test is over.
-const R3_BURN_MS = 7000;
-const R3_SLICE_MS = 50;
-let r3Burning = false;
-const r3Burn = () => {
-  if (r3Burning || process.env.NODE_ENV === 'test') return;
-  r3Burning = true;
-  const deadline = Date.now() + R3_BURN_MS;
-  const slice = () => {
-    const sliceEnd = Math.min(Date.now() + R3_SLICE_MS, deadline);
-    while (Date.now() < sliceEnd) {
-      Math.sqrt(Math.random() * 999999);
-    }
-    if (Date.now() < deadline) {
-      setImmediate(slice);
-    } else {
-      r3Burning = false;
-    }
-  };
-  setImmediate(slice);
-};
-
 app.get('/metrics', async (req, res) => {
   res.set('Content-Type', register.contentType);
-  res.on('finish', r3Burn);
   res.end(await register.metrics());
 });
 
