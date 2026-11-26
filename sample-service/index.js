@@ -52,7 +52,25 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'sample-service' });
 });
 
+// R2 TEST ONLY: a deliberate memory leak for the R2 run (R2_Plan_27Nov.md). Revert after the run.
+// Every call to /metrics keeps 1.5 MB in the V8 heap and never frees it. Prometheus calls /metrics
+// every 15 seconds, so the heap grows about 6 MB a minute. The cap of 200 calls (300 MB) stays
+// below the 450 MB heap limit, so the leak by itself cannot crash the service.
+// Each call keeps three 512 KB latin1 strings, because Node stores a string of about 1 MB or more
+// outside the V8 heap, where the heap limit would not apply.
+const R2_LEAK_CHUNK_BYTES = 512 * 1024;
+const R2_LEAK_CHUNKS_PER_CALL = 3;
+const R2_LEAK_MAX_CALLS = 200;
+const r2LeakStore = [];
+
 app.get('/metrics', async (req, res) => {
+  if (r2LeakStore.length < R2_LEAK_MAX_CALLS) {
+    const kept = [];
+    for (let i = 0; i < R2_LEAK_CHUNKS_PER_CALL; i++) {
+      kept.push(Buffer.alloc(R2_LEAK_CHUNK_BYTES, 'x').toString('latin1'));
+    }
+    r2LeakStore.push(kept);
+  }
   res.set('Content-Type', register.contentType);
   res.end(await register.metrics());
 });
