@@ -132,7 +132,7 @@ function createApp(deps) {
   // Forecast: the 60 s job and its routes. The internal route has its own token check, so the router
   // is mounted before the session check and puts that check on its other routes itself.
   const forecastJob = deps.forecastJob || createForecastJob({ db, registry, prometheus: deps.forecastPrometheus, now, log });
-  app.use("/api", createForecastRouter({ job: forecastJob, db, auth, trusted: deps.trusted || TRUST_NOBODY, now, token: deps.forecastToken !== undefined ? deps.forecastToken : process.env.FORECAST_NOTIFY_TOKEN }));
+  app.use("/api", createForecastRouter({ job: forecastJob, db, auth, registry, trusted: deps.trusted || TRUST_NOBODY, now, token: deps.forecastToken !== undefined ? deps.forecastToken : process.env.FORECAST_NOTIFY_TOKEN }));
   if (deps.startForecast !== undefined ? Boolean(deps.startForecast) : !process.env.NODE_TEST_CONTEXT) forecastJob.start();
 
   // The signed-in user's own account. Before the gate below, so a user who must change an

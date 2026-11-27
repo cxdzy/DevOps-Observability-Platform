@@ -183,7 +183,7 @@ test("the internal route answers with the right token, no session, at most 20 ro
   assert.equal(body.events[0].container, "c1");
   assert.equal(body.events[19].container, "c20");
   assert.deepEqual(Object.keys(body.events[0]).sort(), [
-    "container", "est_minutes_at_open", "id", "level_at_open", "limit_value", "mountpoint", "opened_at", "project", "resource", "server", "slope_per_min",
+    "container", "est_minutes_at_open", "id", "level_at_open", "limit_value", "mountpoint", "opened_at", "project", "resource", "server", "server_name", "slope_per_min",
   ]);
   const later = await (await app.request("/api/internal/forecast/new?since=2026-11-22T06:22:00Z", { headers })).json();
   assert.deepEqual(later.events.map((e) => e.container), ["c23", "c24"]);
@@ -193,6 +193,23 @@ test("the internal route answers with the right token, no session, at most 20 ro
   assert.equal(app.db.forecastEvents.length, 25);
   // No log line holds the token, whatever was asked.
   assert.ok(app.logs.every((l) => !String(l).includes(TOKEN)));
+});
+
+test("the internal route gives each event its server name from the registry, or the key when unknown", async (t) => {
+  const app = await startApp({ forecastJob: fakeJob(SNAP), forecastToken: TOKEN });
+  t.after(app.close);
+  const at = Date.UTC(2026, 10, 22, 6, 0, 0);
+  const rows = [
+    { server: "main", project: "sample-service", container: "sample-service", resource: "memory", mountpoint: null },
+    { server: "old", project: null, container: null, resource: "disk", mountpoint: "/" },
+    { server: "gone", project: "x", container: "x1", resource: "memory", mountpoint: null },
+  ];
+  for (let i = 0; i < rows.length; i++) {
+    await app.db.insertForecastEvent({ ...rows[i], openedAt: new Date(at + i * 60000), estMinutes: 40, configVersion: "test" });
+  }
+  const body = await (await app.request("/api/internal/forecast/new?since=2026-11-22T05:59:00Z", { headers: { "x-notify-token": TOKEN } })).json();
+  assert.deepEqual(body.events.map((e) => [e.server, e.server_name]), [["main", "fyp-main"], ["old", "staging"], ["gone", "gone"]]);
+  assert.equal(app.db.forecastEvents.length, 3);
 });
 
 test("the internal route is rate limited at about 60 requests a minute", async (t) => {
