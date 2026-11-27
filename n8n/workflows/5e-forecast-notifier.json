@@ -1,0 +1,167 @@
+{
+  "name": "5e Forecast notifier",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "name": "Every minute",
+      "id": "9e06b218-3e9a-4121-822a-f7455a36ff29"
+    },
+    {
+      "parameters": {
+        "jsCode": "const store = $getWorkflowStaticData('global');\nif (!store.since) {                 // first run: start from now, so nothing older is sent\n  store.since = new Date().toISOString();\n  store.afterId = '0';\n}\nreturn [{ json: { since: store.since, after_id: store.afterId || '0' } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "name": "Cursor",
+      "id": "e1a7efc0-868c-461b-a4d5-7989a3767af0"
+    },
+    {
+      "parameters": {
+        "url": "http://dashboard:3000/api/internal/forecast/new",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "since",
+              "value": "={{ $json.since }}"
+            },
+            {
+              "name": "after_id",
+              "value": "={{ $json.after_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        448,
+        0
+      ],
+      "name": "Get new warnings",
+      "id": "e0f051e3-fa21-4ebb-a056-ce897b99b0c0",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "gKzgASex7RudNFqM",
+          "name": "Forecast notify token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const store = $getWorkflowStaticData('global');\nconst events = $input.first().json.events || [];\nconst MB = 1024 * 1024, GB = 1024 * MB;\nconst num = (v) => (v === null || v === undefined || !Number.isFinite(Number(v)) ? null : Number(v));\nconst show = (v, f) => (num(v) === null ? 'No data' : f(num(v)));\nconst mins = (m) => (m > 10 ? Math.round(m / 5) * 5 : Math.max(1, Math.round(m)));\nconst HEADER = (e) => {\n  const server = e.server_name || e.server;\n  return e.project ? `Server: ${server} | Project: ${e.project}\\n` : `Server: ${server}\\n`;\n};\nconst FOOT = '\\n\\nThis is a warning only. No restart or rollback is started.';\nconst out = [];\nfor (const e of events) {\n  let body = null;\n  if (e.resource === 'memory') {\n    body = `Early warning: memory of ${e.container} is rising steadily\\n` +\n      `Now ${show(e.level_at_open, v => (v / MB).toFixed(0) + ' MB')}` +\n      (num(e.limit_value) === null ? ' (limit: No data)' : ` of its ${(num(e.limit_value) / MB).toFixed(0)} MB limit`) +\n      (num(e.slope_per_min) === null ? ', rate: No data\\n' : `, rising about ${(num(e.slope_per_min) / MB).toFixed(1)} MB a minute\\n`) +\n      `At this pace it reaches the limit in about ${show(e.est_minutes_at_open, v => mins(v) + ' min')}`;\n  } else if (e.resource === 'disk') {\n    const pct = num(e.level_at_open) !== null && num(e.limit_value) ? (100 * e.level_at_open / e.limit_value).toFixed(0) + '%' : 'No data';\n    body = `Early warning: disk ${e.mountpoint} is filling\\n` +\n      `Now ${pct} used (${show(e.level_at_open, v => (v / GB).toFixed(1))} of ${show(e.limit_value, v => (v / GB).toFixed(1))} GB), ` +\n      `rising about ${show(e.slope_per_min, v => (v * 60 / GB).toFixed(2) + ' GB')} an hour\\n` +\n      `At this pace it is full in about ${show(e.est_minutes_at_open, v => (v < 120 ? (v / 60).toFixed(1) : Math.round(v / 60)) + ' hours')}`;\n  } else if (e.resource === 'restarts') {\n    body = `Early warning: ${e.container} is restarting repeatedly\\n` +\n      `Restarted ${show(e.level_at_open, v => String(v))} times in 15 minutes`;\n  }\n  if (body) out.push({ json: { text: HEADER(e) + body + FOOT } });\n}\nif (events.length) {                // move the cursor to the last row read\n  const last = events[events.length - 1];\n  store.since = last.opened_at;\n  store.afterId = last.id;\n}\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ],
+      "name": "Build messages",
+      "id": "9aee3526-bcb4-496a-9c44-77502b29647f"
+    },
+    {
+      "parameters": {
+        "chatId": "763653428",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        880,
+        0
+      ],
+      "name": "Send warning",
+      "id": "f9e965d5-9075-4f38-910f-c86039cfe30b",
+      "webhookId": "4f0dd622-eb2c-4cf7-84ab-5d0573076573",
+      "retryOnFail": true,
+      "credentials": {
+        "telegramApi": {
+          "id": "Bvw7NQseUMpPlDDU",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every minute": {
+      "main": [
+        [
+          {
+            "node": "Cursor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cursor": {
+      "main": [
+        [
+          {
+            "node": "Get new warnings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get new warnings": {
+      "main": [
+        [
+          {
+            "node": "Build messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build messages": {
+      "main": [
+        [
+          {
+            "node": "Send warning",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "fb821682-3968-4b1f-a731-5935ff7b477a",
+  "meta": {},
+  "id": "iI2d1KDsyiCMMP6F",
+  "tags": []
+}
