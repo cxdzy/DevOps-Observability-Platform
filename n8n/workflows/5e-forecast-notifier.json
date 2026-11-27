@@ -99,6 +99,7 @@
       "name": "Send warning",
       "id": "f9e965d5-9075-4f38-910f-c86039cfe30b",
       "webhookId": "4f0dd622-eb2c-4cf7-84ab-5d0573076573",
+      "retryOnFail": true,
       "credentials": {
         "telegramApi": {
           "id": "Bvw7NQseUMpPlDDU",
@@ -159,7 +160,7 @@
     "executionOrder": "v1",
     "binaryMode": "separate"
   },
-  "versionId": "52dfd528-35b3-41b6-9ec7-e649de5d5ce3",
+  "versionId": "fb821682-3968-4b1f-a731-5935ff7b477a",
   "meta": {},
   "id": "iI2d1KDsyiCMMP6F",
   "tags": []
