@@ -3,7 +3,8 @@
 //   GET /api/forecast/events?from=&to= warning history (signed-in users)
 //   GET /api/internal/forecast/new?since=  new warnings for the later Telegram workflow. No session;
 //     it needs the x-notify-token header. Without a token of at least 32 characters configured the
-//     route answers 404 as if it did not exist.
+//     route answers 404 as if it did not exist. Each event carries server_name from the registry,
+//     the same source /api/forecast uses, or the server key when the registry does not know it.
 // Every route only reads. No answer has message text, a secret or a stack trace.
 const crypto = require("crypto");
 const express = require("express");
@@ -93,13 +94,15 @@ function eventOut(row) {
   };
 }
 
-// The fields the notify workflow may read. No close data, no config, no text.
-function newOut(row) {
+// The fields the notify workflow may read. No close data, no config, no text. names maps a server
+// key to its registry name; an unknown key falls back to the key itself.
+function newOut(row, names) {
   const e = eventOut(row);
   return {
     id: e.id,
     resource: e.resource,
     server: e.server,
+    server_name: names.get(e.server) ?? e.server,
     project: e.project,
     container: e.container,
     mountpoint: e.mountpoint,
@@ -118,9 +121,10 @@ function sameToken(given, expected) {
   return crypto.timingSafeEqual(a, b);
 }
 
-// deps: { job, db, auth, trusted, now, token, config }. token is the configured notify token
-// (FORECAST_NOTIFY_TOKEN); it is read once and never logged or sent.
-function createForecastRouter({ job, db, auth, trusted, now = Date.now, token, config = FORECAST_CONFIG }) {
+// deps: { job, db, auth, registry, trusted, now, token, config }. token is the configured notify token
+// (FORECAST_NOTIFY_TOKEN); it is read once and never logged or sent. registry gives the server names
+// (left out, every event's server_name is its key).
+function createForecastRouter({ job, db, auth, registry = null, trusted, now = Date.now, token, config = FORECAST_CONFIG }) {
   const router = express.Router();
   const enabled = typeof token === "string" && token.length >= config.internal.minTokenLength;
 
@@ -155,7 +159,10 @@ function createForecastRouter({ job, db, auth, trusted, now = Date.now, token, c
       }
       try {
         const rows = await db.listNewForecastEvents(new Date(since), config.internal.maxRows, rawAfter === undefined ? null : rawAfter);
-        res.json({ events: rows.slice(0, config.internal.maxRows).map(newOut) });
+        // registry.load never throws; it is cached for 30 seconds and keeps the last good data.
+        const snap = registry ? await registry.load() : null;
+        const names = new Map(snap ? snap.servers.map((s) => [s.key, s.name]) : []);
+        res.json({ events: rows.slice(0, config.internal.maxRows).map((row) => newOut(row, names)) });
       } catch (err) {
         res.status(502).json({ error: "the forecast history is unavailable" });
       }
