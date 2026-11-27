@@ -1,18 +1,22 @@
 <script setup lang="ts">
-import type { ActivityItem, AnomalyPoint, ChartWindow, EventsResponse, Health, Incident, LatestAnomaly, NodeInfo, ServicesInfo, StatusInfo, ZoomWindow } from '@/types'
+import type { ContainerForecast } from '@/composables/useApi'
+import type { ActivityItem, AnomalyPoint, ChartWindow, EventsResponse, Health, Incident, LatestAnomaly, NodeInfo, ProjectRow, ServicesInfo, StatusInfo, ZoomWindow } from '@/types'
 import { computed, defineAsyncComponent, ref } from 'vue'
 import ChartLoadError from '@/components/ChartLoadError.vue'
 import ChartSkeleton from '@/components/ChartSkeleton.vue'
 import ChartToolbar from '@/components/ChartToolbar.vue'
 import EventLane from '@/components/EventLane.vue'
+import ForecastChip from '@/components/ForecastChip.vue'
 import NodeCard from '@/components/NodeCard.vue'
+import { DOT_CLASS, STATUS_CLASS } from '@/components/ProjectsView.vue'
 import RecentActivity from '@/components/RecentActivity.vue'
 import ServicesTable from '@/components/ServicesTable.vue'
 import StatusChip from '@/components/StatusChip.vue'
 import TierBadge from '@/components/TierBadge.vue'
 import { Skeleton } from '@/components/ui/skeleton'
-import { api, usePoll } from '@/composables/useApi'
+import { api, getForecast, usePoll } from '@/composables/useApi'
 import { fixed, localDateTime } from '@/lib/format'
+import { EMPTY_TEXT, ERROR_TEXT, overviewRows } from '@/lib/overviewProjects'
 import { FLAG_TIERS, TIER_STYLE, toTier } from '@/lib/tier'
 
 // ECharts is large, so the metric chart is downloaded only when it is first shown.
@@ -82,6 +86,39 @@ async function load() {
 
 // Every 30 seconds; a tick is skipped while the previous load is still running.
 usePoll(load, 30000)
+
+// Projects and the forecast have their own polls. The projects route queries Prometheus for each
+// server, so it must not delay the summary cards. A forecast failure only means no forecast chip.
+const projects = ref<ProjectRow[]>([])
+const projectsLoading = ref(true)
+const projectsLoaded = ref(false)
+const projectsFailed = ref(false)
+async function loadProjects() {
+  try {
+    const res = await api.get<ProjectRow[]>('/api/projects')
+    if (!Array.isArray(res.data)) throw new Error('unexpected response')
+    projects.value = res.data.map(p => ({ ...p, containers: Array.isArray(p.containers) ? p.containers : [] }))
+    projectsLoaded.value = true
+    projectsFailed.value = false
+  } catch {
+    projectsFailed.value = true
+  } finally {
+    projectsLoading.value = false
+  }
+}
+usePoll(loadProjects, 30000)
+
+const forecasts = ref<ContainerForecast[]>([])
+async function loadForecast() {
+  try {
+    forecasts.value = (await getForecast()).containers
+  } catch {
+    // Keep the last forecast; without one the rows simply show no chip.
+  }
+}
+usePoll(loadForecast, 30000)
+
+const projectRows = computed(() => overviewRows(projects.value, forecasts.value))
 
 // Zoom of the service chart; the narrowest window is about 10 minutes of the 6 hours.
 const PRESETS = [{ value: HOURS, label: '6 h', title: 'Last 6 hours' }]
@@ -216,12 +253,12 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
         <template v-if="hasScore && latest.data.value">
           <div :class="bigNumber">{{ fixed(latest.data.value.score) }}</div>
           <div class="mt-0.5 text-xs text-muted-foreground">
-            threshold <span class="font-mono">{{ fixed(latest.data.value.threshold) }}</span><template v-if="latest.data.value.model">, model <span class="font-mono">{{ latest.data.value.model }}</span></template>
+            <span class="font-mono">sample-service</span>, threshold <span class="font-mono">{{ fixed(latest.data.value.threshold) }}</span><template v-if="latest.data.value.model">, model <span class="font-mono">{{ latest.data.value.model }}</span></template>
           </div>
           <div v-if="latest.data.value.time" class="text-xs text-muted-foreground">at <span class="font-mono">{{ localDateTime(latest.data.value.time) }}</span></div>
         </template>
-        <p v-else-if="latest.failed.value" class="mt-2.5 text-[13px] text-muted-foreground">No data. Retrying in 30 s.</p>
-        <p v-else class="mt-2.5 text-[13px] text-muted-foreground">No anomaly scores yet</p>
+        <p v-else-if="latest.failed.value" class="mt-2.5 text-[13px] text-muted-foreground">No data for <span class="font-mono">sample-service</span>. Retrying in 30 s.</p>
+        <p v-else class="mt-2.5 text-[13px] text-muted-foreground">No anomaly scores yet for <span class="font-mono">sample-service</span></p>
       </section>
 
       <section aria-label="Incidents in the last 6 hours" :class="card">
@@ -270,6 +307,45 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
       <p v-if="nodes.failed.value" class="text-xs text-muted-foreground" role="status">Could not refresh. Showing the last loaded values.</p>
       <div class="grid grid-cols-[repeat(auto-fit,minmax(min(340px,100%),1fr))] gap-4">
         <NodeCard v-for="node in nodes.data.value" :key="node.key" :node="node" />
+      </div>
+    </template>
+  </section>
+
+  <section aria-labelledby="projects-title" class="flex flex-col gap-3">
+    <div class="flex flex-wrap items-baseline justify-between gap-2">
+      <h2 id="projects-title" class="text-[15px] font-semibold">Projects</h2>
+      <span v-if="projectsLoaded && projects.length > 0" class="text-xs text-muted-foreground">{{ projects.length }} active</span>
+    </div>
+    <div v-if="projectsLoading" class="grid grid-cols-[repeat(auto-fit,minmax(min(340px,100%),1fr))] gap-4">
+      <Skeleton v-for="n in 2" :key="n" class="h-[110px] rounded-xl" />
+    </div>
+    <p v-else-if="projectsFailed && !projectsLoaded" class="rounded-xl border border-border p-4 text-[13px] text-muted-foreground" role="status">
+      {{ ERROR_TEXT }}
+    </p>
+    <p v-else-if="projects.length === 0" class="rounded-xl border border-border p-4 text-[13px] text-muted-foreground" role="status">
+      {{ EMPTY_TEXT }}
+    </p>
+    <template v-else>
+      <p v-if="projectsFailed" class="text-xs text-muted-foreground" role="status">Could not refresh. Showing the last loaded values.</p>
+      <div class="grid grid-cols-[repeat(auto-fit,minmax(min(340px,100%),1fr))] gap-4">
+        <div v-for="row in projectRows" :key="row.key" :class="[card, 'flex min-w-0 flex-col gap-2']">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex min-w-0 items-center gap-2">
+              <span class="size-2 shrink-0 rounded-full" :class="DOT_CLASS[row.status] ?? DOT_CLASS.no_data" aria-hidden="true" />
+              <a
+                :href="row.href"
+                :aria-label="`${row.name} in Projects`"
+                class="inline-flex min-w-0 items-center rounded font-mono text-[13px] font-medium text-muted-foreground underline underline-offset-3 [overflow-wrap:anywhere] hover:text-foreground pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+              >{{ row.name }}</a>
+            </div>
+            <span class="w-fit rounded-full px-2.5 py-0.5 text-xs font-semibold" :class="STATUS_CLASS[row.status] ?? STATUS_CLASS.no_data">{{ row.statusText }}</span>
+          </div>
+          <div class="min-w-0 text-xs text-muted-foreground [overflow-wrap:anywhere]">on {{ row.server }}</div>
+          <div class="flex min-w-0 flex-wrap items-center gap-2">
+            <span class="rounded-md bg-chip px-2 py-px text-xs font-medium text-chipfg">{{ row.modelLabel }}</span>
+            <ForecastChip v-if="row.forecast" kind="memory" :item="row.forecast" />
+          </div>
+        </div>
       </div>
     </template>
   </section>

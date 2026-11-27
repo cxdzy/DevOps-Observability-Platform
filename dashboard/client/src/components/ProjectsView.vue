@@ -1,6 +1,26 @@
+<script lang="ts">
+import type { ProjectStatus } from '@/types'
+
+// Status styling, exported so the Overview page shows the same colours.
+export const STATUS_CLASS: Record<ProjectStatus, string> = {
+  healthy: 'bg-okbg text-ok',
+  incident: 'bg-tier-medium-bg text-tier-medium-fg',
+  partial: 'bg-tier-medium-bg text-tier-medium-fg',
+  down: 'bg-tier-high-bg text-tier-high-fg',
+  no_data: 'border border-dashed border-input text-chipfg',
+}
+export const DOT_CLASS: Record<ProjectStatus, string> = {
+  healthy: 'bg-okdot',
+  incident: 'bg-amber',
+  partial: 'bg-amber',
+  down: 'bg-red',
+  no_data: 'border-[1.5px] border-idle',
+}
+</script>
+
 <script setup lang="ts">
 import type { ContainerForecast, ForecastInfo } from '@/composables/useApi'
-import type { ProjectContainer, ProjectRow, ProjectStatus, StripState } from '@/types'
+import type { ProjectContainer, ProjectRow, StripState } from '@/types'
 import { computed, onUnmounted, ref, watch } from 'vue'
 import ForecastChip from '@/components/ForecastChip.vue'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -134,20 +154,6 @@ const STATUS_TEXT: Record<ProjectStatus, string> = {
   partial: 'Partly down',
   down: 'Down',
   no_data: 'No data',
-}
-const STATUS_CLASS: Record<ProjectStatus, string> = {
-  healthy: 'bg-okbg text-ok',
-  incident: 'bg-tier-medium-bg text-tier-medium-fg',
-  partial: 'bg-tier-medium-bg text-tier-medium-fg',
-  down: 'bg-tier-high-bg text-tier-high-fg',
-  no_data: 'border border-dashed border-input text-chipfg',
-}
-const DOT_CLASS: Record<ProjectStatus, string> = {
-  healthy: 'bg-okdot',
-  incident: 'bg-amber',
-  partial: 'bg-amber',
-  down: 'bg-red',
-  no_data: 'border-[1.5px] border-idle',
 }
 function statusText(s: ProjectStatus): string {
   return STATUS_TEXT[s] ?? 'No data'
