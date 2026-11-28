@@ -358,7 +358,9 @@ function containerFixture() {
 
 // Answers the Containers queries of both servers from the fixture; everything else goes to fetch.
 // A name in skipInstant is left out of the instant answers (a container that is gone now).
-function stubContainers(t, { fixture = containerFixture(), down = false, memTotal = 8 * GB, skipInstant = [] } = {}) {
+// With rejectBareShare, a share query whose two sides are not each reduced with max by (id, name)
+// is answered like real Prometheus does for a restarting container: HTTP 422 for duplicate series.
+function stubContainers(t, { fixture = containerFixture(), down = false, memTotal = 8 * GB, skipInstant = [], rejectBareShare = false } = {}) {
   const sent = [];
   const original = globalThis.fetch;
   const lookup = new Map();
@@ -376,6 +378,11 @@ function stubContainers(t, { fixture = containerFixture(), down = false, memTota
     if (down) throw new TypeError("fetch failed");
     const hit = lookup.get(q);
     if (u.pathname === "/api/v1/query_range") {
+      if (rejectBareShare && hit.name === "share" && q.includes("on (id, name)")
+        && !(q.includes("max by (id, name) (max_over_time(container_memory_working_set_bytes")
+          && q.includes("max by (id, name) (max_over_time(container_spec_memory_limit_bytes"))) {
+        return new Response(JSON.stringify({ status: "error", errorType: "execution", error: "found duplicate series for the match group" }), { status: 422, headers: { "content-type": "application/json" } });
+      }
       const result = [];
       for (const [name, c] of Object.entries(fixture)) {
         const f = c[hit.name];
@@ -476,6 +483,25 @@ test("a gap followed by a new start time is a restart, not just up", async (t) =
   assert.deepEqual(indexesOf(body.containers.find((c) => c.name === "recreated"), "restarted"), [30]);
 });
 
+test("the share query tolerates several runs of a restarting container (duplicate series)", async (t) => {
+  const fixture = containerFixture();
+  // Two runs of one container: the start time changes once in the middle of the day.
+  fixture.flapper = {
+    cpu: 0.1, memory: 100 * MB, limit: 200 * MB, restarts: 1,
+    present: () => 1,
+    started: (i) => (i < 50 ? START - 100 : cellEnd(49) + 60),
+    share: () => 0.5,
+  };
+  stubContainers(t, { fixture, rejectBareShare: true });
+  const get = await signedIn(t);
+  const res = await get("/api/resources/containers?node=main");
+  assert.equal(res.status, 200);
+  const flapper = (await res.json()).containers.find((c) => c.name === "flapper");
+  assert.equal(flapper.cells.length, 96);
+  assert.deepEqual(indexesOf(flapper, "restarted"), [50]);
+  assert.equal(stateOf(flapper).filter((x) => x === "up").length, 95);
+});
+
 test("a container that appeared during the day has no data before and is not a restart", async (t) => {
   stubContainers(t);
   const get = await signedIn(t);
@@ -563,7 +589,7 @@ test("the container strings are written out for the main server", () => {
   // on() must list name too, or the one-to-one division drops it and max by (name) has nothing.
   assert.equal(
     q.range.share,
-    'max by (name) (max_over_time(container_memory_working_set_bytes{job="cadvisor",name!=""}[15m]) / on (id, name) (max_over_time(container_spec_memory_limit_bytes{job="cadvisor",name!=""}[15m]) > 0 < scalar(node_memory_MemTotal_bytes{job="node-exporter"})))'
+    'max by (name) (max by (id, name) (max_over_time(container_memory_working_set_bytes{job="cadvisor",name!=""}[15m])) / on (id, name) (max by (id, name) (max_over_time(container_spec_memory_limit_bytes{job="cadvisor",name!=""}[15m])) > 0 < scalar(node_memory_MemTotal_bytes{job="node-exporter"})))'
   );
   assert.ok(Object.isFrozen(q.instant) && Object.isFrozen(q.range));
 });

@@ -103,6 +103,11 @@ const QUERIES = Object.freeze(Object.fromEntries(BUILTIN_SERVERS.map((s) => [s.k
 // so a cell counts what happened anywhere inside it, not only the sample at its end. The share
 // divides "on (id, name)": one-to-one matching with on() keeps only the listed labels, so name
 // has to be listed for the max by (name) around it to see it.
+// Each operand is first reduced with max by (id, name). A restarting container has one series per
+// run (a different container_label_restartcount, the same id and name), and one-to-one matching
+// rejects duplicates with HTTP 422, which would fail the whole server. The max keeps the meaning
+// because both operands are already max_over_time, and for a container with a single series the
+// result is unchanged.
 const CONTAINER_INSTANT_TEMPLATES = Object.freeze({
   cpu: '100 * sum by (name) (rate(container_cpu_usage_seconds_total{%C,name!=""}[5m]))',
   memory: 'sum by (name) (container_memory_working_set_bytes{%C,name!=""})',
@@ -114,7 +119,7 @@ const CONTAINER_RANGE_TEMPLATES = Object.freeze({
   present: 'count by (name) (count_over_time(container_memory_working_set_bytes{%C,name!=""}[15m]))',
   started: 'max by (name) (max_over_time(container_start_time_seconds{%C,name!=""}[15m]))',
   share:
-    'max by (name) (max_over_time(container_memory_working_set_bytes{%C,name!=""}[15m]) / on (id, name) (max_over_time(container_spec_memory_limit_bytes{%C,name!=""}[15m]) > 0 < scalar(node_memory_MemTotal_bytes{%J})))',
+    'max by (name) (max by (id, name) (max_over_time(container_memory_working_set_bytes{%C,name!=""}[15m])) / on (id, name) (max by (id, name) (max_over_time(container_spec_memory_limit_bytes{%C,name!=""}[15m])) > 0 < scalar(node_memory_MemTotal_bytes{%J})))',
 });
 
 // The strip covers the last 24 hours with one cell per 15 minutes.
