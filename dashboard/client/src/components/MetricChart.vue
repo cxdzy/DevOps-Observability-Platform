@@ -46,10 +46,10 @@ const finePointer = typeof window !== 'undefined' && window.matchMedia?.('(point
 
 type Metric = 'cpu' | 'memory' | 'latency'
 // cpu_rate is the share of one CPU core, shown in percent.
-const METRICS: Record<Metric, { label: string, unit: string, digits: number, value: (p: AnomalyPoint) => number | null }> = {
-  cpu: { label: 'CPU', unit: '% of a core', digits: 1, value: p => (p.cpu_rate === null ? null : p.cpu_rate * 100) },
-  memory: { label: 'Memory', unit: 'MB', digits: 1, value: p => p.memory_mb },
-  latency: { label: 'Latency', unit: 'ms', digits: 1, value: p => p.latency_ms },
+const METRICS: Record<Metric, { label: string, note: string, unit: string, digits: number, value: (p: AnomalyPoint) => number | null }> = {
+  cpu: { label: 'CPU', note: 'CPU reported by the service', unit: '% of a core', digits: 1, value: p => (p.cpu_rate === null ? null : p.cpu_rate * 100) },
+  memory: { label: 'Memory', note: 'Memory reported by the service, used by the model', unit: 'MB', digits: 1, value: p => p.memory_mb },
+  latency: { label: 'Latency', note: 'Latency measured by the service', unit: 'ms', digits: 1, value: p => p.latency_ms },
 }
 const metric = ref<Metric>('memory')
 const current = computed(() => METRICS[metric.value])
@@ -269,6 +269,7 @@ useWheelScrollsPage(box)
       <div>
         <h2 class="font-mono text-[15px] font-semibold">sample-service</h2>
         <p class="text-xs text-muted-foreground">{{ current.label }}, last 6 hours</p>
+        <p class="text-xs text-muted-foreground">{{ current.note }}</p>
       </div>
       <div role="group" aria-label="Metric" class="flex gap-0.5 rounded-lg bg-chip p-[3px]">
         <button

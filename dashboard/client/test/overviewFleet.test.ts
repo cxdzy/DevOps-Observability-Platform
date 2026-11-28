@@ -73,7 +73,7 @@ test('memory bar only when every container has a limit', () => {
   ] })
   const m = projectCardData(mixed, ctx).figures.memory
   assert.equal(m.percent, null)
-  assert.equal(m.sub, 'no limit set')
+  assert.equal(m.sub, 'from cAdvisor, no limit set')
   const none = projectCardData(project('n', { containers: [] }), ctx).figures
   assert.equal(none.memory.text, 'No data')
   assert.equal(none.containers.text, '0 of 0 up')
@@ -129,9 +129,9 @@ test('containers card adds "of n expected" on the main server only', () => {
   const services: any = { expected: new Array(9).fill({ name: 'x', role: 'y' }), containers: [], unknown: false }
   const c = containersCard(nodes, services)
   assert.equal(c.total, 10)
-  assert.deepEqual(c.lines, ['7 on fyp-main, 0 of 9 expected services running', '3 on staging'])
-  assert.deepEqual(containersCard(nodes, { ...services, unknown: true }).lines, ['7 on fyp-main', '3 on staging'])
-  assert.deepEqual(containersCard(nodes, null).lines, ['7 on fyp-main', '3 on staging'])
+  assert.deepEqual(c.lines, ['fyp-main 7 of 9 expected', 'staging 3'])
+  assert.deepEqual(containersCard(nodes, { ...services, unknown: true }).lines, ['fyp-main 7', 'staging 3'])
+  assert.deepEqual(containersCard(nodes, null).lines, ['fyp-main 7', 'staging 3'])
   assert.deepEqual(containersCard([node('main', null)], services), { total: null, lines: [] })
 })
 
@@ -142,6 +142,19 @@ test('sortProjects orders by status then name', () => {
   ]
   assert.deepEqual(sortProjects(rows).map(p => p.key), ['d', 'i', 'p', 'n', 'a', 'b'])
   assert.deepEqual(sortProjects([]), [])
+})
+
+test('sortProjects puts model projects first, then status, then name', () => {
+  const rows = [
+    project('z', { watchedByModel: false, status: 'down' }), project('m', { watchedByModel: true, status: 'healthy' }),
+    project('a', { watchedByModel: false, status: 'healthy' }), project('k', { watchedByModel: true, status: 'incident' }),
+  ]
+  assert.deepEqual(sortProjects(rows).map(p => p.key), ['k', 'm', 'z', 'a'])
+})
+
+test('rollback text is one sentence ending in a full stop', () => {
+  const own = projectCardData(project('o', { rollback: { mode: 'own_pipeline', text: "Rollback is handled by the project's own pipeline", ready: false } }), ctx)
+  assert.equal(own.rollback.text, "Rollback is handled by the project's own pipeline.")
 })
 
 test('projectCards maps exactly what it receives', () => {

@@ -21,7 +21,14 @@ const note = 'rounded-xl border border-border p-4 text-[13px] text-muted-foregro
   <section aria-labelledby="projects-title" class="flex flex-col gap-3">
     <div class="flex items-baseline justify-between gap-3">
       <h2 id="projects-title" class="text-[15px] font-semibold">Projects</h2>
-      <span v-if="loaded" class="text-xs text-muted-foreground">{{ projects.length }} active</span>
+      <span class="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+        <span v-if="loaded" class="text-xs text-muted-foreground">{{ projects.length }} active</span>
+        <a
+          v-if="isAdmin"
+          href="#settings"
+          class="inline-flex items-center rounded-md border border-dashed border-input px-2 py-0.5 text-xs text-muted-foreground hover:bg-chip hover:text-foreground pointer-coarse:min-h-11"
+        >Add a project</a>
+      </span>
     </div>
 
     <div v-if="loading && !loaded" class="grid grid-cols-[repeat(auto-fit,minmax(min(420px,100%),1fr))] gap-4">
@@ -31,18 +38,8 @@ const note = 'rounded-xl border border-border p-4 text-[13px] text-muted-foregro
     <template v-else>
       <p v-if="failed" class="text-xs text-muted-foreground" role="status">Could not refresh. Showing the last loaded values.</p>
       <p v-if="projects.length === 0" :class="note" role="status">{{ EMPTY_TEXT }}</p>
-      <a
-        v-if="projects.length === 0 && isAdmin"
-        href="#settings"
-        class="flex min-h-24 items-center justify-center rounded-xl border border-dashed border-input p-4 text-[13px] text-muted-foreground hover:bg-chip hover:text-foreground"
-      >Add a project</a>
       <div v-if="projects.length > 0" class="grid grid-cols-[repeat(auto-fit,minmax(min(420px,100%),1fr))] gap-4">
         <ProjectCard v-for="p in projects" :key="p.key" :data="p" />
-        <a
-          v-if="isAdmin"
-          href="#settings"
-          class="flex min-h-24 items-center justify-center rounded-xl border border-dashed border-input p-4 text-[13px] text-muted-foreground hover:bg-chip hover:text-foreground"
-        >Add a project</a>
       </div>
     </template>
   </section>

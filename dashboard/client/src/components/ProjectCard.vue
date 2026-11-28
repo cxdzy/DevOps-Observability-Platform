@@ -74,7 +74,7 @@ const link = 'inline-flex items-center rounded text-xs underline underline-offse
         <p v-if="data.figures.score.sub" :class="sub">{{ data.figures.score.sub }}</p>
       </div>
       <div class="min-w-0">
-        <dt :class="dt">Memory</dt>
+        <dt :class="dt">Container memory</dt>
         <dd :class="dd">{{ data.figures.memory.text }}</dd>
         <span v-if="data.figures.memory.percent !== null" class="mt-1 block h-1.5 overflow-hidden rounded-full bg-track" role="img" :aria-label="barLabel(data.figures.memory.percent)">
           <span class="block h-1.5 rounded-full" :class="barClass(data.figures.memory.percent)" :style="{ width: `${Math.max(2, Math.min(100, data.figures.memory.percent))}%` }" />
@@ -125,7 +125,7 @@ const link = 'inline-flex items-center rounded text-xs underline underline-offse
         <span v-else class="text-muted-foreground">{{ data.lastDeployEmpty }}</span>
       </div>
       <div class="rounded-[10px] px-3 py-2 text-[13px] [overflow-wrap:anywhere]" :class="rollbackClass">
-        <span class="font-medium">{{ data.rollback.title }}.</span> {{ data.rollback.text }}
+        {{ data.rollback.text }}
       </div>
       <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
         <a v-if="data.links.incidents" :href="data.links.incidents" :class="link">View incidents</a>

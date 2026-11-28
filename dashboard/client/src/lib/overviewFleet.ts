@@ -76,14 +76,9 @@ export function containersCard(nodes: NodeInfo[], services: ServicesInfo | null 
   const counted = nodes.filter(n => typeof n.containers === 'number')
   const total = counted.length ? counted.reduce((sum, n) => sum + (n.containers as number), 0) : null
   const expected = services && !services.unknown && Array.isArray(services.expected) ? services.expected.length : null
-  // The host count includes every container, so the expected platform services are counted apart.
-  const names = new Set(Array.isArray(services?.containers) ? services.containers.map(c => c.name) : [])
-  const running = services && !services.unknown && Array.isArray(services.expected)
-    ? services.expected.filter(e => names.has(e.name)).length
-    : 0
   const lines = counted.map((n) => {
-    const base = `${n.containers} on ${n.displayName}`
-    return n.key === 'main' && expected !== null ? `${base}, ${running} of ${expected} expected services running` : base
+    const base = `${n.displayName} ${n.containers}`
+    return n.key === 'main' && expected !== null ? `${base} of ${expected} expected` : base
   })
   return { total, lines }
 }
@@ -91,7 +86,8 @@ export function containersCard(nodes: NodeInfo[], services: ServicesInfo | null 
 const STATUS_RANK: Record<string, number> = { down: 0, incident: 1, partial: 2, no_data: 3, healthy: 4 }
 export function sortProjects(projects: ProjectRow[]): ProjectRow[] {
   const rank = (s: string) => STATUS_RANK[s] ?? STATUS_RANK.no_data
-  return [...projects].sort((a, b) => rank(a.status) - rank(b.status) || a.name.localeCompare(b.name))
+  const model = (p: ProjectRow) => (p.watchedByModel === true ? 0 : 1)
+  return [...projects].sort((a, b) => model(a) - model(b) || rank(a.status) - rank(b.status) || a.name.localeCompare(b.name))
 }
 
 // ---------------------------------------------------------------- one project card
@@ -101,6 +97,11 @@ const ROLLBACK_TITLE: Record<string, string> = {
   n8n: 'Rollback after approval',
   own_pipeline: 'Rollback handled elsewhere',
   none: 'No rollback',
+}
+
+// A rollback text ends with one full stop.
+function sentence(t: string): string {
+  return /[.!?]$/.test(t) ? t : `${t}.`
 }
 
 // The same size text as the Projects page.
@@ -181,7 +182,7 @@ export function projectCardData(p: ProjectRow, ctx: CardContext): ProjectCardDat
   const memory = {
     text: memTotal === null ? 'No data' : size(memTotal),
     percent,
-    sub: percent !== null ? `${Math.round(percent)}% of ${size(limitTotal)}` : 'no limit set',
+    sub: percent !== null ? `from cAdvisor, ${Math.round(percent)}% of ${size(limitTotal)}` : 'from cAdvisor, no limit set',
   }
 
   const up = containers.filter(c => c.up === true).length
@@ -208,12 +209,12 @@ export function projectCardData(p: ProjectRow, ctx: CardContext): ProjectCardDat
       ? { at: p.lastDeploy.at, ref: p.lastDeploy.source === 'ci' ? (p.lastDeploy.ref ?? '').slice(0, 7) : (p.lastDeploy.ref ?? ''), chip: p.lastDeploy.source === 'ci' ? 'Verified' : 'Detected' }
       : null,
     lastDeployEmpty: 'none detected yet',
-    rollback: { title: ROLLBACK_TITLE[rb?.mode] ?? 'Rollback', text: rb?.text || 'No data', ready: rb?.ready ?? null, mode: rb?.mode ?? '' },
+    rollback: { title: ROLLBACK_TITLE[rb?.mode] ?? 'Rollback', text: sentence(rb?.text || 'No data'), ready: rb?.ready ?? null, mode: rb?.mode ?? '' },
     links: { incidents: watched ? '#incidents' : null, pipeline: `#pipeline?project=${key}` },
   }
 }
 
-// The cards in display order: most urgent first.
+// The cards in display order: model projects first, then problems first, then by name.
 export function projectCards(projects: ProjectRow[], ctx: CardContext): ProjectCardData[] {
   return sortProjects(projects).map(p => projectCardData(p, ctx))
 }
