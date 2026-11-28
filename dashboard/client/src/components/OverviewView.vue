@@ -1,22 +1,21 @@
 <script setup lang="ts">
 import type { ContainerForecast } from '@/composables/useApi'
-import type { ActivityItem, AnomalyPoint, ChartWindow, EventsResponse, Health, Incident, LatestAnomaly, NodeInfo, ProjectRow, ServicesInfo, StatusInfo, ZoomWindow } from '@/types'
+import type { ActivityItem, DeploymentRun, DeploymentsResponse, AnomalyPoint, ChartWindow, EventsResponse, Health, Incident, LatestAnomaly, NodeInfo, ProjectRow, ServicesInfo, StatusInfo, ZoomWindow } from '@/types'
 import { computed, defineAsyncComponent, ref } from 'vue'
 import ChartLoadError from '@/components/ChartLoadError.vue'
 import ChartSkeleton from '@/components/ChartSkeleton.vue'
 import ChartToolbar from '@/components/ChartToolbar.vue'
 import EventLane from '@/components/EventLane.vue'
-import ForecastChip from '@/components/ForecastChip.vue'
-import NodeCard from '@/components/NodeCard.vue'
-import { DOT_CLASS, STATUS_CLASS } from '@/components/ProjectsView.vue'
+import ProjectsSection from '@/components/ProjectsSection.vue'
 import RecentActivity from '@/components/RecentActivity.vue'
+import ServersSection from '@/components/ServersSection.vue'
 import ServicesTable from '@/components/ServicesTable.vue'
 import StatusChip from '@/components/StatusChip.vue'
-import TierBadge from '@/components/TierBadge.vue'
 import { Skeleton } from '@/components/ui/skeleton'
 import { api, getForecast, usePoll } from '@/composables/useApi'
-import { fixed, localDateTime } from '@/lib/format'
-import { EMPTY_TEXT, ERROR_TEXT, overviewRows } from '@/lib/overviewProjects'
+import { useAuth } from '@/composables/useAuth'
+import { buildActivityRows, filterOptions, restartsLast24h } from '@/lib/overviewActivity'
+import { containersCard, fleetSubtitle, incidentsNote, projectCards, projectsCard, statusCard } from '@/lib/overviewFleet'
 import { FLAG_TIERS, TIER_STYLE, toTier } from '@/lib/tier'
 
 // ECharts is large, so the metric chart is downloaded only when it is first shown.
@@ -93,6 +92,7 @@ const projects = ref<ProjectRow[]>([])
 const projectsLoading = ref(true)
 const projectsLoaded = ref(false)
 const projectsFailed = ref(false)
+let runKeys = ''
 async function loadProjects() {
   try {
     const res = await api.get<ProjectRow[]>('/api/projects')
@@ -100,6 +100,12 @@ async function loadProjects() {
     projects.value = res.data.map(p => ({ ...p, containers: Array.isArray(p.containers) ? p.containers : [] }))
     projectsLoaded.value = true
     projectsFailed.value = false
+    // Fetch detected deployments as soon as the image projects are known, not on the next tick.
+    const keys = projects.value.filter(p => p.deploySource === 'image').map(p => p.key).join(',')
+    if (keys !== runKeys) {
+      runKeys = keys
+      void loadRuns()
+    }
   } catch {
     projectsFailed.value = true
   } finally {
@@ -118,7 +124,49 @@ async function loadForecast() {
 }
 usePoll(loadForecast, 30000)
 
-const projectRows = computed(() => overviewRows(projects.value, forecasts.value))
+// Detected deployments of image projects for the activity list. Each project has its own request,
+// and a failed one only leaves that project without detected rows.
+const runsByProject = ref<Record<string, DeploymentRun[]>>({})
+async function loadRuns() {
+  const keys = projects.value.filter(p => p.deploySource === 'image').map(p => p.key)
+  const next: Record<string, DeploymentRun[]> = {}
+  await Promise.all(keys.map(async (key) => {
+    try {
+      const res = await api.get<DeploymentsResponse>('/api/deployments', { params: { project: key, days: 7 } })
+      next[key] = Array.isArray(res.data?.runs) ? res.data.runs : []
+    } catch {
+      next[key] = runsByProject.value[key] ?? []
+    }
+  }))
+  runsByProject.value = next
+}
+usePoll(loadRuns, 30000)
+
+const { me } = useAuth()
+const isAdmin = computed(() => me.value?.role === 'admin')
+
+const cardList = computed(() => projectCards(projects.value, { latest: latest.data.value, incidents: incidents.data.value, forecasts: forecasts.value }))
+// Expected platform services that are not running, from the services table data.
+const missingServices = computed(() => {
+  const s = services.data.value
+  if (!s || s.unknown) return 0
+  const running = new Set(s.containers.map(c => c.name))
+  return s.expected.filter(e => !running.has(e.name)).length
+})
+const subtitle = computed(() => (projectsLoaded.value && nodes.loaded.value ?fleetSubtitle(projects.value, nodes.data.value.length) : ''))
+const statusInfo = computed(() => statusCard({
+  projects: projects.value,
+  nodes: nodes.data.value,
+  openIncident: openIncident.value,
+  incidentsKnown: incidents.loaded.value && projectsLoaded.value && nodes.loaded.value,
+  projectsKnown: projectsLoaded.value,
+  missingServices: missingServices.value,
+}))
+const projectsInfo = computed(() => projectsCard(projects.value, isAdmin.value))
+const containersInfo = computed(() => containersCard(nodes.data.value, services.data.value))
+const activityRows = computed(() => buildActivityRows(activity.data.value, projects.value, runsByProject.value))
+const activityOptions = computed(() => filterOptions(projects.value))
+const restartsByProject = computed(() => Object.fromEntries(projects.value.map(p => [p.key, restartsLast24h(p)])))
 
 // Zoom of the service chart; the narrowest window is about 10 minutes of the 6 hours.
 const PRESETS = [{ value: HOURS, label: '6 h', title: 'Last 6 hours' }]
@@ -161,39 +209,10 @@ const mainNode = computed(() => nodes.data.value.find(n => n.key === 'main') ?? 
 // cAdvisor named no container at all, so which services run is not known.
 const servicesUnknown = computed(() => services.data.value?.unknown === true)
 
-// Services: expected containers that are running, and how many are expected.
-const serviceCount = computed(() => {
-  const s = services.data.value
-  if (!s || s.unknown) return null
-  const running = new Set(s.containers.map(c => c.name))
-  return { up: s.expected.filter(e => running.has(e.name)).length, total: s.expected.length }
-})
-
 const openIncident = computed(() => incidents.data.value.some(i => i.status === 'open'))
 const tierCounts = computed(() =>
   FLAG_TIERS.map(tier => ({ tier, count: incidents.data.value.filter(i => toTier(i.tier) === tier).length })),
 )
-
-// Normal unless an incident is open or an expected service is missing. Without incident or
-// service data the status cannot be known, so it says so instead of claiming Normal.
-const status = computed(() => {
-  const count = serviceCount.value
-  const known = incidents.loaded.value && count !== null
-  if (openIncident.value) return { chip: 'Incident', ok: false, title: 'Incident open', line: 'See Incidents for the details' }
-  if (count && count.up < count.total) {
-    const missing = count.total - count.up
-    return { chip: 'Attention', ok: false, title: `${missing} ${missing === 1 ? 'service' : 'services'} missing`, line: 'See the services table below' }
-  }
-  if (!known) {
-    const line = servicesUnknown.value ? 'Container metrics are not available' : 'Incidents or services did not load'
-    return { chip: 'Unknown', ok: null, title: 'No data', line }
-  }
-  return { chip: 'Normal', ok: true, title: 'All systems normal', line: 'No incident open, every service up' }
-})
-
-const hasScore = computed(() => latest.data.value !== null && latest.data.value.score !== undefined)
-
-const reporting = computed(() => nodes.data.value.filter(n => n.up === true).length)
 
 const chip = 'rounded-md px-2 py-px text-xs font-medium'
 const card = 'rounded-xl border border-border p-4'
@@ -208,6 +227,7 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
         <h1 class="text-2xl font-semibold tracking-[-0.02em]">Overview</h1>
         <StatusChip :status="serviceStatus.data.value" :failed="serviceStatus.failed.value" />
       </div>
+      <p v-if="subtitle" class="mt-1 text-[13px] text-muted-foreground">{{ subtitle }}</p>
     </div>
     <a href="#incidents" class="inline-flex min-h-9 items-center rounded-lg border border-border px-3.5 text-[13px] font-medium text-foreground no-underline hover:bg-chip">
       Open incidents
@@ -228,9 +248,9 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
     InfluxDB did not answer. Scores, incidents and activity may be out of date.
   </p>
 
-  <div class="grid grid-cols-[repeat(auto-fit,minmax(min(200px,100%),1fr))] gap-4">
+  <div class="grid grid-cols-[repeat(auto-fit,minmax(min(170px,100%),1fr))] gap-4">
     <template v-if="loading">
-      <Skeleton v-for="n in 4" :key="n" class="h-[116px] rounded-xl" />
+      <Skeleton v-for="n in 4" :key="n" class="h-[132px] rounded-xl" />
     </template>
 
     <template v-else>
@@ -238,27 +258,21 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
         <div class="flex items-center justify-between gap-2">
           <span class="text-[13px] text-muted-foreground">Status</span>
           <span
-            :class="[chip, status.ok === true ? 'bg-okbg text-ok' : status.ok === false ? 'bg-tier-high-bg text-tier-high-fg' : 'bg-chip text-chipfg']"
-          >{{ status.chip }}</span>
+            :class="[chip, statusInfo.ok === true ? 'bg-okbg text-ok' : statusInfo.ok === false ? 'bg-tier-high-bg text-tier-high-fg' : 'bg-chip text-chipfg']"
+          >{{ statusInfo.chip }}</span>
         </div>
-        <div class="mt-2.5 text-[22px] font-semibold tracking-[-0.02em]">{{ status.title }}</div>
-        <div class="mt-1 text-xs text-muted-foreground">{{ status.line }}</div>
+        <div class="mt-2.5 text-[22px] font-semibold tracking-[-0.02em]">{{ statusInfo.title }}</div>
+        <div class="mt-1 text-xs text-muted-foreground">{{ statusInfo.line }}</div>
       </section>
 
-      <section aria-label="Latest score" :class="card">
-        <div class="flex items-center justify-between gap-2">
-          <span class="text-[13px] text-muted-foreground">Latest score</span>
-          <TierBadge v-if="hasScore && latest.data.value" :tier="latest.data.value.tier" />
-        </div>
-        <template v-if="hasScore && latest.data.value">
-          <div :class="bigNumber">{{ fixed(latest.data.value.score) }}</div>
-          <div class="mt-0.5 text-xs text-muted-foreground">
-            <span class="font-mono">sample-service</span>, threshold <span class="font-mono">{{ fixed(latest.data.value.threshold) }}</span><template v-if="latest.data.value.model">, model <span class="font-mono">{{ latest.data.value.model }}</span></template>
-          </div>
-          <div v-if="latest.data.value.time" class="text-xs text-muted-foreground">at <span class="font-mono">{{ localDateTime(latest.data.value.time) }}</span></div>
+      <section aria-label="Projects" :class="card">
+        <div class="text-[13px] text-muted-foreground">Projects</div>
+        <template v-if="projectsLoaded">
+          <div :class="bigNumber">{{ projectsInfo.count }}</div>
+          <div class="mt-0.5 text-xs text-muted-foreground">{{ projectsInfo.line }}</div>
+          <a v-if="projectsInfo.addHint" href="#settings" class="mt-1 inline-flex rounded text-xs text-muted-foreground underline underline-offset-3 hover:text-foreground pointer-coarse:min-h-11 pointer-coarse:items-center">{{ projectsInfo.addHint }}</a>
         </template>
-        <p v-else-if="latest.failed.value" class="mt-2.5 text-[13px] text-muted-foreground">No data for <span class="font-mono">sample-service</span>. Retrying in 30 s.</p>
-        <p v-else class="mt-2.5 text-[13px] text-muted-foreground">No anomaly scores yet for <span class="font-mono">sample-service</span></p>
+        <p v-else class="mt-2.5 text-[13px] text-muted-foreground">No data. Retrying in 30 s.</p>
       </section>
 
       <section aria-label="Incidents in the last 6 hours" :class="card">
@@ -270,85 +284,29 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
               {{ c.count }} {{ TIER_STYLE[c.tier].label }}
             </span>
           </div>
+          <div v-if="projectsLoaded" class="mt-1.5 text-xs text-muted-foreground">{{ incidentsNote(projects) }}</div>
         </template>
         <p v-else class="mt-2.5 text-[13px] text-muted-foreground">No data. Retrying in 30 s.</p>
       </section>
 
-      <section aria-label="Services up" :class="card">
-        <div class="text-[13px] text-muted-foreground">Services up</div>
-        <template v-if="serviceCount">
-          <div class="mt-2">
-            <span class="font-mono text-[28px] font-medium tracking-[-0.02em]">{{ serviceCount.up }}</span>
-            <span class="text-[13px] text-muted-foreground"> of {{ serviceCount.total }}</span>
-          </div>
-          <div v-if="mainNode?.hostname" class="mt-0.5 text-xs text-muted-foreground">on <span class="font-mono">{{ mainNode.hostname }}</span></div>
-        </template>
-        <template v-else-if="servicesUnknown">
-          <div class="mt-2 text-[22px] font-semibold tracking-[-0.02em]">No data</div>
-          <div class="mt-1 text-xs text-muted-foreground">Container metrics are not available</div>
+      <section aria-label="Containers running" :class="card">
+        <div class="text-[13px] text-muted-foreground">Containers running</div>
+        <template v-if="containersInfo.total !== null">
+          <div :class="bigNumber">{{ containersInfo.total }}</div>
+          <div v-for="line in containersInfo.lines" :key="line" class="mt-0.5 text-xs text-muted-foreground [overflow-wrap:anywhere]">{{ line }}</div>
         </template>
         <p v-else class="mt-2.5 text-[13px] text-muted-foreground">No data. Retrying in 30 s.</p>
       </section>
     </template>
   </div>
 
-  <section aria-labelledby="nodes-title" class="flex flex-col gap-3">
-    <div class="flex flex-wrap items-baseline justify-between gap-2">
-      <h2 id="nodes-title" class="text-[15px] font-semibold">Nodes</h2>
-      <span v-if="nodes.loaded.value" class="text-xs text-muted-foreground">{{ reporting }} of {{ nodes.data.value.length }} reporting</span>
-    </div>
-    <div v-if="loading" class="grid grid-cols-[repeat(auto-fit,minmax(min(340px,100%),1fr))] gap-4">
-      <Skeleton v-for="n in 2" :key="n" class="h-[220px] rounded-xl" />
-    </div>
-    <p v-else-if="nodes.failed.value && !nodes.loaded.value" class="rounded-xl border border-border p-4 text-[13px] text-muted-foreground" role="status">
-      Prometheus did not answer. Retrying in 30 s.
-    </p>
-    <template v-else>
-      <p v-if="nodes.failed.value" class="text-xs text-muted-foreground" role="status">Could not refresh. Showing the last loaded values.</p>
-      <div class="grid grid-cols-[repeat(auto-fit,minmax(min(340px,100%),1fr))] gap-4">
-        <NodeCard v-for="node in nodes.data.value" :key="node.key" :node="node" />
-      </div>
-    </template>
-  </section>
-
-  <section aria-labelledby="projects-title" class="flex flex-col gap-3">
-    <div class="flex flex-wrap items-baseline justify-between gap-2">
-      <h2 id="projects-title" class="text-[15px] font-semibold">Projects</h2>
-      <span v-if="projectsLoaded && projects.length > 0" class="text-xs text-muted-foreground">{{ projects.length }} active</span>
-    </div>
-    <div v-if="projectsLoading" class="grid grid-cols-[repeat(auto-fit,minmax(min(340px,100%),1fr))] gap-4">
-      <Skeleton v-for="n in 2" :key="n" class="h-[110px] rounded-xl" />
-    </div>
-    <p v-else-if="projectsFailed && !projectsLoaded" class="rounded-xl border border-border p-4 text-[13px] text-muted-foreground" role="status">
-      {{ ERROR_TEXT }}
-    </p>
-    <p v-else-if="projects.length === 0" class="rounded-xl border border-border p-4 text-[13px] text-muted-foreground" role="status">
-      {{ EMPTY_TEXT }}
-    </p>
-    <template v-else>
-      <p v-if="projectsFailed" class="text-xs text-muted-foreground" role="status">Could not refresh. Showing the last loaded values.</p>
-      <div class="grid grid-cols-[repeat(auto-fit,minmax(min(340px,100%),1fr))] gap-4">
-        <div v-for="row in projectRows" :key="row.key" :class="[card, 'flex min-w-0 flex-col gap-2']">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <div class="flex min-w-0 items-center gap-2">
-              <span class="size-2 shrink-0 rounded-full" :class="DOT_CLASS[row.status] ?? DOT_CLASS.no_data" aria-hidden="true" />
-              <a
-                :href="row.href"
-                :aria-label="`${row.name} in Projects`"
-                class="inline-flex min-w-0 items-center rounded font-mono text-[13px] font-medium text-muted-foreground underline underline-offset-3 [overflow-wrap:anywhere] hover:text-foreground pointer-coarse:min-h-11 pointer-coarse:min-w-11"
-              >{{ row.name }}</a>
-            </div>
-            <span class="w-fit rounded-full px-2.5 py-0.5 text-xs font-semibold" :class="STATUS_CLASS[row.status] ?? STATUS_CLASS.no_data">{{ row.statusText }}</span>
-          </div>
-          <div class="min-w-0 text-xs text-muted-foreground [overflow-wrap:anywhere]">on {{ row.server }}</div>
-          <div class="flex min-w-0 flex-wrap items-center gap-2">
-            <span class="rounded-md bg-chip px-2 py-px text-xs font-medium text-chipfg">{{ row.modelLabel }}</span>
-            <ForecastChip v-if="row.forecast" kind="memory" :item="row.forecast" />
-          </div>
-        </div>
-      </div>
-    </template>
-  </section>
+  <ProjectsSection
+    :projects="cardList"
+    :loading="projectsLoading"
+    :loaded="projectsLoaded"
+    :failed="projectsFailed"
+    :is-admin="isAdmin"
+  />
 
   <div class="flex flex-wrap items-stretch gap-4">
     <section aria-label="Service metrics" class="min-w-0 flex-[2_1_520px] rounded-xl border border-border px-[18px] py-4">
@@ -390,10 +348,13 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
     </section>
     <RecentActivity
       class="min-w-0 flex-[1_1_300px]"
-      :items="activity.data.value"
+      :rows="activityRows"
+      :options="activityOptions"
+      :restarts-by-project="restartsByProject"
       :loading="loading"
       :failed="activity.failed.value"
       :loaded="activity.loaded.value"
+      :projects-failed="projectsFailed"
     />
   </div>
 
@@ -412,5 +373,13 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
     :host="mainNode?.hostname ?? null"
     :loading="loading"
     :failed="services.failed.value"
+  />
+
+  <ServersSection
+    :nodes="nodes.data.value"
+    :projects="projects"
+    :loading="loading"
+    :failed="nodes.failed.value"
+    :loaded="nodes.loaded.value"
   />
 </template>
