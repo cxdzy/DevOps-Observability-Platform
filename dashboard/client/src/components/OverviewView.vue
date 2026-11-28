@@ -361,7 +361,7 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
   <!-- Shown instead of the table, which would otherwise list every expected service as missing. -->
   <section v-if="!loading && servicesUnknown" aria-labelledby="services-title" class="overflow-hidden rounded-xl border border-border">
     <h2 id="services-title" class="px-[18px] py-3.5 text-[15px] font-semibold">
-      Services<template v-if="mainNode?.hostname"> on <span class="font-mono">{{ mainNode.hostname }}</span></template>
+      Services<template v-if="mainNode?.displayName"> on <span class="font-mono">{{ mainNode.displayName }}</span></template>
     </h2>
     <p class="mx-[18px] mb-4 rounded-lg bg-tier-high-bg p-3 text-[13px] text-tier-high-fg" role="alert">
       Container metrics are not available. Check that cAdvisor is running.
@@ -370,7 +370,7 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
   <ServicesTable
     v-else
     :services="services.data.value"
-    :host="mainNode?.hostname ?? null"
+    :server-name="mainNode?.displayName ?? null"
     :loading="loading"
     :failed="services.failed.value"
   />

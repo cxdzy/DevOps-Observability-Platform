@@ -74,7 +74,7 @@ test('restarts ignore null counts', () => {
 })
 
 test('empty text for a filtered project without and with restarts', () => {
-  assert.equal(emptyText({ name: 'Blog' }, 0), 'Blog: no deploys or restarts in the last 7 days')
+  assert.equal(emptyText({ name: 'Blog' }, 0), 'Blog: no deploys in 7 days, no restarts in 24 hours')
   assert.equal(emptyText({ name: 'Blog' }, 3), 'Blog: no deploys in the last 7 days, restarts in the last 24 hours: 3')
 })
 

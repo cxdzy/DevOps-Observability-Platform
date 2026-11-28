@@ -2,12 +2,12 @@
 import type { ServicesInfo } from '@/types'
 import { computed } from 'vue'
 import { Skeleton } from '@/components/ui/skeleton'
-import { megabytes } from '@/lib/format'
+import { size } from '@/lib/overviewFleet'
 
 const props = defineProps<{
   services: ServicesInfo | null
-  // Hostname of the main server, when /api/nodes returned it.
-  host: string | null
+  // Registry name of the main server (fyp-main), when /api/nodes returned it.
+  serverName: string | null
   loading: boolean
   failed: boolean
 }>()
@@ -32,7 +32,7 @@ const allUp = computed(() => upCount.value === expectedCount.value)
   <section aria-labelledby="services-title" class="overflow-hidden rounded-xl border border-border">
     <div class="flex flex-wrap items-center justify-between gap-2.5 px-[18px] py-3.5">
       <h2 id="services-title" class="text-[15px] font-semibold">
-        Services<template v-if="host"> on <span class="font-mono">{{ host }}</span></template>
+        Services<template v-if="serverName"> on <span class="font-mono">{{ serverName }}</span></template>
       </h2>
       <span
         v-if="services"
@@ -73,7 +73,7 @@ const allUp = computed(() => upCount.value === expectedCount.value)
                 </span>
               </td>
               <td class="px-[18px] py-2.5 font-mono text-[13px]" :class="row.memoryBytes === null ? 'text-muted-foreground' : ''">
-                {{ row.up ? megabytes(row.memoryBytes) : '-' }}
+                {{ row.up && row.memoryBytes !== null ? size(row.memoryBytes) : '-' }}
               </td>
             </tr>
           </tbody>

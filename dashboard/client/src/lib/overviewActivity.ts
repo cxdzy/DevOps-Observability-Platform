@@ -130,7 +130,7 @@ export function restartsLast24h(project: Pick<ProjectRow, 'containers'>): number
 export function emptyText(project: { name: string } | null | undefined, restarts: number): string {
   if (!project) return EMPTY_ALL_TEXT
   if (restarts > 0) return `${project.name}: no deploys in the last 7 days, restarts in the last 24 hours: ${restarts}`
-  return `${project.name}: no deploys or restarts in the last 7 days`
+  return `${project.name}: no deploys in 7 days, no restarts in 24 hours`
 }
 
 export function filterOptions(projects: Pick<ProjectRow, 'key' | 'name'>[]): FilterOption[] {
