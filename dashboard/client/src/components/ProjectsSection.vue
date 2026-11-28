@@ -31,7 +31,12 @@ const note = 'rounded-xl border border-border p-4 text-[13px] text-muted-foregro
     <template v-else>
       <p v-if="failed" class="text-xs text-muted-foreground" role="status">Could not refresh. Showing the last loaded values.</p>
       <p v-if="projects.length === 0" :class="note" role="status">{{ EMPTY_TEXT }}</p>
-      <div v-else class="grid grid-cols-[repeat(auto-fit,minmax(min(420px,100%),1fr))] gap-4">
+      <a
+        v-if="projects.length === 0 && isAdmin"
+        href="#settings"
+        class="flex min-h-24 items-center justify-center rounded-xl border border-dashed border-input p-4 text-[13px] text-muted-foreground hover:bg-chip hover:text-foreground"
+      >Add a project</a>
+      <div v-if="projects.length > 0" class="grid grid-cols-[repeat(auto-fit,minmax(min(420px,100%),1fr))] gap-4">
         <ProjectCard v-for="p in projects" :key="p.key" :data="p" />
         <a
           v-if="isAdmin"

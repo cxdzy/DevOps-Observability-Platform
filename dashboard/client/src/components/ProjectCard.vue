@@ -111,7 +111,7 @@ const link = 'inline-flex items-center rounded text-xs underline underline-offse
           </rect>
         </svg>
       </div>
-      <p class="mt-1 text-[11px] text-muted-foreground">Marks: up, deploy or restart, incident, down, no data. Hover a mark to read it.</p>
+      <p class="mt-1 text-[11px] text-muted-foreground">Marks: up, deploy or restart, incident, down, no data.</p>
     </div>
 
     <footer class="mt-auto flex flex-col gap-2 px-4 py-3 text-[13px]">

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
-  containersCard, fleetSubtitle, incidentsNote, projectCardData, projectCards, projectsCard, sortProjects, statusCard,
+  containersCard, fleetSubtitle, INCIDENTS_NOTE_GENERIC, incidentsNote, projectCardData, projectCards, projectsCard, sortProjects, statusCard,
 } from '../src/lib/overviewFleet.ts'
 import { mergeStrip, pickMerge, stripLabel } from '../src/lib/projectStrip.ts'
 
@@ -156,6 +156,10 @@ test('strip helpers merge and label like the Projects page', () => {
   assert.equal(pickMerge(100), 4)
   assert.deepEqual(mergeStrip(['up', 'down', 'up', 'up'], 2), ['down', 'up'])
   assert.equal(stripLabel('x', ['up', 'down'], 1), 'x, last 24 hours in cells of 15 minutes: 1 down period')
+})
+
+test('the incidents note has a generic form for when the project list did not load', () => {
+  assert.equal(INCIDENTS_NOTE_GENERIC, 'From the anomaly model. Monitored-only projects have no incidents.')
 })
 
 test('status card: an empty but loaded fleet is not unknown, and a missing platform service needs attention', () => {

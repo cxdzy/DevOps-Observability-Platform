@@ -63,6 +63,9 @@ export function projectsCard(projects: ProjectRow[], isAdmin: boolean): { count:
   }
 }
 
+// Used when the project list did not load, so the model project is not known by name.
+export const INCIDENTS_NOTE_GENERIC = 'From the anomaly model. Monitored-only projects have no incidents.'
+
 export function incidentsNote(projects: ProjectRow[]): string {
   const names = modelProjectNames(projects)
   const from = names.length ? `From the model on ${join(names)}. ` : ''

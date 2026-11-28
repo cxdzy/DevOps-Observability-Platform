@@ -15,7 +15,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { api, getForecast, usePoll } from '@/composables/useApi'
 import { useAuth } from '@/composables/useAuth'
 import { buildActivityRows, filterOptions, restartsLast24h } from '@/lib/overviewActivity'
-import { containersCard, fleetSubtitle, incidentsNote, projectCards, projectsCard, statusCard } from '@/lib/overviewFleet'
+import { containersCard, fleetSubtitle, INCIDENTS_NOTE_GENERIC, incidentsNote, projectCards, projectsCard, statusCard } from '@/lib/overviewFleet'
 import { FLAG_TIERS, TIER_STYLE, toTier } from '@/lib/tier'
 
 // ECharts is large, so the metric chart is downloaded only when it is first shown.
@@ -229,7 +229,7 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
       </div>
       <p v-if="subtitle" class="mt-1 text-[13px] text-muted-foreground">{{ subtitle }}</p>
     </div>
-    <a href="#incidents" class="inline-flex min-h-9 items-center rounded-lg border border-border px-3.5 text-[13px] font-medium text-foreground no-underline hover:bg-chip">
+    <a href="#incidents" class="inline-flex min-h-9 items-center pointer-coarse:min-h-11 rounded-lg border border-border px-3.5 text-[13px] font-medium text-foreground no-underline hover:bg-chip">
       Open incidents
     </a>
   </div>
@@ -284,7 +284,7 @@ const bigNumber = 'mt-2 font-mono text-[28px] font-medium tracking-[-0.02em]'
               {{ c.count }} {{ TIER_STYLE[c.tier].label }}
             </span>
           </div>
-          <div v-if="projectsLoaded" class="mt-1.5 text-xs text-muted-foreground">{{ incidentsNote(projects) }}</div>
+          <div class="mt-1.5 text-xs text-muted-foreground">{{ projectsLoaded ? incidentsNote(projects) : INCIDENTS_NOTE_GENERIC }}</div>
         </template>
         <p v-else class="mt-2.5 text-[13px] text-muted-foreground">No data. Retrying in 30 s.</p>
       </section>
